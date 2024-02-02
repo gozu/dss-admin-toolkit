@@ -1,4 +1,4 @@
-# Public repository for DSS custom plugins, code and projects for Walmart
+# Public repository for DSS custom plugins, code and projects for Elite Support Customers
 
 This repository contains the source code for
 custom  DSS plugins developed for Walmart.
