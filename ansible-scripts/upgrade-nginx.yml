@@ -1,0 +1,109 @@
+--- # Upgrade Nginx to 1.26.3
+- name: Backup existing NGINX config
+  become: yes
+  become_user: root
+  copy:
+    src: /etc/nginx
+    dest: /etc/nginx.backup
+    remote_src: yes
+  ignore_errors: yes  # in case nginx isn't installed yet
+
+- name: Remove existing NGINX
+  become: yes
+  become_user: root
+  ansible.builtin.dnf:
+    name: nginx
+    state: absent
+
+- name: Create nginx.repo file
+  become: yes
+  become_user: root
+  copy:
+    dest: /etc/yum.repos.d/nginx.repo
+    content: |
+      [nginx-stable]
+      name=nginx stable repo
+      baseurl=https://nginx.org/packages/centos/8/$basearch/
+      gpgcheck=1
+      enabled=1
+      gpgkey=https://nginx.org/keys/nginx_signing.key
+      module_hotfixes=true
+
+- name: Clean all DNF metadata
+  become: yes
+  become_user: root
+  ansible.builtin.command: dnf clean all
+
+- name: Make DNF cache
+  become: yes
+  become_user: root
+  ansible.builtin.command: dnf makecache
+
+- name: Install NGINX
+  become: yes
+  become_user: root
+  ansible.builtin.dnf:
+    name: "nginx-1.26.*"
+    state: present
+
+- name: Remove default nginx config
+  become: yes
+  become_user: root
+  ansible.builtin.file:
+    path: /etc/nginx
+    state: absent
+
+- name: Restore original nginx config
+  become: yes
+  become_user: root
+  ansible.builtin.command: cp -r /etc/nginx.backup/nginx /etc/nginx
+
+- name: Replace listen 443 directive if present in the nginx.conf file
+  become: yes
+  become_user: root
+  replace:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*listen 443 default_server;'
+    replace: '        listen 443 ssl default_server;'
+  ignore_errors: yes  # in case the original line does not exist
+
+- name: Remove deprecated 'ssl on;' line if present in the nginx.conf file
+  become: yes
+  become_user: root
+  lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*ssl on;'
+    state: absent
+  ignore_errors: yes  # in case the original line does not exist
+
+- name: Replace listen 443 directive if present in the template nginx.conf.tmpl file
+  become: yes
+  become_user: root
+  replace:
+    path: /opt/dataiku-fm-agent/code/lib64/python3.9/site-packages/dataikufmagent/resources/nginx.conf.tmpl
+    regexp: '^\s*listen 443 default_server;'
+    replace: '        listen 443 ssl default_server;'
+  ignore_errors: yes  # in case the original line does not exist
+
+- name: Remove deprecated 'ssl on;' line if present in the template nginx.conf.tmpl file
+  become: yes
+  become_user: root
+  lineinfile:
+    path: /opt/dataiku-fm-agent/code/lib64/python3.9/site-packages/dataikufmagent/resources/nginx.conf.tmpl
+    regexp: '^\s*ssl on;'
+    state: absent
+  ignore_errors: yes  # in case the original line does not exist
+
+- name: Enable nginx
+  become: yes
+  become_user: root
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: yes
+
+- name: Start nginx
+  become: yes
+  become_user: root
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
