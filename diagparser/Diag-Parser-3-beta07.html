@@ -1156,116 +1156,47 @@
                 return null;
             }
             
-            findExactFile(targetPath) {
-                // Try exact match first
-                if (this.extractedFiles[targetPath]) {
-                    return targetPath;
-                }
-                
-                const pathParts = targetPath.split('/');
-                const fileName = pathParts[pathParts.length - 1];
-                
-                // For all extracted files, find one that ends with our target filename
+            // Unified file lookup
+            findFile(targetPath) {
+                if (this.extractedFiles[targetPath]) return targetPath;
+                // Ends-with match
                 for (const path in this.extractedFiles) {
-                    // Special case for diag.txt which might be at the root
-                    if (fileName === 'diag.txt' && (path.endsWith('/diag.txt') || path === 'diag.txt')) {
-                        return path;
-                    }
-                    
-                    // Direct match for localconfig files when specified with empty dsshome
-                    if (targetPath.startsWith('localconfig/') && path === targetPath) {
-                        return path;
-                    }
-                    
-                    // Handle special case for users.json
-                    if (fileName === 'users.json' && path.includes('/config/') && !path.includes('/datasets/')) {
-                        return path;
-                    }
-                    
-                    // For other files, try to match the context (parent directory + filename)
-                    if (pathParts.length >= 2) {
-                        const context = pathParts[pathParts.length - 2] + '/' + fileName;
-                        if (path.endsWith(context)) {
-                            return path;
-                        }
-                    }
-                    
-                    // Last resort, just match the filename
-                    if (path.endsWith('/' + fileName)) {
-                        return path;
-                    }
+                    if (path.endsWith(targetPath)) return path;
                 }
-                
+                // Filename-only match (if unique)
+                const fileName = targetPath.split('/').pop();
+                const matches = Object.keys(this.extractedFiles).filter(p => p.endsWith('/' + fileName) || p === fileName);
+                if (matches.length === 1) return matches[0];
                 return null;
             }
             
             async parseFiles() {
-                // First parse diag.txt to get any system information
-                const diagPath = this.findExactFile('diag.txt');
-                if (diagPath) {
-                    this.parseDiagFile(this.extractedFiles[diagPath]);
-                }
-                
-                // Parse connections
-                const connectionsPath = this.findExactFile(this.dsshome + 'config/connections.json');
-                if (connectionsPath) {
-                    this.parseConnections(this.extractedFiles[connectionsPath]);
-                }
-                
-                // Parse general settings
-                const generalSettingsPath = this.findExactFile(this.dsshome + 'config/general-settings.json');
-                if (generalSettingsPath) {
-                    this.parseGeneralSettings(this.extractedFiles[generalSettingsPath]);
-                }
-                
-                // Parse license
-                const licensePath = this.findExactFile(this.dsshome + 'config/license.json');
-                if (licensePath) {
-                    this.parseLicense(this.extractedFiles[licensePath]);
-                }
-                
-                // Parse version - we'll try to extract version from dss-version.json or env-default.sh
-                const versionPath = this.findExactFile(this.dsshome + 'dss-version.json');
-                if (versionPath) {
-                    this.parseVersion(this.extractedFiles[versionPath]);
-                }
-                
-                // Parse users
-                const usersPath = this.findExactFile(this.dsshome + 'config/users.json');
-                if (usersPath) {
-                    this.parseUsers(this.extractedFiles[usersPath]);
-                }
-                
-                // Parse logs - try different log files in sequence
-                let logPath = this.findExactFile(this.dsshome + 'run/backend.log');
-                if (!logPath) logPath = this.findExactFile(this.dsshome + 'run/fmmain.log');
-                if (!logPath) logPath = this.findExactFile('output.log');
-
+                // Use unified findFile for all lookups
+                const diagPath = this.findFile('diag.txt');
+                if (diagPath) this.parseDiagFile(this.extractedFiles[diagPath]);
+                const connectionsPath = this.findFile(this.dsshome + 'config/connections.json');
+                if (connectionsPath) this.parseConnections(this.extractedFiles[connectionsPath]);
+                const generalSettingsPath = this.findFile(this.dsshome + 'config/general-settings.json');
+                if (generalSettingsPath) this.parseGeneralSettings(this.extractedFiles[generalSettingsPath]);
+                const licensePath = this.findFile(this.dsshome + 'config/license.json');
+                if (licensePath) this.parseLicense(this.extractedFiles[licensePath]);
+                const versionPath = this.findFile(this.dsshome + 'dss-version.json');
+                if (versionPath) this.parseVersion(this.extractedFiles[versionPath]);
+                const usersPath = this.findFile(this.dsshome + 'config/users.json');
+                if (usersPath) this.parseUsers(this.extractedFiles[usersPath]);
+                let logPath = this.findFile(this.dsshome + 'run/backend.log')
+                    || this.findFile(this.dsshome + 'run/fmmain.log')
+                    || this.findFile('output.log');
                 if (logPath) {
                     this.parseBackendLog(this.extractedFiles[logPath]);
-                    // Store the log file name for display
                     this.actualLogFileName = logPath.split('/').pop();
                 }
-                
-                // Parse supervisord log for last restart time
-                const supervisordLogPath = this.findExactFile(this.dsshome + 'run/supervisord.log');
-                if (supervisordLogPath) {
-                    this.parseDSSLastRestart(this.extractedFiles[supervisordLogPath]);
-                }
-                
-                // Parse env-default.sh - this will also extract DSS version if not already found
-                const envDefaultPath = this.findExactFile(this.dsshome + 'bin/env-default.sh');
-                if (envDefaultPath) {
-                    this.parseEnvDefault(this.extractedFiles[envDefaultPath]);
-                }
-                
-                // Parse plugins
+                const supervisordLogPath = this.findFile(this.dsshome + 'run/supervisord.log');
+                if (supervisordLogPath) this.parseDSSLastRestart(this.extractedFiles[supervisordLogPath]);
+                const envDefaultPath = this.findFile(this.dsshome + 'bin/env-default.sh');
+                if (envDefaultPath) this.parseEnvDefault(this.extractedFiles[envDefaultPath]);
                 this.parsePlugins();
-                
-                // Parse code environments
                 this.parseCodeEnvs();
-                
-                // Parse projects
                 this.parseProjects();
             }
             
@@ -2541,7 +2472,7 @@
                     { path: this.dsshome + 'config/license.json', label: 'license.json' },
                     { path: this.dsshome + 'config/users.json', label: 'users.json' },
                     { path: this.dsshome + 'dss-version.json', label: 'dss-version.json' },
-                    { path: this.dsshome + 'run/backend.log', label: this.findExactFile(this.dsshome + 'run/backend.log')?.split('/')?.pop() || 'backend.log' },
+                    { path: this.dsshome + 'run/backend.log', label: this.findFile(this.dsshome + 'run/backend.log')?.split('/')?.pop() || 'backend.log' },
                     { path: this.dsshome + 'run/supervisord.log', label: 'supervisord.log' },
                     { path: this.dsshome + 'run/ipython.log', label: 'ipython.log' },
                     { path: this.dsshome + 'bin/env-default.sh', label: 'env-default.sh' }
@@ -2570,7 +2501,7 @@
                 // Create download buttons for all files
                 let buttonCount = 0;
                 for (const file of sortedFilesToDownload) {
-                    const filePath = this.findExactFile(file.path);
+                    const filePath = this.findFile(file.path);
                     if (filePath && this.extractedFiles[filePath]) {
                         // Extract just the filename without the path
                         const pathParts = filePath.split('/');
