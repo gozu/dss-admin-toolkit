@@ -15,6 +15,8 @@
     <script src="https://unpkg.com/masonry-layout@4/dist/masonry.pkgd.min.js"></script>
     <!-- Add Chart.js for pie chart -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Add loaders.css CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/loaders.css/0.1.2/loaders.min.css">
     <style>
         :root {
             --dataiku-primary: #00b5aa;
@@ -509,6 +511,27 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        
+        /* --- Pacman Loader Custom Styling --- */
+        .loader-container {
+            width: 100px;
+            height: 100px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+        .pacman > div:nth-child(1),
+        .pacman > div:nth-child(2) {
+            border-top-color: #00b5aa;
+            border-left-color: #00b5aa;
+            border-bottom-color: #00b5aa;
+        }
+        .pacman > div:nth-child(3),
+        .pacman > div:nth-child(4),
+        .pacman > div:nth-child(5) {
+            background-color: #00b5aa;
+        }
     </style>
 </head>
 <body>
@@ -531,8 +554,15 @@
                 <strong>Note:</strong> This tool is experimental. <strong><u>Verify everything</u></strong>. Dataiku internal use only.   
             </div>
             <div class="progress-container" id="progress-container">
-                <div class="loading-spinner"></div>
-                <p>Processing diagnostic file...</p>
+                <div class="loader-container">
+                    <div class="loader-inner pacman">
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -828,15 +858,48 @@
                     // Get all entries
                     const entries = await this.zipReader.getEntries();
                     
-                    // Check for localconfig.zip anywhere in the ZIP
-                    const localConfigZipEntry = entries.find(entry => 
-                        entry.filename === 'localconfig.zip' || entry.filename.endsWith('/localconfig.zip')
-                    );
+                    // --- Diag type detection step ---
+                    this.diagType = 'unknown';
+                    this.diagTxtPath = null;
+                    this.localconfigPath = null;
+
+                    const diagTxtEntry = entries.find(e => e.filename === 'diag.txt' || e.filename.endsWith('/diag.txt'));
+                    const localconfigZipEntry = entries.find(e => e.filename === 'localconfig.zip' || e.filename.endsWith('/localconfig.zip'));
+                    const localconfigFolderEntry = entries.find(e => {
+                        const parts = e.filename.split('/');
+                        return parts.includes('localconfig');
+                    });
+
+                    if (diagTxtEntry) {
+                        this.diagType = 'instance';
+                        this.diagTxtPath = diagTxtEntry.filename;
+                    } else if (localconfigZipEntry || localconfigFolderEntry) {
+                        this.diagType = 'job';
+                        this.localconfigPath = localconfigZipEntry?.filename || localconfigFolderEntry?.filename;
+                    }
+                    this.log(`Detected diag type: ${this.diagType}`);
+                    // --- End diag type detection ---
                     
-                    if (localConfigZipEntry) {
-                        this.log(`Found localconfig.zip at: ${localConfigZipEntry.filename}. Extracting its contents.`);
+                    // Set dsshome based on diag type
+                    if (this.diagType === 'instance') {
+                        // Extract DSSHOME from diag.txt
+                        const writer = new zip.TextWriter();
+                        const diagContent = await diagTxtEntry.getData(writer);
+                        this.extractedFiles[this.diagTxtPath] = diagContent;
+                        this.dsshome = this.extractDSSHOMEFromDiag(diagContent);
+                        this.log(`Extracted DSSHOME path from diag.txt: ${this.dsshome}`);
+                    } else if (this.diagType === 'job') {
+                        this.dsshome = '';
+                        this.log('Using localconfig as config root');
+                    } else {
+                        this.dsshome = this.defaultDsshome;
+                        this.log('Falling back to default DSSHOME path');
+                    }
+                    
+                    if (localconfigZipEntry) {
+                        this.log(`Found localconfig.zip at: ${localconfigZipEntry.filename}. Extracting its contents.`);
                         try {
-                            const blob = await localConfigZipEntry.getData(new zip.BlobWriter("application/zip"));
+                            const blob = await localconfigZipEntry.getData(new zip.BlobWriter("application/zip"));
                             const innerZipReader = new zip.ZipReader(new zip.BlobReader(blob));
                             const innerEntries = await innerZipReader.getEntries();
                             this.log(`Found ${innerEntries.length} entries in localconfig.zip`);
@@ -894,7 +957,7 @@
                     });
 
                     // If diag.txt was not found but we have localconfig folder/files, use localconfig path
-                    if (!diagFound && (hasLocalConfigFolder || localConfigZipEntry)) {
+                    if (!diagFound && (hasLocalConfigFolder || localconfigZipEntry)) {
                         this.dsshome = '';  // Empty string so we look for files directly
                         this.log(`diag.txt not found, but localconfig found. Using files directly from localconfig folder.`);
                     } else if (!diagFound) {
@@ -903,73 +966,51 @@
                     }
                     
                     // Now proceed with extracting the rest of the files using the correct path
+                // Set configRoot for unified extraction
+                let configRoot = (this.diagType === 'job') ? '' : this.dsshome;
+
+                // Unified list of files to extract (relative to configRoot)
                 const filesToExtract = [
-                    '/config/connections.json',
-                    '/config/general-settings.json',
-                    '/config/license.json',
-                    '/config/users.json',
-                    '/dss-version.json',
-                    '/run/backend.log',
-                    '/run/fmmain.log',  // Include both possible log files
-                    '/run/supervisord.log',
-                    '/run/ipython.log',
-                    '/bin/env-default.sh'
+                    'config/connections.json',
+                    'config/general-settings.json',
+                    'config/license.json',
+                    'config/users.json',
+                    'dss-version.json',
+                    'run/backend.log',
+                    'run/fmmain.log',
+                    'run/supervisord.log',
+                    'run/ipython.log',
+                    'bin/env-default.sh'
                 ];
-                
-                    // For localconfig files, we need to adjust paths since they're directly in localconfig/
-                    const localconfigFilesToExtract = [
-                        'localconfig/connections.json',
-                        'localconfig/general-settings.json',
-                        'localconfig/license.json',
-                        'localconfig/users.json',
-                        // No version.json in localconfig
-                        // No logs in localconfig
-                        'bin/env-default.sh'  // This one is in bin directory
-                    ];
-                    
-                    // Use appropriate list of files based on dsshome
-                    const pathsToExtract = this.dsshome === '' ? localconfigFilesToExtract : filesToExtract;
-                    
-                    this.log("Files to extract with correct paths:", pathsToExtract.map(f => this.dsshome + f));
-                    
-                    // Process each file to extract using the correct DSSHOME path
-                    for (const pathSuffix of pathsToExtract) {
-                        const targetPath = this.dsshome + pathSuffix;
-                        this.log(`Searching for file: ${targetPath}`);
-                        
-                        // Find the entry for this file
-                        let targetEntry = this.findTargetEntry(entries, targetPath);
-                        
-                        if (targetEntry) {
-                            this.log(`Found entry: ${targetEntry.filename} (${formatBytes(targetEntry.uncompressedSize)})`);
-                            
-                            try {
-                                // Create a text writer to get the file content as text
-                                const writer = new zip.TextWriter();
-                                
-                                // Extract the file content
-                                this.log(`Extracting file: ${targetEntry.filename}`);
-                                const content = await targetEntry.getData(writer);
-                                this.log(`Successfully extracted ${formatBytes(content.length)} of data`);
-                                
-                                // Store the extracted content
-                                this.extractedFiles[targetEntry.filename] = content;
+
+                this.log("Files to extract with correct paths:", filesToExtract.map(f => configRoot + f));
+
+                // Process each file to extract using the correct configRoot
+                for (const pathSuffix of filesToExtract) {
+                    const targetPath = configRoot + pathSuffix;
+                    this.log(`Searching for file: ${targetPath}`);
+                    let targetEntry = this.findTargetEntry(entries, targetPath);
+                    if (targetEntry) {
+                        this.log(`Found entry: ${targetEntry.filename} (${formatBytes(targetEntry.uncompressedSize)})`);
+                        try {
+                            const writer = new zip.TextWriter();
+                            this.log(`Extracting file: ${targetEntry.filename}`);
+                            const content = await targetEntry.getData(writer);
+                            this.log(`Successfully extracted ${formatBytes(content.length)} of data`);
+                            this.extractedFiles[targetEntry.filename] = content;
                         } catch (error) {
-                                this.log(`Error extracting ${targetEntry.filename}: ${error.message}`);
-                            }
-                        } else {
-                            this.log(`File not found: ${targetPath}`);
+                            this.log(`Error extracting ${targetEntry.filename}: ${error.message}`);
                         }
+                    } else {
+                        this.log(`File not found: ${targetPath}`);
                     }
+                }
                     
                     // Extract project params.json files
                     this.log("Searching for project params.json files");
-                    const projectParamsPattern = new RegExp(`^${this.dsshome.replace(/\//g, '\\/')}config\\/projects\\/[^\\/]+\\/params\\.json$`);
+                    const projectParamsPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}config\/projects\/[^\/]+\/params\.json$`);
                     let projectCount = 0;
-                    
-                    // Create array to store project information
                     this.projectFiles = [];
-                    
                     for (const entry of entries) {
                         if (projectParamsPattern.test(entry.filename)) {
                             try {
@@ -977,8 +1018,6 @@
                                 const writer = new zip.TextWriter();
                                 const content = await entry.getData(writer);
                                 this.extractedFiles[entry.filename] = content;
-                                
-                                // Store the project file path
                                 this.projectFiles.push(entry.filename);
                                 projectCount++;
                             } catch (error) {
@@ -992,8 +1031,8 @@
                     this.log("Searching for plugins and code environments");
                     
                     // Define patterns for direct config plugins and code env desc files
-                    const pluginSettingsPattern = new RegExp(`^${this.dsshome.replace(/\//g, '\\/')}config\\/plugins\\/[^\\/]+\\/settings\\.json$`);
-                    const codeEnvDescPattern = new RegExp(`^${this.dsshome.replace(/\//g, '\\/')}code-envs\\/desc\\/[^\\/]+\\/[^\\/]+\\/desc\\.json$`);
+                    const pluginSettingsPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}config\/plugins\/[^\/]+\/settings\.json$`);
+                    const codeEnvDescPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}code-envs\/desc\/[^\/]+\/[^\/]+\/desc\.json$`);
                     
                     // Count how many we find
                     let pluginCount = 0;
@@ -1002,16 +1041,14 @@
                     // Extract all files from the root of the zipfile
                     this.log("Extracting root files from the zipfile");
                     
-                    // Check for output.log or output.log.gz in the root
+                    // Unified log file extraction (output.log/output.log.gz)
                     const outputLogEntry = entries.find(e => e.filename === 'output.log' || e.filename.endsWith('/output.log'));
                     const outputLogGzEntry = entries.find(e => e.filename === 'output.log.gz' || e.filename.endsWith('/output.log.gz'));
-                    
                     if (outputLogGzEntry || outputLogEntry) {
                         try {
                             const entry = outputLogGzEntry || outputLogEntry;
                             const isGzipped = !!outputLogGzEntry;
                             this.log(`Found ${isGzipped ? 'output.log.gz' : 'output.log'}: ${entry.filename}`);
-                            
                             let content;
                             if (isGzipped) {
                                 const blob = await entry.getData(new zip.BlobWriter());
@@ -1020,18 +1057,17 @@
                             } else {
                                 content = await entry.getData(new zip.TextWriter());
                             }
-                            
-                            this.extractedFiles[this.dsshome + 'run/output.log'] = content;
-                            this.log(`Successfully extracted ${isGzipped ? 'and decompressed ' : ''}${entry.filename} as output.log`);
+                            this.extractedFiles['output.log'] = content;
+                            this.log(`Successfully extracted${isGzipped ? ' and decompressed' : ''} ${entry.filename} as output.log`);
                         } catch (error) {
                             this.log(`Error extracting log file: ${error.message}`);
                         }
                     }
                     
+                    // Unified root file extraction (all files at root, <10MB)
+                    this.rootFiles = [];
                     for (const entry of entries) {
-                        // Check if this is a root file (no slashes in the name)
                         if (!entry.filename.includes('/') && !entry.directory && entry.uncompressedSize < 10 * 1024 * 1024) {
-                            // Only extract files less than 10MB to avoid memory issues
                             try {
                                 this.log(`Extracting root file: ${entry.filename} (${formatBytes(entry.uncompressedSize)})`);
                                 const writer = new zip.TextWriter();
