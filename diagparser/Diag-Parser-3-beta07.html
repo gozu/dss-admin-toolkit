@@ -924,48 +924,6 @@
                     // Track root files
                     this.rootFiles = [];
                     
-                    // Find and extract diag.txt
-                    let diagEntry = entries.find(entry => entry.filename === 'diag.txt');
-                    let diagFound = false;
-                    
-                    if (diagEntry) {
-                        this.log("Found diag.txt in root directory");
-                        diagFound = true;
-                        const writer = new zip.TextWriter();
-                        const diagContent = await diagEntry.getData(writer);
-                        this.extractedFiles['diag.txt'] = diagContent;
-                        this.dsshome = this.extractDSSHOMEFromDiag(diagContent);
-                        this.log(`Extracted DSSHOME path from diag.txt: ${this.dsshome}`);
-                    } else {
-                        this.log("diag.txt not found in root, searching in other locations");
-                        diagEntry = entries.find(entry => entry.filename.endsWith('/diag.txt'));
-                        if (diagEntry) {
-                            this.log(`Found diag.txt at: ${diagEntry.filename}`);
-                            diagFound = true;
-                            const writer = new zip.TextWriter();
-                            const diagContent = await diagEntry.getData(writer);
-                            this.extractedFiles[diagEntry.filename] = diagContent;
-                            this.dsshome = this.extractDSSHOMEFromDiag(diagContent);
-                            this.log(`Extracted DSSHOME path from ${diagEntry.filename}: ${this.dsshome}`);
-                        }
-                    }
-
-                    // Check if a localconfig/ folder exists anywhere in the ZIP
-                    const hasLocalConfigFolder = entries.some(entry => {
-                        const parts = entry.filename.split('/');
-                        return parts.includes('localconfig');
-                    });
-
-                    // If diag.txt was not found but we have localconfig folder/files, use localconfig path
-                    if (!diagFound && (hasLocalConfigFolder || localconfigZipEntry)) {
-                        this.dsshome = '';  // Empty string so we look for files directly
-                        this.log(`diag.txt not found, but localconfig found. Using files directly from localconfig folder.`);
-                    } else if (!diagFound) {
-                        this.log("WARNING: diag.txt not found and no localconfig found. Will use default DSSHOME path.");
-                        this.dsshome = this.defaultDsshome;
-                    }
-                    
-                    // Now proceed with extracting the rest of the files using the correct path
                 // Set configRoot for unified extraction
                 let configRoot = (this.diagType === 'job') ? '' : this.dsshome;
 
@@ -1064,8 +1022,7 @@
                         }
                     }
                     
-                    // Unified root file extraction (all files at root, <10MB)
-                    this.rootFiles = [];
+                    // We already initialized rootFiles, just use it for storage
                     for (const entry of entries) {
                         if (!entry.filename.includes('/') && !entry.directory && entry.uncompressedSize < 10 * 1024 * 1024) {
                             try {
@@ -2044,11 +2001,15 @@
                     const userStats = {};
                     
                     if (data && data.users && Array.isArray(data.users)) {
-                        userStats['Total Users'] = data.users.length;
+                        const allUsers = data.users;
+                        const enabledUsers = data.users.filter(user => user.enabled === true);
                         
-                        // Count user profiles
+                        userStats['Total Users'] = allUsers.length;
+                        userStats['Active Users'] = enabledUsers.length;
+                        
+                        // Count user profiles (only enabled users)
                         const profileCounts = {};
-                        for (const user of data.users) {
+                        for (const user of enabledUsers) {
                             if (user && user.userProfile) {
                                 if (!profileCounts[user.userProfile]) {
                                     profileCounts[user.userProfile] = 0;
@@ -2480,6 +2441,9 @@
                 document.getElementById('version-info').textContent = this.parsedData.dssVersion || 'Unknown';
                 document.getElementById('python-version-info').textContent = this.parsedData.pythonVersion || 'Unknown';
                 document.getElementById('file-info').textContent = document.getElementById('file-input').files[0]?.name || 'Unknown';
+                
+                // Add diag type badge
+                this.addDiagTypeLabel();
                 
                 // Add DSS last restart time if available
                 if (this.parsedData.lastRestartTime) {
@@ -3911,6 +3875,54 @@
                             this.parsedData.licenseProperties['Expires On'] = expiresOn;
                         }
                     }
+
+                    // Extract license usage information
+                    if (data.content && data.content.usage) {
+                        // Process named users
+                        if (data.content.usage.namedUsers) {
+                            const { current, limit } = data.content.usage.namedUsers;
+                            this.parsedData.licenseProperties['Named Users'] = `${current} / ${limit} (${Math.round(current/limit*100)}%)`;
+                        }
+
+                        // Process concurrent users
+                        if (data.content.usage.concurrentUsers) {
+                            const { current, limit } = data.content.usage.concurrentUsers;
+                            this.parsedData.licenseProperties['Concurrent Users'] = `${current} / ${limit} (${Math.round(current/limit*100)}%)`;
+                        }
+
+                        // Process connections
+                        if (data.content.usage.connections) {
+                            const { current, limit } = data.content.usage.connections;
+                            this.parsedData.licenseProperties['Connections'] = `${current} / ${limit} (${Math.round(current/limit*100)}%)`;
+                        }
+
+                        // Process projects
+                        if (data.content.usage.projects) {
+                            const { current, limit } = data.content.usage.projects;
+                            this.parsedData.licenseProperties['Projects'] = `${current} / ${limit} (${Math.round(current/limit*100)}%)`;
+                        }
+
+                        // Process features
+                        if (data.content.usage.features) {
+                            for (const feature of data.content.usage.features) {
+                                if (feature.name && feature.current !== undefined && feature.limit !== undefined) {
+                                    const featureName = feature.name
+                                        .replace(/([A-Z])/g, ' $1')
+                                        .replace(/^./, str => str.toUpperCase());
+                                    
+                                    const percentage = feature.limit > 0 ? Math.round(feature.current/feature.limit*100) : 0;
+                                    this.parsedData.licenseProperties[featureName] = 
+                                        `${feature.current} / ${feature.limit} (${percentage}%)`;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Add a key to indicate that we have license usage information
+                    if (data.content && data.content.usage) {
+                        this.parsedData.hasLicenseUsage = true;
+                    }
+                    
                 } catch (error) {
                     console.error('Error parsing license:', error);
                 }
@@ -4950,6 +4962,64 @@
                         permissionsModal.style.display = 'none';
                     }
                 });
+            }
+
+            // Add new method
+            addDiagTypeLabel() {
+                // Create a container for the diag type badge
+                const diagTypeContainer = document.createElement('div');
+                diagTypeContainer.id = 'diag-type-container';
+                diagTypeContainer.style.marginBottom = '15px';
+                diagTypeContainer.style.textAlign = 'center';
+                
+                // Create the badge
+                const diagTypeBadge = document.createElement('span');
+                diagTypeBadge.className = 'badge';
+                diagTypeBadge.style.padding = '5px 10px';
+                diagTypeBadge.style.borderRadius = '4px';
+                diagTypeBadge.style.fontWeight = 'bold';
+                diagTypeBadge.style.fontSize = '0.9rem';
+                diagTypeBadge.style.display = 'inline-block';
+                
+                // Set content and style based on type
+                let badgeText = '';
+                let badgeColor = '';
+                
+                switch (this.diagType) {
+                    case 'instance':
+                        badgeText = 'Instance Diag';
+                        badgeColor = '#28a745'; // Green
+                        break;
+                    case 'job':
+                        badgeText = 'Job Diag';
+                        badgeColor = '#007bff'; // Blue
+                        break;
+                    case 'fm':
+                        badgeText = 'FM Diag';
+                        badgeColor = '#6f42c1'; // Purple
+                        break;
+                    default:
+                        badgeText = 'Unknown Diag';
+                        badgeColor = '#6c757d'; // Gray
+                }
+                
+                diagTypeBadge.textContent = badgeText;
+                diagTypeBadge.style.backgroundColor = badgeColor;
+                diagTypeBadge.style.color = 'white';
+                
+                diagTypeContainer.appendChild(diagTypeBadge);
+                
+                // Add this badge at the top of the results
+                const resultsContainer = document.getElementById('results-container');
+                if (resultsContainer) {
+                    // Insert after the info panel
+                    const infoPanel = document.querySelector('.info-panel');
+                    if (infoPanel && infoPanel.nextSibling) {
+                        resultsContainer.insertBefore(diagTypeContainer, infoPanel.nextSibling);
+                    } else {
+                        resultsContainer.appendChild(diagTypeContainer);
+                    }
+                }
             }
         }
         
