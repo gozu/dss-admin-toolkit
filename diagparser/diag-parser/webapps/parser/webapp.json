@@ -1,0 +1,19 @@
+{
+    "meta": {
+        "label": "Diagnostic File Parser",
+        "description": "Upload and analyze Dataiku diagnostic ZIP files to visualize system configurations, resource usage, memory allocation, connections, and identify potential issues. All processing happens locally in your browser.",
+        "icon": "fas fa-search"
+    },
+    
+    "baseType": "STANDARD",
+    "hasBackend": "false",
+    "noJSSecurity": "false",
+    "standardWebAppLibraries": ["jquery", "dataiku"],
+    "hideWebAppConfig": "true",
+    
+    "params": [],
+    
+    "roles": [
+        {"type": "ADMIN_DASHBOARD"}
+    ]
+}
