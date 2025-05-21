@@ -11,6 +11,95 @@
     <!-- Add highlight.js for syntax highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/monokai-sublime.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    
+    <!-- Custom log4j language definition for logs -->
+    <script>
+    /**
+     * Language: log4j
+     * Description: Syntax highlighting for DSS log files
+     */
+    function log4j(hljs) {
+      // Log level keywords
+      const LOG_LEVEL_KEYWORDS = 'TRACE DEBUG INFO NOTICE WARN WARNING ERROR SEVERE FATAL CRITICAL';
+      
+      // Handle both bracket timestamps [2025/04/29-18:55:03.596] and standard 2023-07-31 15:40:40,887
+      const TIMESTAMP = {
+        scope: 'number',
+        begin: /(\[\d{4}\/\d{2}\/\d{2}-\d{2}:\d{2}:\d{2}\.\d{3}\]|\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})/,
+        relevance: 10
+      };
+
+      // Thread identifiers in square brackets with various formats
+      const THREAD = {
+        scope: 'regexp',
+        begin: /\[(qtp\d+-\d+|JEK-[a-zA-Z0-9]+-log-\d+|\d+\/MainThread|pool-\d+-thread-\d+|main|ct: \d+|dku_call_id=[a-z0-9]+)\]/,
+        relevance: 5
+      };
+
+      // Log level in square brackets
+      const LOG_LEVEL = {
+        scope: 'keyword',
+        begin: /\[(DEBUG|INFO|WARN|WARNING|ERROR|TRACE)\]/,
+        relevance: 10
+      };
+
+      // Component/logger name in square brackets
+      const COMPONENT = {
+        scope: 'meta',
+        begin: /\[(dku\.[a-zA-Z0-9_.]+|NotebookApp|com\.[a-zA-Z0-9_.]+)\]/,
+        relevance: 8
+      };
+
+      // Logger name / class name (package.class format) outside brackets
+      const LOGGER = {
+        scope: 'meta',
+        begin: /\b([a-zA-Z0-9_$]+\.)+[a-zA-Z0-9_$]+\b/,
+        relevance: 2
+      };
+
+      // Parameters and key-value pairs
+      const PARAMS = {
+        scope: 'attribute',
+        begin: /\b[a-zA-Z0-9_]+=([a-zA-Z0-9_.\-:\/]+|\".+?\")/,
+        relevance: 3
+      };
+
+      // HTTP methods
+      const HTTP_METHOD = {
+        scope: 'built_in',
+        begin: /\b(GET|POST|PUT|DELETE|PATCH)\b/,
+        relevance: 4
+      };
+
+      // Paths and URIs
+      const PATH = {
+        scope: 'string',
+        begin: /\/[a-zA-Z0-9_\/.-]+/,
+        relevance: 3
+      };
+
+      return {
+        name: 'log4j',
+        case_insensitive: false,
+        keywords: {
+          keyword: LOG_LEVEL_KEYWORDS
+        },
+        contains: [
+          TIMESTAMP,
+          LOG_LEVEL,
+          THREAD,
+          COMPONENT,
+          LOGGER,
+          PARAMS,
+          HTTP_METHOD,
+          PATH
+        ]
+      };
+    }
+
+    // Register the language with highlight.js
+    hljs.registerLanguage('log4j', log4j);
+    </script>
     <!-- Add Masonry.js -->
     <script src="https://unpkg.com/masonry-layout@4/dist/masonry.pkgd.min.js"></script>
     <!-- Add Chart.js for pie chart -->
@@ -537,7 +626,7 @@
 <body>
     <div class="header">
         <img src="https://cdn.downloads.dataiku.com/public/mediakit/logos/Dataiku_logo_straight_COLOR.svg" alt="Dataiku Logo" class="logo">
-        <h1> Diag Parser </h1>
+        <h1> Diag Parser <sup style="background: #00b5aa; color: white; padding: 2px 6px; border-radius: 8px; font-size: 12px; vertical-align: super; font-weight: 500; letter-spacing: 0.5px;">BETA</sup></h1>
     </div>
 
     <div class="container">
@@ -695,6 +784,10 @@
                 // Define a default DSS home directory constant
                 this.defaultDsshome = 'data/dataiku/dss_data/';
                 this.dsshome = this.defaultDsshome;
+                // Track download UI elements
+                this.downloadUICreated = false;
+                this.downloadToggleBtn = null;
+                this.downloadBtnsContainer = null;
                 
                 this.initEventListeners();
             }
@@ -2445,24 +2538,33 @@
                 // Add diag type badge
                 this.addDiagTypeLabel();
                 
-                // Add DSS last restart time if available
+                // Find and prepare the info panel
+                const infoPanel = document.querySelector('.info-panel');
+                
+                // First remove any existing system info elements to prevent duplication
+                const existingRestartInfo = infoPanel.querySelector('.info-item.restart-info');
+                const existingSysInfo = infoPanel.querySelector('.info-item.system-info');
+                
+                if (existingRestartInfo) existingRestartInfo.remove();
+                if (existingSysInfo) existingSysInfo.remove();
+                
+                // Add DSS Last Restart time if available
                 if (this.parsedData.lastRestartTime) {
                     const restartInfoDiv = document.createElement('div');
-                    restartInfoDiv.className = 'info-item';
+                    restartInfoDiv.className = 'info-item restart-info';
                     restartInfoDiv.innerHTML = `<strong>DSS Last Restart:</strong> <span>${this.parsedData.lastRestartTime}</span>`;
-                    document.querySelector('.info-panel').appendChild(restartInfoDiv);
+                    infoPanel.appendChild(restartInfoDiv);
                 }
                 
                 // Add System Information (CPU, RAM, OS) in one line
                 // Get memory from the same property used in the memory table
                 const totalRAM = (this.parsedData.memoryInfo && this.parsedData.memoryInfo.total) ? this.parsedData.memoryInfo.total : 'N/A';
                 const sysInfoDiv = document.createElement('div');
-                sysInfoDiv.className = 'info-item';
+                sysInfoDiv.className = 'info-item system-info';
                 sysInfoDiv.innerHTML = `<strong>System:</strong> <span>${this.parsedData.cpuCores || 'Unknown'} CPU cores, ${totalRAM} RAM, ${this.parsedData.osInfo || 'Unknown'}</span>`;
-                document.querySelector('.info-panel').appendChild(sysInfoDiv);
+                infoPanel.appendChild(sysInfoDiv);
                 
                 // Create download buttons inside the info panel
-                const infoPanel = document.querySelector('.info-panel');
                 
                 // Define the files to add download buttons for
                 const filesToDownload = [
@@ -2668,24 +2770,37 @@
                 
                 // Add the download buttons to the top of the info panel if we have any
                 if (buttonCount > 0 && infoPanel) {
-                    // Create a toggle button to show/hide download options
-                    const toggleBtn = document.createElement('button');
-                    toggleBtn.className = 'display-log-btn';
-                    toggleBtn.style.marginBottom = '15px';
-                    toggleBtn.style.backgroundColor = 'var(--dataiku-primary)';
-                    toggleBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Show Download Options';
-                    
-                    toggleBtn.addEventListener('click', () => {
-                        const isVisible = downloadBtnsContainer.style.display !== 'none';
-                        downloadBtnsContainer.style.display = isVisible ? 'none' : 'grid';
-                        toggleBtn.innerHTML = isVisible 
-                            ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Access Files'
-                            : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-chevron-up" viewBox="0 0 16 16" style="margin-right: 5px;"><path fill-rule="evenodd" d="M7.646 4.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1-.708.708L8 5.707l-5.646 5.647a.5.5 0 0 1-.708-.708l6-6z"/></svg> Hide Files';
-                    });
-                    
-                    // Insert the toggle button first, then the container
-                    infoPanel.insertBefore(toggleBtn, infoPanel.firstChild);
-                    infoPanel.insertBefore(downloadBtnsContainer, infoPanel.childNodes[1]);
+                    // Create or reuse download UI elements
+                    if (!this.downloadUICreated) {
+                        // Create toggle button only once
+                        this.downloadToggleBtn = document.createElement('button');
+                        this.downloadToggleBtn.className = 'display-log-btn';
+                        this.downloadToggleBtn.style.marginBottom = '15px';
+                        this.downloadToggleBtn.style.backgroundColor = 'var(--dataiku-primary)';
+                        this.downloadToggleBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Access Files';
+                        
+                        // Save reference to container
+                        this.downloadBtnsContainer = downloadBtnsContainer;
+                        
+                        // Add click handler
+                        const self = this;
+                        this.downloadToggleBtn.addEventListener('click', function() {
+                            if (self.downloadBtnsContainer) {
+                                const isVisible = self.downloadBtnsContainer.style.display !== 'none';
+                                self.downloadBtnsContainer.style.display = isVisible ? 'none' : 'grid';
+                                this.innerHTML = isVisible 
+                                    ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Access Files'
+                                    : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-chevron-up" viewBox="0 0 16 16" style="margin-right: 5px;"><path fill-rule="evenodd" d="M7.646 4.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1-.708.708L8 5.707l-5.646 5.647a.5.5 0 0 1-.708-.708l6-6z"/></svg> Hide Files';
+                            }
+                        });
+                        
+                        // Mark as created
+                        this.downloadUICreated = true;
+                        
+                        // Insert UI elements into the info panel
+                        infoPanel.insertBefore(this.downloadToggleBtn, infoPanel.firstChild);
+                        infoPanel.insertBefore(this.downloadBtnsContainer, infoPanel.childNodes[1]);
+                    }
                 }
                 
                 // Update debug logs display
@@ -3929,7 +4044,7 @@
             }
             
             viewFile(filename, content) {
-                // Create modal container if it doesn't exist
+                // Create a lightweight modal immediately - PHASE 1
                 let fileViewerModal = document.getElementById('file-viewer-modal');
                 
                 if (!fileViewerModal) {
@@ -3953,152 +4068,234 @@
                     fileViewerModal.style.display = 'flex';
                 }
                 
-                // Create content container
-                const modalContent = document.createElement('div');
-                modalContent.style.backgroundColor = '#fff';
-                modalContent.style.borderRadius = '10px';
-                modalContent.style.width = '90%';
-                modalContent.style.maxWidth = '1200px';
-                modalContent.style.maxHeight = '90%';
-                modalContent.style.display = 'flex';
-                modalContent.style.flexDirection = 'column';
-                modalContent.style.overflow = 'hidden';
-                modalContent.style.boxShadow = '0 5px 30px rgba(0,0,0,0.3)';
+                // Show a simple loading message immediately
+                const initialLoader = document.createElement('div');
+                initialLoader.style.backgroundColor = '#1e1e1e';
+                initialLoader.style.color = '#f8f8f2';
+                initialLoader.style.padding = '20px';
+                initialLoader.style.borderRadius = '10px';
+                initialLoader.style.textAlign = 'center';
+                initialLoader.innerHTML = `
+                    <div style="margin: 20px 0;">
+                        <div style="width: 40px; height: 40px; border: 3px solid rgba(0, 181, 170, 0.3); border-radius: 50%; border-top-color: var(--dataiku-primary); animation: spin 1s linear infinite; margin: 0 auto;"></div>
+                    </div>
+                    <p style="margin-top: 15px;">Loading ${filename}...</p>
+                `;
+                fileViewerModal.appendChild(initialLoader);
                 
-                // Create header with filename and close button
-                const modalHeader = document.createElement('div');
-                modalHeader.style.display = 'flex';
-                modalHeader.style.justifyContent = 'space-between';
-                modalHeader.style.alignItems = 'center';
-                modalHeader.style.padding = '15px 20px';
-                modalHeader.style.borderBottom = '1px solid #eee';
-                
-                const fileTitle = document.createElement('h3');
-                fileTitle.textContent = filename;
-                fileTitle.style.margin = '0';
-                fileTitle.style.padding = '0';
-                fileTitle.style.fontWeight = '500';
-                
-                const closeButton = document.createElement('button');
-                closeButton.innerHTML = '&times;';
-                closeButton.style.background = 'none';
-                closeButton.style.border = 'none';
-                closeButton.style.fontSize = '24px';
-                closeButton.style.cursor = 'pointer';
-                closeButton.style.padding = '0 10px';
-                closeButton.style.fontWeight = 'bold';
-                closeButton.onclick = function() {
-                    fileViewerModal.style.display = 'none';
-                };
-                
-                modalHeader.appendChild(fileTitle);
-                modalHeader.appendChild(closeButton);
-                
-                // Create file content area
-                const fileContent = document.createElement('div');
-                fileContent.style.overflow = 'auto';
-                fileContent.style.padding = '20px';
-                fileContent.style.flexGrow = '1';
-                fileContent.style.fontFamily = 'monospace';
-                fileContent.style.whiteSpace = 'pre';
-                fileContent.style.fontSize = '13px';
-                fileContent.style.backgroundColor = '#1e1e1e';
-                fileContent.style.color = '#f8f8f2';
-                
-                // Determine language for syntax highlighting
-                let language = 'plaintext';
-                if (filename.endsWith('.json')) {
-                    language = 'json';
-                } else if (filename.endsWith('.log')) {
-                    language = 'plaintext'; // Log files may have custom styling instead
-                } else if (filename.endsWith('.sh') || filename.endsWith('.bash')) {
-                    language = 'bash';
-                } else if (filename.endsWith('.py')) {
-                    language = 'python';
-                } else if (filename.endsWith('.txt')) {
-                    language = 'plaintext';
-                } else if (filename.endsWith('.html') || filename.endsWith('.htm')) {
-                    language = 'html';
-                } else if (filename.endsWith('.css')) {
-                    language = 'css';
-                } else if (filename.endsWith('.js')) {
-                    language = 'javascript';
-                } else if (filename.endsWith('.xml')) {
-                    language = 'xml';
-                } else if (filename.endsWith('.yml') || filename.endsWith('.yaml')) {
-                    language = 'yaml';
-                } else if (filename.endsWith('.md')) {
-                    language = 'markdown';
-                } else if (filename.endsWith('.conf')) {
-                    language = 'nginx'; // Good for config files
-                } else if (filename === 'diag.txt') {
-                    language = 'bash'; // diag.txt often contains bash commands
-                }
-                
-                // Create a pre element for code
-                const preElement = document.createElement('pre');
-                preElement.style.margin = '0';
-                preElement.style.padding = '0';
-                preElement.style.overflow = 'visible';
-                preElement.style.backgroundColor = 'transparent';
-                
-                // Create code element
-                const codeElement = document.createElement('code');
-                codeElement.className = `language-${language}`;
-                codeElement.textContent = content;
-                
-                preElement.appendChild(codeElement);
-                fileContent.appendChild(preElement);
-                
-                // Create footer with buttons
-                const modalFooter = document.createElement('div');
-                modalFooter.style.display = 'flex';
-                modalFooter.style.justifyContent = 'space-between';
-                modalFooter.style.padding = '15px 20px';
-                modalFooter.style.borderTop = '1px solid #eee';
-                
-                // Add download button to footer
-                const downloadButton = document.createElement('button');
-                downloadButton.className = 'display-log-btn';
-                downloadButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Download File';
-                downloadButton.onclick = () => {
-                    this.downloadFile(filename, content);
-                };
-                
-                // Line counts and information
-                const fileInfo = document.createElement('div');
-                fileInfo.style.color = '#6c757d';
-                fileInfo.style.fontSize = '14px';
-                
-                // Count lines
-                const lineCount = content.split('\n').length;
-                fileInfo.textContent = `${lineCount.toLocaleString()} lines`;
-                
-                modalFooter.appendChild(fileInfo);
-                modalFooter.appendChild(downloadButton);
-                
-                // Assemble the modal
-                modalContent.appendChild(modalHeader);
-                modalContent.appendChild(fileContent);
-                modalContent.appendChild(modalFooter);
-                fileViewerModal.appendChild(modalContent);
-                
-                // Apply highlighting
-                hljs.highlightElement(codeElement);
-                
-                // Add keyboard event listener to close on ESC key
-                document.addEventListener('keydown', function(e) {
-                    if (e.key === 'Escape') {
+                // Defer the heavy work to the next event loop cycle
+                setTimeout(() => {
+                    // Remove the initial loader
+                    fileViewerModal.removeChild(initialLoader);
+                    
+                    // Create full content container - PHASE 2
+                    const modalContent = document.createElement('div');
+                    modalContent.style.backgroundColor = '#fff';
+                    modalContent.style.borderRadius = '10px';
+                    modalContent.style.width = '90%';
+                    modalContent.style.maxWidth = '1200px';
+                    modalContent.style.maxHeight = '90%';
+                    modalContent.style.display = 'flex';
+                    modalContent.style.flexDirection = 'column';
+                    modalContent.style.overflow = 'hidden';
+                    modalContent.style.boxShadow = '0 5px 30px rgba(0,0,0,0.3)';
+                    
+                    // Create header with filename and close button
+                    const modalHeader = document.createElement('div');
+                    modalHeader.style.display = 'flex';
+                    modalHeader.style.justifyContent = 'space-between';
+                    modalHeader.style.alignItems = 'center';
+                    modalHeader.style.padding = '15px 20px';
+                    modalHeader.style.borderBottom = '1px solid #eee';
+                    
+                    const fileTitle = document.createElement('h3');
+                    fileTitle.textContent = filename;
+                    fileTitle.style.margin = '0';
+                    fileTitle.style.padding = '0';
+                    fileTitle.style.fontWeight = '500';
+                    
+                    const closeButton = document.createElement('button');
+                    closeButton.innerHTML = '&times;';
+                    closeButton.style.background = 'none';
+                    closeButton.style.border = 'none';
+                    closeButton.style.fontSize = '24px';
+                    closeButton.style.cursor = 'pointer';
+                    closeButton.style.padding = '0 10px';
+                    closeButton.style.fontWeight = 'bold';
+                    closeButton.onclick = function() {
                         fileViewerModal.style.display = 'none';
+                    };
+                    
+                    modalHeader.appendChild(fileTitle);
+                    modalHeader.appendChild(closeButton);
+                    
+                    // Create file content area
+                    const fileContent = document.createElement('div');
+                    fileContent.style.overflow = 'auto';
+                    fileContent.style.padding = '20px';
+                    fileContent.style.flexGrow = '1';
+                    fileContent.style.fontFamily = 'monospace';
+                    fileContent.style.whiteSpace = 'pre';
+                    fileContent.style.fontSize = '13px';
+                    fileContent.style.backgroundColor = '#1e1e1e';
+                    fileContent.style.color = '#f8f8f2';
+                    
+                    // Show loading indicator
+                    const loadingIndicator = document.createElement('div');
+                    loadingIndicator.style.textAlign = 'center';
+                    loadingIndicator.style.padding = '20px';
+                    loadingIndicator.innerHTML = `
+                        <div style="margin: 20px 0;">
+                            <div style="width: 40px; height: 40px; border: 3px solid rgba(0, 181, 170, 0.3); border-radius: 50%; border-top-color: var(--dataiku-primary); animation: spin 1s linear infinite; margin: 0 auto;"></div>
+                        </div>
+                        <p style="color: #f8f8f2; margin-top: 15px;">Processing ${formatBytes(content.length)}...</p>
+                    `;
+                    fileContent.appendChild(loadingIndicator);
+                    
+                    // Create a pre element for code
+                    const preElement = document.createElement('pre');
+                    preElement.style.margin = '0';
+                    preElement.style.padding = '0';
+                    preElement.style.overflow = 'visible';
+                    preElement.style.backgroundColor = 'transparent';
+                    preElement.style.display = 'none'; // Initially hidden while loading
+                    
+                    // Create code element
+                    const codeElement = document.createElement('code');
+                    
+                    // Determine language for syntax highlighting
+                    let language = 'plaintext';
+                    if (filename.endsWith('.json')) {
+                        language = 'json';
+                    } else if (filename.endsWith('.log') || 
+                            filename === 'backend.log' || 
+                            filename === 'fmmain.log' || 
+                            filename === 'supervisord.log' ||
+                            filename === 'output.log') {
+                        language = 'log4j'; // Use custom log4j highlighter for log files
+                    } else if (filename.endsWith('.sh') || filename.endsWith('.bash')) {
+                        language = 'bash';
+                    } else if (filename.endsWith('.py')) {
+                        language = 'python';
+                    } else if (filename.endsWith('.txt') || filename === 'diag.txt') {
+                        language = 'bash'; // Use bash for all txt files as requested
+                    } else if (filename.endsWith('.html') || filename.endsWith('.htm')) {
+                        language = 'html';
+                    } else if (filename.endsWith('.css')) {
+                        language = 'css';
+                    } else if (filename.endsWith('.js')) {
+                        language = 'javascript';
+                    } else if (filename.endsWith('.xml')) {
+                        language = 'xml';
+                    } else if (filename.endsWith('.yml') || filename.endsWith('.yaml')) {
+                        language = 'yaml';
+                    } else if (filename.endsWith('.md')) {
+                        language = 'markdown';
+                    } else if (filename.endsWith('.conf')) {
+                        language = 'nginx';
                     }
-                });
-                
-                // Close when clicking outside the modal content
-                fileViewerModal.addEventListener('click', function(e) {
-                    if (e.target === fileViewerModal) {
-                        fileViewerModal.style.display = 'none';
-                    }
-                });
+                    
+                    codeElement.className = `language-${language} hljs`;
+                    
+                    // Add a data attribute to help debug
+                    codeElement.setAttribute('data-language', language);
+                    
+                    preElement.appendChild(codeElement);
+                    fileContent.appendChild(preElement);
+                    
+                    // Create footer with buttons
+                    const modalFooter = document.createElement('div');
+                    modalFooter.style.display = 'flex';
+                    modalFooter.style.justifyContent = 'space-between';
+                    modalFooter.style.padding = '15px 20px';
+                    modalFooter.style.borderTop = '1px solid #eee';
+                    
+                    // Add download button to footer
+                    const downloadButton = document.createElement('button');
+                    downloadButton.className = 'display-log-btn';
+                    downloadButton.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 5px;"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg> Download File';
+                    downloadButton.onclick = () => {
+                        this.downloadFile(filename, content);
+                    };
+                    
+                    // Line counts and information
+                    const fileInfo = document.createElement('div');
+                    fileInfo.style.color = '#6c757d';
+                    fileInfo.style.fontSize = '14px';
+                    fileInfo.textContent = `${content.split('\n').length.toLocaleString()} lines`;
+                    
+                    modalFooter.appendChild(fileInfo);
+                    modalFooter.appendChild(downloadButton);
+                    
+                    // Assemble the modal
+                    modalContent.appendChild(modalHeader);
+                    modalContent.appendChild(fileContent);
+                    modalContent.appendChild(modalFooter);
+                    fileViewerModal.appendChild(modalContent);
+                    
+                    // Add keyboard event listener to close on ESC key
+                    document.addEventListener('keydown', function(e) {
+                        if (e.key === 'Escape') {
+                            fileViewerModal.style.display = 'none';
+                        }
+                    });
+                    
+                    // Close when clicking outside the modal content
+                    fileViewerModal.addEventListener('click', function(e) {
+                        if (e.target === fileViewerModal) {
+                            fileViewerModal.style.display = 'none';
+                        }
+                    });
+                    
+                                        // Process the file content in the next cycle
+                    setTimeout(() => {
+                        // Configure file size thresholds
+                        const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
+                        const MAX_DISPLAY_SIZE = 5 * 1024 * 1024; // 5MB limit for very large files
+                        
+                        let displayContent = content;
+                        let wasTruncated = false;
+                        let isLargeFile = content.length > LARGE_FILE_THRESHOLD;
+                        
+                        // For large files, use truncation approach (beginning and end)
+                        if (isLargeFile) {
+                            // Get first 2.5MB and last 2.5MB with a note in between
+                            const firstHalf = content.substring(0, MAX_DISPLAY_SIZE / 2);
+                            const lastHalf = content.substring(content.length - MAX_DISPLAY_SIZE / 2);
+                            displayContent = firstHalf + 
+                                '\n\n...\n[Content truncated for browser performance, ' + 
+                                formatBytes(content.length - MAX_DISPLAY_SIZE) + ' omitted]\n...\n\n' + 
+                                lastHalf;
+                            wasTruncated = true;
+                            
+                            // Show truncation warning
+                            fileInfo.textContent += ' (truncated for display)';
+                        }
+                        
+                        // Set initial content and apply highlighting
+                        codeElement.textContent = displayContent;
+                        
+                        // Set content and apply syntax highlighting
+                        codeElement.textContent = displayContent;
+                        
+                        // Simple and direct highlighting approach
+                        setTimeout(() => {
+                            try {
+                                // Apply highlighting
+                                hljs.highlightElement(codeElement);
+                                
+                                console.log(`Highlighted ${filename} using language: ${language}`);
+                            } catch (error) {
+                                console.error(`Failed to highlight: ${error}`);
+                            }
+                            
+                            // Hide the loading indicator, show the content
+                            loadingIndicator.style.display = 'none';
+                            preElement.style.display = 'block';
+                        }, 100);
+                    }, 0);
+                    
+                }, 0); // End of first setTimeout
             }
             
             parseProjects() {
