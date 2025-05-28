@@ -1369,8 +1369,8 @@
                 const cpuCoresMatch = content.match(/cpu cores\s*:\s*(\d+)/);
                 this.parsedData.cpuCores = cpuCoresMatch ? cpuCoresMatch[1] : null;
                 
-                // Extract OS info (look for "cat /etc/redhat-release" output)
-                const osMatch = content.match(/>\s*cat\s+\/etc\/redhat-release\s*\n([^\n]+)/);
+                // Extract OS info (look for "cat /etc/*-release" output from various Linux distributions)
+                const osMatch = content.match(/>\s*cat\s+\/etc\/[a-zA-Z-]*-release\s*\n([^\n]+)/);
                 this.parsedData.osInfo = osMatch ? osMatch[1].trim() : null;
                 
                 this.log(`System info - CPU cores: ${this.parsedData.cpuCores}, OS: ${this.parsedData.osInfo}`);
