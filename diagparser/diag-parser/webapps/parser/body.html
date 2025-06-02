@@ -4814,19 +4814,17 @@
                         new Chart(ctx, {
                             type: 'pie',
                             data: {
-                                labels: ['Used', 'Free', 'Available', 'Buffers/Cache'],
+                                labels: ['Used', 'Free', 'Buffers/Cache'],
                                 datasets: [{
-                                    data: [usedMemory, freeMemory, availableMemory, buffersMemory],
+                                    data: [usedMemory, freeMemory, buffersMemory],
                                     backgroundColor: [
                                         'rgba(255, 59, 48, 0.7)',   // Red for used
                                         'rgba(52, 199, 89, 0.7)',   // Green for free
-                                        'rgba(255, 204, 0, 0.7)',   // Yellow for available
                                         'rgba(0, 122, 255, 0.7)'    // Blue for buffers/cache
                                     ],
                                     borderColor: [
                                         'rgba(255, 59, 48, 1)',
                                         'rgba(52, 199, 89, 1)',
-                                        'rgba(255, 204, 0, 1)',
                                         'rgba(0, 122, 255, 1)'
                                     ],
                                     borderWidth: 1
@@ -4844,7 +4842,7 @@
                                             label: function(context) {
                                                 const value = context.raw;
                                                 const formattedValue = formatMemory(value);
-                                                const percentage = Math.round((value / (usedMemory + freeMemory + availableMemory + buffersMemory)) * 100);
+                                                const percentage = Math.round((value / (usedMemory + freeMemory + buffersMemory)) * 100);
                                                 return `${context.label}: ${formattedValue} (${percentage}%)`;
                                             }
                                         }
