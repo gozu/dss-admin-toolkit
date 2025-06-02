@@ -4943,10 +4943,11 @@
                 
                 // Use all connections for the chart and table
                 for (const [type, count] of allConnections) {
-                    labels.push(type);
+                    // Truncate connection name to 16 characters max
+                    labels.push(type.length > 16 ? type.substring(0, 16) + '...' : type);
                     data.push(count);
                     
-                    // Add to the summary table
+                    // Add to the summary table (use original full name in table)
                     const row = document.createElement('tr');
                     const typeCell = document.createElement('td');
                     typeCell.innerHTML = `<strong>${type}</strong>`;
@@ -5015,7 +5016,8 @@
                                             label: function(context) {
                                                 const value = context.raw;
                                                 const percentage = Math.round((value / totalAllConnections) * 100);
-                                                return `${context.label}: ${value} (${percentage}%)`;
+                                                const fullName = sortedConnections[context.dataIndex][0]; // Use sortedConnections array
+                                                return `${fullName}: ${value} (${percentage}%)`;
                                             }
                                         }
                                     }
