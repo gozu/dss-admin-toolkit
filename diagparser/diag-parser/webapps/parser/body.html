@@ -4927,11 +4927,11 @@
                 const sortedConnections = Object.entries(this.parsedData.connections)
                     .sort((a, b) => b[1] - a[1]);
                 
-                // Take only the top 10 connections
-                const topConnections = sortedConnections.slice(0, 10);
+                // Use all connections instead of just top 10
+                const allConnections = sortedConnections;
                         
-                // Update title to indicate we're showing the top 10
-                title.textContent = `Connection Types (Top 10 of ${sortedConnections.length})`;
+                // Update title to show all connections
+                title.textContent = `Connection Types (${sortedConnections.length} total)`;
                 
                 // Calculate total (for all connections)
                 let totalAllConnections = 0;
@@ -4939,25 +4939,10 @@
                     totalAllConnections += count;
                 }
                 
-                // Calculate total (for top 10 only)
-                let totalTop10Connections = 0;
-                for (const [type, count] of topConnections) {
-                    totalTop10Connections += count;
-                }
+                // Remove the subtitle showing percentage since we're showing all
                 
-                // Add subtitle showing percentage of total
-                const percentageShown = Math.round((totalTop10Connections / totalAllConnections) * 100);
-                const subtitle = document.createElement('div');
-                subtitle.style.textAlign = 'center';
-                subtitle.style.marginTop = '-15px';
-                subtitle.style.marginBottom = '10px';
-                subtitle.style.color = '#6c757d';
-                subtitle.style.fontSize = '14px';
-                subtitle.textContent = `Showing top 10 types (${percentageShown}% of all connections)`;
-                chartContainer.insertBefore(subtitle, canvasContainer);
-                
-                // Use only top 10 for the chart and table
-                for (const [type, count] of topConnections) {
+                // Use all connections for the chart and table
+                for (const [type, count] of allConnections) {
                     labels.push(type);
                     data.push(count);
                     
