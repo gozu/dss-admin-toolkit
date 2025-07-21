@@ -1468,12 +1468,9 @@
                 }
                 
                 if (generalSettings.ssoSettings) {
-                    // Check if SSO is configured by looking for protocol and samlSPParams
-                    const isSSOConfigured = generalSettings.ssoSettings.protocol && 
-                                          (generalSettings.ssoSettings.samlSPParams || 
-                                           generalSettings.ssoSettings.oidcSPParams);
+                    const isSSOConfigured = generalSettings.ssoSettings.enabled;
                     
-                    // Set SSO status - consider it enabled if protocol and parameters exist
+                    // Set SSO status
                     authSettings['SSO Authentication'] = isSSOConfigured ? 
                         `Enabled (${generalSettings.ssoSettings.protocol})` : 'Disabled';
                     
