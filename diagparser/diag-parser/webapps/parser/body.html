@@ -1081,7 +1081,8 @@
                     'run/fmmain.log',
                     'run/supervisord.log',
                     'run/ipython.log',
-                    'bin/env-default.sh'
+                    'bin/env-default.sh',
+                    'bin/env-site.sh'
                 ];
 
                 this.log("Files to extract with correct paths:", filesToExtract.map(f => configRoot + f));
@@ -2648,7 +2649,8 @@
                     { path: this.dsshome + 'run/backend.log', label: this.findFile(this.dsshome + 'run/backend.log')?.split('/')?.pop() || 'backend.log' },
                     { path: this.dsshome + 'run/supervisord.log', label: 'supervisord.log' },
                     { path: this.dsshome + 'run/ipython.log', label: 'ipython.log' },
-                    { path: this.dsshome + 'bin/env-default.sh', label: 'env-default.sh' }
+                    { path: this.dsshome + 'bin/env-default.sh', label: 'env-default.sh' },
+                    { path: this.dsshome + 'bin/env-site.sh', label: 'env-site.sh' }
                 ];
                 
                 // Create download buttons container (positioned at the top of info panel)
