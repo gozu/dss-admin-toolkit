@@ -1071,6 +1071,7 @@
 
                 // Unified list of files to extract (relative to configRoot)
                 const filesToExtract = [
+                    'install.ini',
                     'config/connections.json',
                     'config/general-settings.json',
                     'config/license.json',
@@ -2638,6 +2639,7 @@
                 // Define the files to add download buttons for
                 const filesToDownload = [
                     { path: 'diag.txt', label: 'diag.txt' },
+                    { path: this.dsshome + 'install.ini', label: 'install.ini' },
                     { path: this.dsshome + 'config/connections.json', label: 'connections.json' },
                     { path: this.dsshome + 'config/general-settings.json', label: 'general-settings.json' },
                     { path: this.dsshome + 'config/license.json', label: 'license.json' },
