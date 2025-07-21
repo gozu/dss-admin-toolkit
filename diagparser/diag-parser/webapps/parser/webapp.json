@@ -13,7 +13,5 @@
     
     "params": [],
     
-    "roles": [
-        {"type": "ADMIN_DASHBOARD"}
-    ]
+    "roles": []
 }
