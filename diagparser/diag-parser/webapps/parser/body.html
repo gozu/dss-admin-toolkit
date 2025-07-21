@@ -1384,7 +1384,7 @@
                     // Extract enabled settings
                     this.parsedData.enabledSettings = {};
                     for (const [key, value] of Object.entries(data)) {
-                        if (key.includes('enabled') && typeof value !== 'object') {
+                        if (typeof value !== 'object' && (value === true || value === false)) {
                             this.parsedData.enabledSettings[key] = value;
                         }
                     }
