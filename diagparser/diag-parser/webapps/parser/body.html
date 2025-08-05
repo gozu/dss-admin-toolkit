@@ -3349,7 +3349,7 @@
                     if (id === 'enabledSettings') {
                         const enabled = value === 'true';
                         valCell.textContent = enabled ? 'Yes' : 'No';
-                        valCell.className = enabled ? 'true' : 'false';
+                        // valCell.className = enabled ? 'true' : 'false';
                     } else if (typeof value === 'object' && value !== null && value.truncate === true) {
                         // Handle truncated values with tooltip
                         valCell.style.position = 'relative';
