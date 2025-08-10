@@ -1,0 +1,634 @@
+/* Styles extracted from body.html */
+
+:root {
+  --dataiku-primary: #00b5aa;
+  --dataiku-primary-dark: #009990;
+  --dataiku-light: #f8f9fa;
+  --dataiku-dark: #2c3e50;
+  --border-radius: 10px;
+  --shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  padding: 0;
+  margin: 0;
+  background-color: #f8f9fa;
+  color: var(--dataiku-dark);
+  line-height: 1.5;
+}
+
+.header {
+  text-align: center;
+  padding: 20px 20px;
+  background: linear-gradient(to bottom, white, #f8f9fa);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.logo {
+  max-width: 200px;
+  margin: 0 auto 0px;
+}
+
+.header h1 {
+  margin-top: -5px;
+  margin-bottom: 10px;
+}
+
+.container {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 30px 20px;
+}
+
+.upload-section {
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 30px;
+  box-shadow: var(--shadow);
+  margin-bottom: 30px;
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.upload-section h2 {
+  margin-top: 0;
+  color: var(--dataiku-dark);
+  font-weight: 500;
+}
+
+.file-input-container {
+  margin: 30px auto;
+  position: relative;
+  width: 300px;
+}
+
+#file-input {
+  display: none;
+}
+
+.file-input-label {
+  display: inline-block;
+  padding: 12px 24px;
+  background-color: var(--dataiku-primary);
+  color: white;
+  border-radius: 25px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+  box-shadow: 0 2px 5px rgba(0, 181, 170, 0.3);
+}
+
+.file-input-label:hover {
+  background-color: var(--dataiku-primary-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 181, 170, 0.4);
+}
+
+.progress-container {
+  margin-top: 20px;
+  display: none;
+  text-align: center;
+}
+
+.progress-container p {
+  margin-top: 15px;
+  color: var(--dataiku-dark);
+}
+
+.results-section {
+  display: none;
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 30px;
+  box-shadow: var(--shadow);
+}
+
+#back-btn {
+  background-color: var(--dataiku-primary);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 25px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+  box-shadow: 0 2px 5px rgba(0, 181, 170, 0.3);
+}
+
+#back-btn:hover {
+  background-color: var(--dataiku-primary-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 181, 170, 0.4);
+}
+
+.info-panel {
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 25px;
+  box-shadow: var(--shadow);
+  margin-bottom: 30px;
+  border-left: 4px solid var(--dataiku-primary);
+}
+
+.info-panel h3 {
+  margin-top: 0;
+  color: var(--dataiku-primary);
+  font-weight: 500;
+  margin-bottom: 15px;
+}
+
+.info-item {
+  margin: 10px 0;
+  display: flex;
+}
+
+.info-item strong {
+  min-width: 150px;
+  font-weight: 500;
+}
+
+/* Masonry grid styles */
+.grid {
+  width: 100%;
+}
+
+.grid-sizer,
+.grid-item {
+  width: 48%;
+  margin-bottom: 20px;
+}
+
+.gutter-sizer {
+  width: 4%;
+}
+
+/* For 16:10 aspect ratio and other screens */
+@media (max-width: 1200px) {
+  .grid-sizer,
+  .grid-item {
+    width: 48%;
+  }
+}
+
+@media (max-width: 768px) {
+  .grid-sizer,
+  .grid-item {
+    width: 100%;
+  }
+  .gutter-sizer {
+    width: 0;
+  }
+}
+
+.grid-item.wide {
+  width: 100%;
+}
+
+.grid-item.half-width {
+  width: 48%;
+}
+
+.table-container {
+  background-color: white;
+  border-radius: var(--border-radius);
+  padding: 25px;
+  box-shadow: var(--shadow);
+  overflow-x: visible;
+  transition: all 0.3s ease;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+/* Limit long lists inside plugins/code envs/projects when details are expanded */
+.table-scroll {
+  max-height: 630px; /* ~15 rows x ~42px; stable across tables */
+  overflow-y: auto;   /* single scrollbar on wrapper */
+  border: 1px solid #eef0f2;
+  border-radius: 6px;
+}
+
+/* Make only the table body scroll inside scroll wrappers for consistent header */
+/* Keep standard table layout to preserve column alignment; sticky th works within scroll container */
+
+.table th,
+.table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #eef0f2;
+  text-align: left;
+}
+
+.table th {
+  background-color: #f8f9fa;
+  font-weight: 500;
+  color: #6c757d;
+  position: sticky;
+  top: 0;
+}
+
+.table tr:hover {
+  background-color: #f8f9fa;
+}
+
+.table-title {
+  margin-top: 0;
+  margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #eef0f2;
+  color: var(--dataiku-dark);
+  font-weight: 700;
+  font-size: 1.2em;
+  text-align: center;
+}
+
+.pro-tip-box {
+  background-color: rgba(0, 181, 170, 0.1);
+  border: 1px solid rgba(0, 181, 170, 0.3);
+  border-radius: 8px;
+  padding: 15px;
+  margin: 15px 0;
+  color: var(--dataiku-primary-dark);
+}
+
+.pro-tip-box h5 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: var(--dataiku-primary);
+}
+
+.pro-tip-box ul {
+  margin: 10px 0;
+  padding-left: 25px;
+}
+
+.pro-tip-box li {
+  margin-bottom: 5px;
+}
+
+.debug-panel {
+  margin-bottom: 25px;
+  background-color: #f8f9fa;
+  border-radius: var(--border-radius);
+  border: 1px solid #e9ecef;
+  padding: 15px;
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: #6c757d;
+  padding: 5px 0;
+}
+
+.debug-panel summary:hover {
+  color: var(--dataiku-primary);
+}
+
+.table-filters {
+  margin-bottom: 25px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 5px 0;
+}
+
+.filter-btn {
+  background-color: #f8f9fa;
+  border: 1px solid #e9ecef;
+  color: var(--dataiku-dark);
+  padding: 8px 16px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.filter-btn:hover {
+  background-color: #f1f3f5;
+}
+
+.filter-btn.active {
+  background-color: var(--dataiku-primary);
+  color: white;
+  border-color: var(--dataiku-primary);
+}
+
+.table-container-hidden {
+  display: none;
+}
+
+.search-box {
+  padding: 10px 16px;
+  margin-bottom: 20px;
+  width: 100%;
+  border: 1px solid #e9ecef;
+  border-radius: 20px;
+  font-size: 14px;
+  background-color: #f8f9fa;
+  transition: all 0.2s;
+}
+
+.search-box:focus {
+  outline: none;
+  border-color: var(--dataiku-primary);
+  box-shadow: 0 0 0 3px rgba(0, 181, 170, 0.1);
+}
+
+.true {
+  color: #34c759;
+  font-weight: 500;
+}
+
+.false {
+  color: #ff3b30;
+}
+
+/* Log display styling */
+.log-container {
+  background-color: #1e1e1e;
+  color: #f8f8f2;
+  font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+  padding: 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: nowrap;
+  max-height: 600px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.log-entry {
+  padding: 2px 0;
+  line-height: 1.4;
+}
+
+.log-header {
+  color: #66d9ef;
+  font-weight: bold;
+  padding: 10px 0;
+}
+
+.log-timestamp {
+  color: #a6e22e;
+}
+
+.log-info .log-level {
+  color: #66d9ef;
+}
+
+.log-warn .log-level {
+  color: #f8ac59;
+}
+
+.log-error .log-level,
+.log-fatal .log-level,
+.log-severe .log-level {
+  color: #f92672;
+  font-weight: bold;
+}
+
+.log-debug .log-level {
+  color: #75715e;
+}
+
+.log-trace .log-level {
+  color: #ae81ff;
+}
+
+.log-error-block {
+  margin-bottom: 20px;
+  border-bottom: 1px dashed #3e3e3e;
+  padding-bottom: 15px;
+}
+
+/* New CSS classes for added highlight patterns */
+.hljs-number {
+  color: #ae81ff;
+}
+
+.hljs-regexp {
+  color: #fd971f;
+}
+
+.hljs-title {
+  color: #a6e22e;
+  font-weight: bold;
+}
+
+.hljs-comment {
+  color: #75715e;
+  font-style: italic;
+}
+
+.download-buttons-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.download-button-container {
+  display: inline-flex;
+  margin: 5px;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.download-btn {
+  margin: 0;
+  background-color: #6c757d;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.download-btn.view-btn {
+  border-radius: 20px 0 0 20px;
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  background-color: var(--dataiku-primary);
+}
+
+.download-btn:not(.view-btn) {
+  border-radius: 0 20px 20px 0;
+  background-color: var(--dataiku-primary-dark);
+}
+
+.file-label {
+  margin-left: 8px;
+  font-size: 14px;
+  color: #495057;
+}
+
+.file-button-wrapper {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background-color: rgba(0, 181, 170, 0.05);
+  border: 1px solid rgba(0, 181, 170, 0.1);
+  min-height: 40px;
+}
+
+.display-log-btn {
+  margin: 0 auto 15px;
+  display: block;
+  background-color: var(--dataiku-primary);
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.display-log-btn:hover {
+  background-color: var(--dataiku-primary-dark);
+}
+
+.icon-left {
+  margin-right: 5px;
+}
+
+/* Header badges and containers */
+.beta-badge {
+  background: #00b5aa;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  vertical-align: super;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.back-btn-container {
+  display: none;
+  margin-top: 15px;
+}
+
+/* Informational banners */
+.info-banner {
+  margin: 8px 0;
+  font-size: 13px;
+  background: #f0faff;
+  color: #0366d6;
+  padding: 8px 12px;
+  border-radius: 4px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+  border: 1px solid #cce5ff;
+}
+
+.info-banner__title {
+  margin-bottom: 5px;
+}
+
+.info-banner__title--emph {
+  font-weight: bold;
+  color: #0366d6;
+}
+
+.info-banner__privacy-emph {
+  font-weight: bold;
+  color: #00827d;
+}
+
+.info-banner--warning {
+  margin-top: 15px;
+  color: #755600;
+  background-color: rgba(255, 195, 0, 0.1);
+  padding: 10px;
+  border-radius: 5px;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+  border: 1px solid rgba(255, 195, 0, 0.3);
+}
+
+/* Utility spacing and display helpers used in modal loader */
+.text-center { text-align: center; }
+.rounded-10 { border-radius: 10px; }
+.p-20 { padding: 20px; }
+.m-20-0 { margin: 20px 0; }
+.mt-15 { margin-top: 15px; }
+
+/* Upload progress pacman loader container and theme */
+.loader-container {
+  width: 100px;
+  height: 100px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0 auto;
+}
+
+.pacman > div:nth-child(1),
+.pacman > div:nth-child(2) {
+  border-top-color: #00b5aa;
+  border-left-color: #00b5aa;
+  border-bottom-color: #00b5aa;
+}
+.pacman > div:nth-child(3),
+.pacman > div:nth-child(4),
+.pacman > div:nth-child(5) {
+  background-color: #00b5aa;
+}
+
+/* Modal content styling */
+.modal-content {
+  background-color: #fff;
+  border-radius: 10px;
+  width: 90%;
+  max-width: 1200px;
+  max-height: 90%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 5px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px 20px;
+  border-bottom: 1px solid #eee;
+}
+
+/* Inline loader spinner used in file viewer modals */
+.loading-spinner {
+  display: inline-block;
+  width: 50px;
+  height: 50px;
+  border: 3px solid rgba(0, 181, 170, 0.3);
+  border-radius: 50%;
+  border-top-color: var(--dataiku-primary);
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+

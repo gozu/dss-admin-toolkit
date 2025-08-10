@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dataiku Diag Diff</title>
+  <script src="https://cdn.jsdelivr.net/npm/@zip.js/zip.js/dist/zip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <link rel="stylesheet" href="diff.css" />
+</head>
+<body>
+  <div class="header">
+    <img src="https://cdn.downloads.dataiku.com/public/mediakit/logos/Dataiku_logo_straight_COLOR.svg" alt="Dataiku Logo" class="logo" />
+    <h1>Diag Diff <sup class="beta-badge">BETA</sup></h1>
+  </div>
+
+  <div class="container">
+    <div class="upload-section" id="upload-section">
+      <h2>Select two diagnostic ZIP files</h2>
+      <div class="file-input-container">
+        <input type="file" id="file-input-a" accept=".zip" />
+        <label for="file-input-a" class="file-input-label">Choose first ZIP</label>
+      </div>
+      <div class="file-input-container">
+        <input type="file" id="file-input-b" accept=".zip" />
+        <label for="file-input-b" class="file-input-label">Choose second ZIP</label>
+      </div>
+      <div class="progress-container" id="progress-container" style="display:none">
+        <div class="loader-container">
+          <div class="loader-inner pacman">
+            <div></div><div></div><div></div><div></div><div></div>
+          </div>
+        </div>
+        <p>Processing...</p>
+      </div>
+    </div>
+
+    <div class="results-section" id="results-section" style="display:none">
+      <div class="info-panel">
+        <h3>Comparison Information</h3>
+        <div class="info-item"><strong>File A:</strong> <span id="file-a-name">-</span></div>
+        <div class="info-item"><strong>File B:</strong> <span id="file-b-name">-</span></div>
+      </div>
+
+      <div class="table-filters" id="table-filters">
+        <button class="filter-btn active" data-filter="all">All Tables</button>
+      </div>
+
+      <div id="table-containers"></div>
+    </div>
+  </div>
+
+  <script src="diff.js"></script>
+</body>
+</html>
+
+
