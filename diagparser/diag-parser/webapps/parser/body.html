@@ -2131,7 +2131,7 @@
                             
                             this.parser.createTable(
                                 'logStats',
-                                '',
+                                'Parser Debug Info',
                                 this.parsedData.logStats,
                                 logStatsTable,
                                 this.tableFiltersDiv
@@ -2158,12 +2158,6 @@
                         });
                         logHeader.appendChild(displayLogBtn);
                         
-                        const logContainer = document.createElement('div');
-                        logContainer.className = 'log-container';
-                logContainer.style.display = 'block';
-                        logContainer.innerHTML = this.parsedData.formattedLogErrors;
-                        logHeader.appendChild(logContainer);
-                        
                         const proTipBox = document.createElement('div');
                         proTipBox.className = 'pro-tip-box';
                         proTipBox.innerHTML = `
@@ -2176,6 +2170,13 @@
                                 <li>I try to filter out duplicate error patterns when possible but it's highly experimental</li>
                             </ul>
                         `;
+                        logHeader.appendChild(proTipBox);
+                        
+                        const logContainer = document.createElement('div');
+                        logContainer.className = 'log-container';
+                logContainer.style.display = 'block';
+                        logContainer.innerHTML = this.parsedData.formattedLogErrors;
+                        logHeader.appendChild(logContainer);
                         logHeader.appendChild(proTipBox);
                         
                         logGroupContainer.appendChild(logHeader);
@@ -2254,17 +2255,27 @@
                 const filterButtons = document.querySelectorAll('.filter-btn');
                 filterButtons.forEach(btn => {
                     btn.addEventListener('click', (e) => {
-                        this.parser.uiStateManager.filterTables(e.target.dataset.filter);
-                        filterButtons.forEach(btn => btn.classList.remove('active'));
-                        e.target.classList.add('active');
-                        
-                        setTimeout(() => {
-                            if (this.parser.masonryGrid) {
-                                this.parser.masonryGrid.layout();
-                            }
-                        }, 100);
-                    });
-                });
+                        const clickedFilter = e.target.dataset.filter;
+                        const isActive = e.target.classList.contains('active');
+                        const newFilter = isActive ? 'all' : clickedFilter;
+
+                        this.parser.uiStateManager.filterTables(newFilter);
+
+                        filterButtons.forEach(b => b.classList.remove('active'));
+                        const allBtn = document.querySelector('.filter-btn[data-filter="all"]');
+                        if (newFilter === 'all' && allBtn) {
+                            allBtn.classList.add('active');
+                        } else {
+                            e.target.classList.add('active');
+                        }
+                         
+                         setTimeout(() => {
+                             if (this.parser.masonryGrid) {
+                                 this.parser.masonryGrid.layout();
+                             }
+                         }, 100);
+                     });
+                 });
             }
             
             hideProgressContainer() {
@@ -2337,9 +2348,8 @@
                 // Clear debug logs
                 this.parser.debugLogs = [];
                 
-                // Display file size info
-                const fileSizeGB = file.size / (1024 * 1024 * 1024);
-                this.parser.log(`Starting to process diagnostic file: ${file.name} (${fileSizeGB.toFixed(2)} GB)`);
+                // Display file info
+                this.parser.log(`Starting to process diagnostic file: ${file.name}`);
                 
                 document.getElementById('progress-container').style.display = 'block';
                 
@@ -2382,17 +2392,7 @@
                         }, 100);
                 } catch (error) {
                     this.parser.log(`Error processing ZIP file: ${error.message}`, error);
-                    
-                    // Check if error might be related to file size
-                    if (fileSizeGB > 1.0 || 
-                        error.message.includes('memory') || 
-                        error.message.includes('heap') || 
-                        error.message.includes('allocation') ||
-                        error.message.includes('out of memory')) {
-                        this.parser.errorDisplayHandler.showFileSizeError(file.size);
-                    } else {
-                        alert('Error processing the file: ' + error.message + '\nSee console for details.');
-                    }
+                    alert('Error processing the file: ' + error.message + '\nSee console for details.');
                     
                     document.getElementById('progress-container').style.display = 'none';
                 } finally {
@@ -3787,31 +3787,8 @@
                     
                                         // Process the file content in the next cycle
                     setTimeout(() => {
-                        // Configure file size threshold
-                        const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
-                        
-                        let displayContent = content;
-                        let wasTruncated = false;
-                        let isLargeFile = content.length > LARGE_FILE_THRESHOLD;
-                        
-                        // For large files, just keep the last 10MB
-                        if (isLargeFile) {
-                            // Get only the last 10MB with a note indicating truncation
-                            displayContent = 
-                                '\n[Beginning of file truncated, showing only last 10MB]\n' +
-                                '...\n\n' + 
-                                content.substring(content.length - LARGE_FILE_THRESHOLD);
-                            wasTruncated = true;
-                            
-                            // Show truncation warning
-                            fileInfo.textContent += ' (showing last 10MB only)';
-                        }
-                        
-                        // Set initial content and apply highlighting
-                        codeElement.textContent = displayContent;
-                        
                         // Set content and apply syntax highlighting
-                        codeElement.textContent = displayContent;
+                        codeElement.textContent = content;
                         
                         // Simple and direct highlighting approach
                         setTimeout(() => {
@@ -4296,48 +4273,6 @@
             }
         }
 
-        class ErrorDisplayHandler {
-            constructor(parser) {
-                this.parser = parser;
-            }
-
-            showFileSizeError(fileSize) {
-                const fileSizeGB = (fileSize / (1024 * 1024 * 1024)).toFixed(2);
-                const errorContainer = document.createElement('div');
-                errorContainer.style.marginTop = '20px';
-                errorContainer.style.padding = '15px 20px';
-                errorContainer.style.backgroundColor = 'rgba(255, 59, 48, 0.1)';
-                errorContainer.style.borderRadius = '8px';
-                errorContainer.style.border = '1px solid rgba(255, 59, 48, 0.3)';
-                errorContainer.style.color = '#ff3b30';
-                errorContainer.style.textAlign = 'left';
-                errorContainer.style.maxWidth = '600px';
-                errorContainer.style.margin = '20px auto';
-                
-                errorContainer.innerHTML = `
-                    <h3 style="margin-top: 0; color: #ff3b30;">File Size Error</h3>
-                    <p>We apologize, but we couldn't process your diagnostic file (${fileSizeGB} GB).</p>
-                    <p>This browser-based tool is limited to handling files up to approximately 1.3 GB due to browser memory constraints.</p>
-                    <p>Options to consider:</p>
-                    <ul>
-                        <li>Try a smaller diagnostic file</li>
-                        <li>Use a browser with more memory allocation (Chrome typically handles larger files better)</li>
-                        <li>Contact your Dataiku representative for assistance with analyzing large diagnostic files</li>
-                    </ul>
-                `;
-                
-                // Replace progress container with error message
-                const progressContainer = document.getElementById('progress-container');
-                progressContainer.style.display = 'none';
-                
-                // Add error container after progress container
-                progressContainer.parentNode.insertBefore(errorContainer, progressContainer.nextSibling);
-                
-                // Reset file input
-                document.getElementById('file-input').value = '';
-            }
-        }
-
         class AppLifecycleManager {
             constructor(parser) {
                 this.parser = parser;
@@ -4440,9 +4375,6 @@
                 
                 // Create the UI state manager
                 this.uiStateManager = new UIStateManager(this);
-                
-                // Create the error display handler
-                this.errorDisplayHandler = new ErrorDisplayHandler(this);
                 
                 // Create the app lifecycle manager
                 this.appLifecycleManager = new AppLifecycleManager(this);
