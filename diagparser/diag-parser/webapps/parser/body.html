@@ -2099,40 +2099,12 @@
             }
             
             createLogSection() {
-                let logStatsData = null;
-                
-                if (this.parsedData.logStats && Object.keys(this.parsedData.logStats).length > 0) {
-                    logStatsData = {
-                        title: 'Log File Statistics',
-                        data: this.parsedData.logStats
-                    };
-                }
-                
-                if (logStatsData || this.parsedData.formattedLogErrors) {
+                if (this.parsedData.logStats || this.parsedData.formattedLogErrors) {
                     const logGroupContainer = document.createElement('div');
                     logGroupContainer.className = 'grid-item wide';
                     logGroupContainer.id = 'log-group';
                     
-                    if (logStatsData) {
-                        const logStatsContainer = document.createElement('div');
-                        logStatsContainer.className = 'table-container';
-                        logStatsContainer.id = 'logStats-table';
-                        
-                        this.parser.createTable(
-                            'logStats',
-                            logStatsData.title,
-                            logStatsData.data,
-                            logStatsContainer,
-                            this.tableFiltersDiv
-                        );
-                        
-                        logGroupContainer.appendChild(logStatsContainer);
-                        this.tableContainers['logStats-table'] = logStatsContainer;
-                    }
-                    
-                    if (this.parsedData.formattedLogErrors) {
-                        this.createLogErrorsSection(logGroupContainer);
-                    }
+                    this.createLogErrorsSection(logGroupContainer);
                     
                     this.grid.appendChild(logGroupContainer);
                     this.addDebugPanel(logGroupContainer);
@@ -2147,12 +2119,30 @@
                         const logFileName = this.actualLogFileName || 'log';
                         
                         const title = document.createElement('h4');
-                        title.textContent = `Log Errors (${logFileName})`;
+                        title.textContent = `Log Errors and Stats (${logFileName})`;
                         title.className = 'table-title';
                         logHeader.appendChild(title);
                         
+                        // Add log statistics table if available
+                        if (this.parsedData.logStats && Object.keys(this.parsedData.logStats).length > 0) {
+                            const logStatsTable = document.createElement('div');
+                            logStatsTable.className = 'log-stats-table';
+                            logStatsTable.style.marginBottom = '20px';
+                            
+                            this.parser.createTable(
+                                'logStats',
+                                '',
+                                this.parsedData.logStats,
+                                logStatsTable,
+                                this.tableFiltersDiv
+                            );
+                            
+                            logHeader.appendChild(logStatsTable);
+                            this.tableContainers['logStats-table'] = logStatsTable;
+                        }
+                        
                         const displayLogBtn = document.createElement('button');
-                        displayLogBtn.textContent = `Display ${logFileName} errors`;
+                        displayLogBtn.textContent = `Hide ${logFileName} errors`;
                         displayLogBtn.className = 'display-log-btn';
                         displayLogBtn.style.display = 'block';
                         displayLogBtn.style.margin = '0 auto 15px';
@@ -2168,6 +2158,12 @@
                         });
                         logHeader.appendChild(displayLogBtn);
                         
+                        const logContainer = document.createElement('div');
+                        logContainer.className = 'log-container';
+                logContainer.style.display = 'block';
+                        logContainer.innerHTML = this.parsedData.formattedLogErrors;
+                        logHeader.appendChild(logContainer);
+                        
                         const proTipBox = document.createElement('div');
                         proTipBox.className = 'pro-tip-box';
                         proTipBox.innerHTML = `
@@ -2181,12 +2177,6 @@
                             </ul>
                         `;
                         logHeader.appendChild(proTipBox);
-                        
-                        const logContainer = document.createElement('div');
-                        logContainer.className = 'log-container';
-                logContainer.style.display = 'none';
-                        logContainer.innerHTML = this.parsedData.formattedLogErrors;
-                        logHeader.appendChild(logContainer);
                         
                         logGroupContainer.appendChild(logHeader);
                         this.tableContainers['log-errors-section'] = logHeader;
