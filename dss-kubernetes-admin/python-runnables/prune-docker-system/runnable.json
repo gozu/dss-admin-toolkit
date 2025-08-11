@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "label": "Prune Docker System",
+    "description": "Checks the Docker build cache size and prunes it if a threshold is exceeded.",
+    "category": "Kubernetes Maintenance",
+    "icon": "icon-trash"
+  },
+  "impersonate": false,
+  "permissions": [
+    "ADMIN"
+  ],
+  "requiresGlobalAdmin": true,  
+  "resultType": "RESULT_TABLE",
+  "resultLabel": "Prune Docker System Results",
+  "macroRoles": [
+    {
+      "type": "PROJECT_MACROS"
+    }
+  ],
+  "runnablePython": "runnable.py",
+  "params": [
+    {
+      "name": "action",
+      "label": "Action to perform",
+      "type": "SELECT",
+      "selectChoices": [
+        {
+          "value": "check",
+          "label": "Display Cache Sizes"
+        },
+        {
+          "value": "prune",
+          "label": "Prune Docker System if needed"
+        }
+      ],
+      "defaultValue": "check"
+    },
+    {
+      "name": "threshold_gb",
+      "label": "Threshold to trigger prune (in GB)",
+      "type": "DOUBLE",
+      "description": "Docker system will be pruned if the build cache exceeds this size.",
+      "defaultValue": 1.0,
+      "visibilityCondition": "model.action == 'prune'"
+    }
+  ]
+}
