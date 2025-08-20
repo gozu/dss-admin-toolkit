@@ -1,0 +1,104 @@
+/* This file is the descriptor for the python runnable dss-k8s-admin-tasks */
+{
+    "meta": {
+        "label": "DSS Kubernetes Admin Tasks",
+        "description": "",
+        "category": "Kubernetes Maintenance",
+        "icon": "icon-wrench"
+    },
+
+    /* whether the runnable's code is untrusted */
+    "impersonate": false,
+
+
+    /* params:
+    DSS will generate a formular from this list of requested parameters.
+    Your component code can then access the value provided by users using the "name" field of each parameter.
+
+    Available parameter types include:
+    STRING, INT, DOUBLE, BOOLEAN, DATE, SELECT, TEXTAREA, DATASET, DATASET_COLUMN, MANAGED_FOLDER, PRESET and others.
+
+    For the full list and for more details, see the documentation: https://doc.dataiku.com/dss/latest/plugins/reference/params.html
+    */
+    "paramsPythonSetup": "list_clusters.py",
+    "params": [
+        /* A "SELECT" parameter is a multi-choice selector. Choices are specified using the selectChoice field*/
+        {
+            "name": "task_to_execute",
+            "label": "Tasks",
+            "type": "SELECT",
+            "selectChoices": [
+                {
+                    "value": "list_all_pods",
+                    "label": "List all pods"
+                },
+                {
+                    "value": "list_error_pods",
+                    "label": "List error pods"
+                },
+                {
+                    "value": "delete_error_pods",
+                    "label": "Delete error pods"
+                },
+                {
+                    "value": "delete_non_running_pods",
+                    "label": "Delete non-running pods"
+                },
+                {
+                    "value": "list_services",
+                    "label": "List services"
+                },
+                {
+                    "value": "list_deployments",
+                    "label": "List deployments"
+                },
+                {
+                    "value": "list_namespaces",
+                    "label": "List namespaces"
+                }
+            ]
+        },
+        {
+            "name": "k8s_cluster",
+            "label": "Kubernetes cluster",
+            "type": "SELECT",
+            "getChoicesFromPython": true
+        }
+    ],
+
+    /* list of required permissions on the project to see/run the runnable */
+    "permissions": ["ADMIN"],
+
+    /* what the code's run() returns:
+       - NONE : no result
+       - HTML : a string that is a html (utf8 encoded)
+       - FOLDER_FILE : a (folderId, path) pair to a file in a folder of this project (json-encoded)
+       - FILE : raw data (as a python string) that will be stored in a temp file by DSS
+       - URL : a url
+     */
+    "resultType": "HTML",
+
+    /* label to use when the runnable's result is not inlined in the UI (ex: for urls) */
+    "resultLabel": "my production",
+
+    /* for FILE resultType, the extension to use for the temp file */
+    "extension": "txt",
+
+    /* for FILE resultType, the type of data stored in the temp file */
+    "mimeType": "text/plain",
+
+    /* Macro roles define where this macro will appear in DSS GUI. They are used to pre-fill a macro parameter with context.
+
+       Each role consists of:
+        - type: where the macro will be shown
+            * when selecting DSS object(s): DATASET, DATASETS, API_SERVICE, API_SERVICE_VERSION, BUNDLE, VISUAL_ANALYSIS, SAVED_MODEL, MANAGED_FOLDER
+            * in the global project list: PROJECT_MACROS
+        - targetParamsKey(s): name of the parameter(s) that will be filled with the selected object
+    */
+    "macroRoles": [
+     /* {
+            "type": "DATASET",
+            "targetParamsKey": "input_dataset"
+        } */
+    ]
+}
