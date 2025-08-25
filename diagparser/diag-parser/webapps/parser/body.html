@@ -11,6 +11,8 @@
     <!-- Add highlight.js for syntax highlighting -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/monokai-sublime.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <!-- Add js-yaml for YAML parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
     
     <!-- Custom log4j language definition for logs -->
     <script>
@@ -333,7 +335,7 @@
                     const enabledUsers = data.users.filter(user => user.enabled === true);
                     
                     userStats['Total Users'] = allUsers.length;
-                    userStats['Active Users'] = enabledUsers.length;
+                    userStats['Enabled Users'] = enabledUsers.length;
                     
                     // Count user profiles (only enabled users)
                     const profileCounts = {};
@@ -383,6 +385,210 @@
                 }
                 
                 return { connections: connectionTypes };
+            }
+        }
+
+        class ClustersParser extends BaseTextParser {
+            parse(extractedFiles, dsshome) {
+                const clusterConfigs = {};
+                const clusterPattern = new RegExp(`^${dsshome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}clusters/([^/]+)/exec/\\1_config\\.yaml$`);
+                const kubeConfigPattern = new RegExp(`^${dsshome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}clusters/([^/]+)/exec/kube_config$`);
+                const startLogPattern = new RegExp(`^${dsshome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}clusters/([^/]+)/log/start\\.log$`);
+                const stopLogPattern = new RegExp(`^${dsshome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}clusters/([^/]+)/log/stop\\.log$`);
+                
+                // Parse main config files and logs
+                for (const filename in extractedFiles) {
+                    const yamlMatch = filename.match(clusterPattern);
+                    if (yamlMatch) {
+                        const clusterName = yamlMatch[1];
+                        const clusterInfo = this.parseClusterYAML(extractedFiles[filename], clusterName);
+                        if (clusterInfo) clusterConfigs[clusterName] = clusterInfo;
+                    }
+                
+                    const kubeMatch = filename.match(kubeConfigPattern);
+                    if (kubeMatch) {
+                        const clusterName = kubeMatch[1];
+                        const kubeInfo = this.parseKubeConfig(extractedFiles[filename]);
+                        if (kubeInfo) {
+                            clusterConfigs[clusterName] = clusterConfigs[clusterName] 
+                                ? { ...clusterConfigs[clusterName], ...kubeInfo }
+                                : { name: clusterName, ...kubeInfo };
+                        }
+                    }
+                    
+                    const startLogMatch = filename.match(startLogPattern);
+                    if (startLogMatch) {
+                        const clusterName = startLogMatch[1];
+                        const startInfo = this.parseStartLog(extractedFiles[filename]);
+                        if (startInfo) {
+                            clusterConfigs[clusterName] = clusterConfigs[clusterName] 
+                                ? { ...clusterConfigs[clusterName], ...startInfo }
+                                : { name: clusterName, ...startInfo };
+                        }
+                    }
+                    
+                    const stopLogMatch = filename.match(stopLogPattern);
+                    if (stopLogMatch) {
+                        const clusterName = stopLogMatch[1];
+                        const stopInfo = this.parseStopLog(extractedFiles[filename]);
+                        if (stopInfo) {
+                            clusterConfigs[clusterName] = clusterConfigs[clusterName] 
+                                ? { ...clusterConfigs[clusterName], ...stopInfo }
+                                : { name: clusterName, ...stopInfo };
+                        }
+                    }
+                }
+                
+                // Calculate cluster status after all logs are parsed
+                Object.values(clusterConfigs).forEach(cluster => {
+                    if (cluster.lastStartTime && cluster.lastStopTime) {
+                        cluster.status = cluster.lastStartTime > cluster.lastStopTime ? 'ON' : 'OFF';
+                    } else if (cluster.lastStartTime && !cluster.lastStopTime) {
+                        cluster.status = 'ON';
+                    } else if (!cluster.lastStartTime && cluster.lastStopTime) {
+                        cluster.status = 'OFF';
+                    } else {
+                        cluster.status = 'UNKNOWN';
+                    }
+                });
+                
+                return { clusters: Object.values(clusterConfigs) };
+            }
+            
+            parseClusterYAML(yamlContent, clusterName) {
+                try {
+                    const yaml = jsyaml.load(yamlContent);
+                    const cluster = { name: clusterName, nodeGroups: [] };
+                    
+                    // Extract metadata
+                    if (yaml.metadata) {
+                        cluster.region = yaml.metadata.region;
+                        cluster.version = yaml.metadata.version;
+                    }
+                    
+                    // Extract VPC info
+                    if (yaml.vpc?.cidr) cluster.vpcCidr = yaml.vpc.cidr;
+                    if (yaml.vpc?.subnets) cluster.subnets = yaml.vpc.subnets;
+                    
+                    // Determine networking type with minimal logic
+                    const fullyPrivate = yaml.privateCluster?.enabled;
+                    const hasPrivateNetworking = yaml.managedNodeGroups?.some(ng => ng.privateNetworking);
+                    cluster.networkType = fullyPrivate ? 'Fully Private' : hasPrivateNetworking ? 'Private' : 'Public';
+                    
+                    // Extract security groups from nodegroups
+                    const securityGroups = new Set();
+                    yaml.managedNodeGroups?.forEach(ng => {
+                        ng.securityGroups?.attachIDs?.forEach(sg => securityGroups.add(sg));
+                    });
+                    if (securityGroups.size > 0) cluster.securityGroups = Array.from(securityGroups);
+                    
+                    // Extract managed node groups
+                    if (yaml.managedNodeGroups && Array.isArray(yaml.managedNodeGroups)) {
+                        cluster.nodeGroups = yaml.managedNodeGroups.map(ng => ({
+                            name: ng.name,
+                            instanceType: ng.instanceType,
+                            desiredCapacity: ng.desiredCapacity,
+                            minSize: ng.minSize,
+                            maxSize: ng.maxSize,
+                            volumeSize: ng.volumeSize,
+                            volumeType: ng.volumeType,
+                            spot: ng.spot,
+                            labels: ng.labels || {},
+                            taints: ng.taints || []
+                        }));
+                    }
+                    
+                    cluster.nodeGroup = cluster.nodeGroups[0] || {}; // Legacy compatibility
+                    return cluster;
+                } catch (error) {
+                    console.error('Error parsing YAML:', error);
+                    return null;
+                }
+            }
+            
+            parseKubeConfig(kubeConfigContent) {
+                try {
+                    const lines = kubeConfigContent.split('\n');
+                    const kubeInfo = {};
+                    
+                    let inClusterSection = false;
+                    let inUserSection = false;
+                    let currentContext = null;
+                    
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        
+                        if (line.startsWith('current-context:')) {
+                            currentContext = line.split(':')[1].trim();
+                            kubeInfo.currentContext = currentContext;
+                        }
+                        
+                        if (line === 'clusters:') {
+                            inClusterSection = true;
+                            continue;
+                        }
+                        
+                        if (line === 'users:') {
+                            inUserSection = true;
+                            inClusterSection = false;
+                            continue;
+                        }
+                        
+                        if (line === 'contexts:' || line === 'kind:' || line === 'preferences:') {
+                            inClusterSection = false;
+                            inUserSection = false;
+                            continue;
+                        }
+                        
+                        if (inClusterSection && line.startsWith('server:')) {
+                            kubeInfo.server = line.split('server:')[1].trim();
+                        }
+                        
+                        if (inClusterSection && line.startsWith('name:')) {
+                            const fullName = line.split('name:')[1].trim();
+                            // Extract just the cluster name before any domain suffix
+                            kubeInfo.clusterName = fullName.split('.')[0];
+                        }
+                        
+                        if (inUserSection && line.startsWith('command:')) {
+                            kubeInfo.authCommand = line.split('command:')[1].trim();
+                        }
+                        
+                        if (inUserSection && line.startsWith('apiVersion:')) {
+                            kubeInfo.authApiVersion = line.split('apiVersion:')[1].trim();
+                        }
+                    }
+                    
+                    return kubeInfo;
+                } catch (error) {
+                    console.error('Error parsing kube config:', error);
+                    return null;
+                }
+            }
+            
+            parseStartLog(logContent) {
+                return this.parseClusterLog(logContent, 'start');
+            }
+            
+            parseStopLog(logContent) {
+                return this.parseClusterLog(logContent, 'stop');
+            }
+            
+            parseClusterLog(content, type) {
+                const matches = [...content.matchAll(new RegExp(`Run ${type} on cluster.*?at (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\+\\d{4})`, 'g'))];
+                if (!matches.length) return null;
+                
+                const time = new Date(matches[matches.length - 1][1]);
+                const result = { [`last${type.charAt(0).toUpperCase() + type.slice(1)}Time`]: time };
+                
+                if (type === 'start') {
+                    const uptimeMs = Date.now() - time;
+                    const days = Math.floor(uptimeMs / 86400000);
+                    const hours = Math.floor((uptimeMs % 86400000) / 3600000);
+                    result.uptime = days > 0 ? `${days}d ${hours}h` : `${hours}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
+                }
+                
+                return result;
             }
         }
 
@@ -849,11 +1055,11 @@
                 const MAX_ERRORS = 5;
                 const LOG_LEVELS = ['\\[ERROR\\]', '\\[FATAL\\]', '\\[SEVERE\\]'];
                 
-                console.log('Starting to parse log file');
-                console.log(`Context: ${LINES_BEFORE} lines before and ${LINES_AFTER} lines after each error`);
-                console.log(`Time threshold: ${TIME_THRESHOLD_SECONDS} seconds between errors`);
-                console.log(`Filtering for log levels: ${LOG_LEVELS.join(', ')}`);
-                console.log(`Keeping only the last ${MAX_ERRORS} errors`);
+                // console.log('Starting to parse log file');
+                // console.log(`Context: ${LINES_BEFORE} lines before and ${LINES_AFTER} lines after each error`);
+                // console.log(`Time threshold: ${TIME_THRESHOLD_SECONDS} seconds between errors`);
+                // console.log(`Filtering for log levels: ${LOG_LEVELS.join(', ')}`);
+                // console.log(`Keeping only the last ${MAX_ERRORS} errors`);
                 
                 // Create regex to match log levels
                 const logLevelRegex = new RegExp(`(${LOG_LEVELS.join('|')})`);
@@ -985,8 +1191,8 @@
                     }
                 }
                 
-                console.log(`Processing complete: Processed ${lineCount} lines, found ${errorCount} unique errors`);
-                console.log(`Kept ${recentErrors.length} most recent errors`);
+                // console.log(`Processing complete: Processed ${lineCount} lines, found ${errorCount} unique errors`);
+                // console.log(`Kept ${recentErrors.length} most recent errors`);
                 
                 return {
                     formattedLogErrors: this.formatLogErrors(recentErrors),
@@ -1072,7 +1278,7 @@
                     return {};
                 }
                 
-                console.log('Parsing env-default.sh file');
+                // console.log('Parsing env-default.sh file');
                 
                 const javaMemorySettings = {
                     'DKUJAVABIN': '',
@@ -1147,7 +1353,7 @@
                     }
                 }
                 
-                console.log('Finished parsing env-default.sh file');
+                // console.log('Finished parsing env-default.sh file');
                 return { javaMemorySettings, dssVersion };
             }
         }
@@ -1159,7 +1365,7 @@
                     return {};
                 }
                 
-                console.log('Parsing DSS last restart time from supervisord.log');
+                // console.log('Parsing DSS last restart time from supervisord.log');
                 
                 // Find the last occurrence of "backend entered RUNNING"
                 const lines = content.split('\n');
@@ -1195,13 +1401,13 @@
                             };
                             
                             lastRestartTime = restartDate.toLocaleDateString('en-US', options);
-                            console.log(`Found last restart time: ${lastRestartTime}`);
+                            // console.log(`Found last restart time: ${lastRestartTime}`);
                         } catch (e) {
                             console.error(`Error parsing timestamp '${timestampStr}': ${e}`);
                         }
                     }
                 } else {
-                    console.log('Could not find DSS restart information in supervisord.log');
+                    // console.log('Could not find DSS restart information in supervisord.log');
                 }
                 
                 return { lastRestartTime };
@@ -1362,7 +1568,7 @@
             }
             
             parse() {
-                this.log("Parsing project information from params.json files");
+
                 const projects = [];
                 const sortedProjectFiles = [...this.projectFiles].sort();
                 
@@ -1370,7 +1576,7 @@
                     try {
                         const content = this.extractedFiles[projectFilePath];
                         if (!content) {
-                            this.log(`No content found for project file: ${projectFilePath}`);
+
                             continue;
                         }
                         
@@ -1415,11 +1621,11 @@
                         
                         projects.push(project);
                     } catch (error) {
-                        this.log(`Error parsing project file ${projectFilePath}: ${error.message}`);
+
                     }
                 }
                 
-                this.log(`Successfully parsed ${projects.length} projects`);
+
                 return { projects };
             }
         }
@@ -1631,11 +1837,37 @@
                         this.log(`File not found: ${targetPath}`);
                     }
                 }
+                
+                // Extract cluster YAML files
+                await this.extractClusterFiles(entries);
+            }
+            
+            async extractClusterFiles(entries) {
+                const configRoot = (this.parser.diagType === 'job') ? '' : this.parser.dsshome;
+                const clusterConfigPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}clusters\/([^\/]+)\/exec\/\\1_config.*\\.yaml$`);
+                const kubeConfigPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}clusters\/([^\/]+)\/exec\/kube_config$`);
+                const startLogPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}clusters\/([^\/]+)\/log\/start\.log$`);
+                const stopLogPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}clusters\/([^\/]+)\/log\/stop\.log$`);
+                
+                for (const entry of entries) {
+                    if (clusterConfigPattern.test(entry.filename) || kubeConfigPattern.test(entry.filename) ||
+                        startLogPattern.test(entry.filename) || stopLogPattern.test(entry.filename)) {
+                        try {
+                            const writer = new zip.TextWriter();
+                            const content = await entry.getData(writer);
+                            this.extractedFiles[entry.filename] = content;
+                            const clusterPath = entry.filename.replace(configRoot, '');
+                            this.log(`Successfully extracted cluster file: ${clusterPath}`);
+                        } catch (error) {
+                            this.log(`Error extracting ${entry.filename}: ${error.message}`);
+                        }
+                    }
+                }
             }
             
             async extractProjectFiles(entries) {
                 const configRoot = (this.parser.diagType === 'job') ? '' : this.parser.dsshome;
-                this.log("Searching for project params.json files");
+
                 const projectParamsPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}config\/projects\/[^\/]+\/params\.json$`);
                 let projectCount = 0;
                 this.parser.projectFiles = [];
@@ -1643,7 +1875,7 @@
                 for (const entry of entries) {
                     if (projectParamsPattern.test(entry.filename)) {
                         try {
-                            this.log(`Found project params file: ${entry.filename}`);
+
                             const writer = new zip.TextWriter();
                             const content = await entry.getData(writer);
                             this.extractedFiles[entry.filename] = content;
@@ -1654,12 +1886,12 @@
                         }
                     }
                 }
-                this.log(`Extracted ${projectCount} project params.json files`);
+
             }
             
             async extractPluginAndCodeEnvFiles(entries) {
                 const configRoot = (this.parser.diagType === 'job') ? '' : this.parser.dsshome;
-                this.log("Searching for plugins and code environments");
+
                 
                 const pluginSettingsPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}config\/plugins\/[^\/]+\/settings\.json$`);
                 const codeEnvDescPattern = new RegExp(`^${configRoot.replace(/\//g, '\\/')}code-envs\/desc\/[^\/]+\/[^\/]+\/desc\.json$`);
@@ -1673,7 +1905,7 @@
                     
                     if (isGlobalPlugin || isGlobalCodeEnv) {
                         try {
-                            this.log(`Extracting additional file: ${entry.filename}`);
+
                             const writer = new zip.TextWriter();
                             const content = await entry.getData(writer);
                             this.extractedFiles[entry.filename] = content;
@@ -1686,7 +1918,7 @@
                     }
                 }
                 
-                this.log(`Extracted ${pluginCount} plugin settings files and ${codeEnvCount} code environment desc files`);
+
             }
             
             async extractRootFiles(entries) {
@@ -1873,7 +2105,7 @@
             createFileButton(filename, label, tooltip = null) {
                         const buttonContainer = document.createElement('div');
                         buttonContainer.className = 'download-button-container';
-                        
+
                         const viewBtn = document.createElement('button');
                         viewBtn.className = 'download-btn view-btn';
                         viewBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/><path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8zm8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/></svg>`;
@@ -2096,6 +2328,20 @@
                     this.parser.createCodeEnvsTable(codeEnvItem, this.tableFiltersDiv);
                     this.grid.appendChild(codeEnvItem);
                 }
+                
+                if (this.parsedData.clusters && this.parsedData.clusters.length > 0) {
+                    const clustersItem = document.createElement('div');
+                    clustersItem.className = 'grid-item wide';
+                    
+                    this.parser.createClustersTable(clustersItem, this.tableFiltersDiv);
+                    // Insert before backend/log group if present, else append
+                    const logGroup = document.getElementById('log-group');
+                    if (logGroup && logGroup.parentNode === this.grid) {
+                        this.grid.insertBefore(clustersItem, logGroup);
+                    } else {
+                        this.grid.appendChild(clustersItem);
+                    }
+                }
             }
             
             createLogSection() {
@@ -2104,7 +2350,7 @@
                     logGroupContainer.className = 'grid-item wide';
                     logGroupContainer.id = 'log-group';
                     
-                    this.createLogErrorsSection(logGroupContainer);
+                        this.createLogErrorsSection(logGroupContainer);
                     
                     this.grid.appendChild(logGroupContainer);
                     this.addDebugPanel(logGroupContainer);
@@ -2266,16 +2512,16 @@
                         if (newFilter === 'all' && allBtn) {
                             allBtn.classList.add('active');
                         } else {
-                            e.target.classList.add('active');
+                        e.target.classList.add('active');
                         }
-                         
-                         setTimeout(() => {
-                             if (this.parser.masonryGrid) {
-                                 this.parser.masonryGrid.layout();
-                             }
-                         }, 100);
-                     });
-                 });
+                        
+                        setTimeout(() => {
+                            if (this.parser.masonryGrid) {
+                                this.parser.masonryGrid.layout();
+                            }
+                        }, 100);
+                    });
+                });
             }
             
             hideProgressContainer() {
@@ -2302,6 +2548,10 @@
             
             createCodeEnvsTable(container, filtersContainer) {
                 this.parser.createCodeEnvsTableOriginal(container, filtersContainer);
+            }
+            
+            createClustersTable(container, filtersContainer) {
+                this.parser.createClustersTableOriginal(container, filtersContainer);
             }
             
             createFilesystemTable(grid, filtersContainer) {
@@ -2365,9 +2615,8 @@
                     
                     this.parser.log(`Starting extraction process for file: ${file.name}`);
                     
-                                        await this.parser.extractFiles(file);
+                    await this.parser.extractFiles(file);
                     await this.parser.parseFiles();
-                    
                     this.parser.displayResults();
                     
                     document.getElementById('upload-section').style.display = 'none';
@@ -2392,7 +2641,7 @@
                         }, 100);
                 } catch (error) {
                     this.parser.log(`Error processing ZIP file: ${error.message}`, error);
-                    alert('Error processing the file: ' + error.message + '\nSee console for details.');
+                        alert('Error processing the file: ' + error.message + '\nSee console for details.');
                     
                     document.getElementById('progress-container').style.display = 'none';
                 } finally {
@@ -2581,6 +2830,335 @@
                 filterBtn.textContent = 'Code Environments';
                 filterBtn.className = 'filter-btn';
                 filterBtn.dataset.filter = 'code-envs-table';
+                filtersContainer.appendChild(filterBtn);
+            }
+        }
+
+        class ClustersTableRenderer {
+            constructor(parser) {
+                this.parser = parser;
+            }
+            
+            createClustersTableOriginal(container, filtersContainer) {
+                const clustersTable = document.createElement('div');
+                clustersTable.className = 'table-container';
+                clustersTable.id = 'clusters-table';
+                
+                const title = document.createElement('h4');
+                title.textContent = 'Kubernetes Clusters';
+                title.className = 'table-title';
+                clustersTable.appendChild(title);
+                
+                // Two-up masonry layout inside the card (2 columns)
+                const clustersGrid = document.createElement('div');
+                clustersGrid.className = 'clusters-masonry';
+                clustersGrid.style.marginTop = '15px';
+                
+                // Masonry sizer to enforce two columns (accounting for gutter)
+                const clustersSizer = document.createElement('div');
+                clustersSizer.className = 'cluster-sizer';
+                clustersSizer.style.width = 'calc(50% - 8px)';
+                clustersGrid.appendChild(clustersSizer);
+                
+                for (const cluster of this.parser.parsedData.clusters) {
+                    const clusterContainer = document.createElement('div');
+                    clusterContainer.className = 'cluster-item';
+                    clusterContainer.style.width = 'calc(50% - 8px)';
+                    clusterContainer.style.boxSizing = 'border-box';
+                    clusterContainer.style.marginBottom = '15px';
+                    clusterContainer.style.border = '2px solid #00b5aa';
+                    clusterContainer.style.borderRadius = '8px';
+                    clusterContainer.style.padding = '15px';
+                    clusterContainer.style.backgroundColor = '#f8f9fa';
+                    
+                    // === CLUSTER-WIDE INFO SECTION ===
+                    const clusterInfoCard = document.createElement('div');
+                    clusterInfoCard.style.padding = '0';
+                    clusterInfoCard.style.marginBottom = '15px';
+                    
+                    // Cluster header
+                    const header = document.createElement('div');
+                    header.style.position = 'relative';
+                    header.style.display = 'flex';
+                    header.style.justifyContent = 'center';
+                    header.style.alignItems = 'center';
+                    header.style.marginBottom = '10px';
+                    
+                    const clusterName = document.createElement('h4');
+                    clusterName.textContent = cluster.name;
+                    clusterName.style.margin = '0';
+                    clusterName.style.color = '#00b5aa';
+                    clusterName.style.fontSize = '18px';
+                    clusterName.style.fontWeight = '600';
+                    
+                    const statusBadge = document.createElement('span');
+                    const status = cluster.status || 'UNKNOWN';
+                    statusBadge.textContent = status;
+                    
+                    // Set badge color based on status
+                    if (status === 'ON') {
+                        statusBadge.style.backgroundColor = '#28a745';  // Green
+                    } else if (status === 'OFF') {
+                        statusBadge.style.backgroundColor = '#dc3545';  // Red
+                    } else {
+                        statusBadge.style.backgroundColor = '#6c757d';  // Gray
+                    }
+                    
+                    statusBadge.style.position = 'absolute';
+                    statusBadge.style.right = '0';
+                    statusBadge.style.color = 'white';
+                    statusBadge.style.padding = '4px 12px';
+                    statusBadge.style.borderRadius = '15px';
+                    statusBadge.style.fontSize = '12px';
+                    statusBadge.style.fontWeight = '600';
+                    
+                    header.appendChild(clusterName);
+                    header.appendChild(statusBadge);
+                    clusterInfoCard.appendChild(header);
+                    
+                    // Cluster-wide info grid
+                    const clusterInfoGrid = document.createElement('div');
+                    clusterInfoGrid.style.display = 'grid';
+                    clusterInfoGrid.style.gridTemplateColumns = '1fr 1fr 1fr 1fr';
+                    clusterInfoGrid.style.gap = '12px';
+                    clusterInfoGrid.style.fontSize = '13px';
+                    
+                    const addClusterInfoItem = (label, value, highlight = false) => {
+                        const item = document.createElement('div');
+                        item.style.display = 'flex';
+                        item.style.flexDirection = 'column';
+                        item.style.gap = '3px';
+                        
+                        const labelEl = document.createElement('span');
+                        labelEl.textContent = label;
+                        labelEl.style.color = '#6c757d';
+                        labelEl.style.fontSize = '11px';
+                        labelEl.style.fontWeight = '600';
+                        labelEl.style.textTransform = 'uppercase';
+                        
+                        const valueEl = document.createElement('span');
+                        valueEl.textContent = value;
+                        valueEl.style.color = highlight ? '#00b5aa' : '#2c3e50';
+                        valueEl.style.fontWeight = '500';
+                        
+                        item.appendChild(labelEl);
+                        item.appendChild(valueEl);
+                        clusterInfoGrid.appendChild(item);
+                    };
+                    
+                    // Cluster-wide information only
+                    addClusterInfoItem('Kubernetes Version', cluster.version || 'Unknown', true);
+                    addClusterInfoItem('Region', cluster.region || 'Unknown');
+                    addClusterInfoItem('Networking', cluster.networkType || 'Unknown');
+                    addClusterInfoItem('VPC CIDR', cluster.vpcCidr || 'Not specified');
+                    
+                    // Add uptime/runtime information if available
+                    if (cluster.status === 'ON' && cluster.uptime) {
+                        addClusterInfoItem('Uptime', cluster.uptime, true);
+                    }
+                    
+                    // Show subnet IDs
+                    if (cluster.subnets) {
+                        const allSubnets = [];
+                        Object.values(cluster.subnets).forEach(typeGroup => {
+                            Object.values(typeGroup).forEach(subnet => allSubnets.push(subnet.id));
+                        });
+                        if (allSubnets.length > 0) addClusterInfoItem('Subnets', allSubnets.join(', '));
+                    }
+                    
+                    // Show security groups
+                    if (cluster.securityGroups && cluster.securityGroups.length > 0) {
+                        addClusterInfoItem('Security Groups', cluster.securityGroups.join(', '));
+                    }
+                    
+                    clusterInfoCard.appendChild(clusterInfoGrid);
+                    
+                    // Add connection info if available
+                    if (cluster.server) {
+                        const kubeInfo = document.createElement('div');
+                        kubeInfo.style.marginTop = '12px';
+                        kubeInfo.style.padding = '10px';
+                        kubeInfo.style.backgroundColor = '#e8f4f8';
+                        kubeInfo.style.borderRadius = '6px';
+                        kubeInfo.style.fontSize = '12px';
+                        kubeInfo.style.borderLeft = '4px solid #00b5aa';
+                        
+                        const kubeDetails = document.createElement('div');
+                        kubeDetails.innerHTML = `<span style="font-weight: bold;">Server:</span> ${cluster.server}`;
+                        kubeDetails.style.color = '#495057';
+                        kubeInfo.appendChild(kubeDetails);
+                        
+                        clusterInfoCard.appendChild(kubeInfo);
+                    }
+                    
+                    clusterContainer.appendChild(clusterInfoCard);
+                    
+                    // === NODE POOLS SECTION ===
+                    if (cluster.nodeGroups && cluster.nodeGroups.length > 0) {
+                        const nodePoolsHeader = document.createElement('h5');
+                        nodePoolsHeader.textContent = '🖥️ Node Pools';
+                        nodePoolsHeader.style.margin = '0 0 10px 0';
+                        nodePoolsHeader.style.color = '#2c3e50';
+                        nodePoolsHeader.style.fontSize = '16px';
+                        nodePoolsHeader.style.fontWeight = '600';
+                        clusterContainer.appendChild(nodePoolsHeader);
+                        
+                        cluster.nodeGroups.forEach((ng, index) => {
+                            const nodePoolCard = document.createElement('div');
+                            nodePoolCard.style.border = '1px solid #dee2e6';
+                            nodePoolCard.style.borderRadius = '6px';
+                            nodePoolCard.style.padding = '12px';
+                            nodePoolCard.style.backgroundColor = 'white';
+                            nodePoolCard.style.marginBottom = '8px';
+                            
+                            // Node pool header
+                            const poolHeader = document.createElement('div');
+                            poolHeader.style.display = 'flex';
+                            poolHeader.style.justifyContent = 'space-between';
+                            poolHeader.style.alignItems = 'center';
+                            poolHeader.style.marginBottom = '10px';
+                            
+                            const poolName = document.createElement('h6');
+                            poolName.textContent = ng.name || `Pool ${index + 1}`;
+                            poolName.style.margin = '0';
+                            poolName.style.color = '#2c3e50';
+                            poolName.style.fontSize = '14px';
+                            poolName.style.fontWeight = '600';
+                            
+                            poolHeader.appendChild(poolName);
+                            
+                            if (ng.spot) {
+                                const spotBadge = document.createElement('span');
+                                spotBadge.textContent = '⚡ Spot';
+                                spotBadge.style.backgroundColor = '#ffc107';
+                                spotBadge.style.color = '#000';
+                                spotBadge.style.padding = '2px 8px';
+                                spotBadge.style.borderRadius = '12px';
+                                spotBadge.style.fontSize = '10px';
+                                spotBadge.style.fontWeight = '600';
+                                poolHeader.appendChild(spotBadge);
+                            }
+                            nodePoolCard.appendChild(poolHeader);
+                            
+                            // Node pool info grid
+                            const poolInfoGrid = document.createElement('div');
+                            poolInfoGrid.style.display = 'grid';
+                            poolInfoGrid.style.gridTemplateColumns = '2fr 1fr 1fr 1fr 1fr 1fr';
+                            poolInfoGrid.style.gap = '8px';
+                            poolInfoGrid.style.fontSize = '12px';
+                            
+                            const addPoolInfoItem = (label, value, highlight = false) => {
+                                const item = document.createElement('div');
+                                item.style.display = 'flex';
+                                item.style.flexDirection = 'column';
+                                item.style.gap = '2px';
+                                
+                                const labelEl = document.createElement('span');
+                                labelEl.textContent = label;
+                                labelEl.style.color = '#6c757d';
+                                labelEl.style.fontSize = '10px';
+                                labelEl.style.fontWeight = '600';
+                                labelEl.style.textTransform = 'uppercase';
+                                
+                                const valueEl = document.createElement('span');
+                                valueEl.textContent = value;
+                                valueEl.style.color = highlight ? '#00b5aa' : '#2c3e50';
+                                valueEl.style.fontWeight = '500';
+                                
+                                item.appendChild(labelEl);
+                                item.appendChild(valueEl);
+                                poolInfoGrid.appendChild(item);
+                            };
+                            
+                            // Node pool specific info
+                            addPoolInfoItem('Machine Type', ng.instanceType || 'Unknown', true);
+                            addPoolInfoItem('Min Nodes', ng.minSize || 0);
+                            addPoolInfoItem('Desired', ng.desiredCapacity || 0);
+                            addPoolInfoItem('Max Nodes', ng.maxSize || ng.desiredCapacity || 0);
+                            addPoolInfoItem('Disk Type', ng.volumeType || 'gp2');
+                            addPoolInfoItem('Disk Size', ng.volumeSize ? `${ng.volumeSize}GB` : 'Default');
+                            
+                            nodePoolCard.appendChild(poolInfoGrid);
+                            
+                            // Labels and Taints
+                            if ((ng.labels && Object.keys(ng.labels).length > 0) || (ng.taints && ng.taints.length > 0)) {
+                                const metadataDiv = document.createElement('div');
+                                metadataDiv.style.marginTop = '8px';
+                                metadataDiv.style.fontSize = '11px';
+                                
+                                if (ng.labels && Object.keys(ng.labels).length > 0) {
+                                    const labelsDiv = document.createElement('div');
+                                    labelsDiv.style.marginBottom = '4px';
+                                    
+                                    const labelsTitle = document.createElement('span');
+                                    labelsTitle.textContent = '🏷️ Labels: ';
+                                    labelsTitle.style.fontWeight = '600';
+                                    labelsTitle.style.color = '#495057';
+                                    
+                                    const labelsText = document.createElement('span');
+                                    // Clean labels by removing common prefixes
+                                    const cleanLabels = Object.entries(ng.labels)
+                                        .map(([k,v]) => {
+                                            const cleanKey = k.replace(/^alpha\.eksctl\.io\//, '').replace(/^beta\.eksctl\.io\//, '');
+                                            return `${cleanKey}=${v}`;
+                                        })
+                                        .join(', ');
+                                    labelsText.textContent = cleanLabels;
+                                    labelsText.style.color = '#6c757d';
+                                    
+                                    labelsDiv.appendChild(labelsTitle);
+                                    labelsDiv.appendChild(labelsText);
+                                    metadataDiv.appendChild(labelsDiv);
+                                }
+                                
+                                if (ng.taints && ng.taints.length > 0) {
+                                    const taintsDiv = document.createElement('div');
+                                    
+                                    const taintsTitle = document.createElement('span');
+                                    taintsTitle.textContent = '⚠️ Taints: ';
+                                    taintsTitle.style.fontWeight = '600';
+                                    taintsTitle.style.color = '#495057';
+                                    
+                                    const taintsText = document.createElement('span');
+                                    taintsText.textContent = ng.taints.map(t => `${t.key}=${t.value}:${t.effect}`).join(', ');
+                                    taintsText.style.color = '#6c757d';
+                                    
+                                    taintsDiv.appendChild(taintsTitle);
+                                    taintsDiv.appendChild(taintsText);
+                                    metadataDiv.appendChild(taintsDiv);
+                                }
+                                
+                                nodePoolCard.appendChild(metadataDiv);
+                            }
+                            
+                            clusterContainer.appendChild(nodePoolCard);
+                        });
+                    }
+                    
+                    clustersGrid.appendChild(clusterContainer);
+                }
+                
+                clustersTable.appendChild(clustersGrid);
+                container.appendChild(clustersTable);
+                this.parser.tableContainers['clusters-table'] = clustersTable;
+                
+                // Initialize a dedicated Masonry for the clusters card to get two columns
+                // Note: Masonry is applied inside the card (one extra layer)
+                setTimeout(() => {
+                    new Masonry(clustersGrid, {
+                        itemSelector: '.cluster-item',
+                        columnWidth: '.cluster-sizer',
+                        gutter: 15,
+                        percentPosition: true,
+                        // Fit exactly two columns by constraining item width via CSS in card
+                    });
+                }, 0);
+                
+                // Add filter button
+                const filterBtn = document.createElement('button');
+                filterBtn.textContent = 'Kubernetes Clusters';
+                filterBtn.className = 'filter-btn';
+                filterBtn.dataset.filter = 'clusters-table';
                 filtersContainer.appendChild(filterBtn);
             }
         }
@@ -4358,6 +4936,9 @@
                 // Create the code envs table renderer
                 this.codeEnvsTableRenderer = new CodeEnvsTableRenderer(this);
                 
+                // Create the clusters table renderer
+                this.clustersTableRenderer = new ClustersTableRenderer(this);
+                
                 // Create the project permissions viewer
                 this.projectPermissionsViewer = new ProjectPermissionsViewer(this);
                 
@@ -4397,6 +4978,10 @@
             
             createCodeEnvsTable(container, filtersContainer) {
                 this.codeEnvsTableRenderer.createCodeEnvsTableOriginal(container, filtersContainer);
+            }
+            
+            createClustersTable(container, filtersContainer) {
+                this.clustersTableRenderer.createClustersTableOriginal(container, filtersContainer);
             }
             
             createFilesystemTable(grid, filtersContainer) {
@@ -4449,6 +5034,8 @@
                 this.debugLogs.push(logMessage);
             }
             
+
+            
             async extractFiles(file) {
                 const extractor = new FileExtractor(this);
                 await extractor.extractFiles(file);
@@ -4468,6 +5055,7 @@
                 if (versionPath) this.parseVersion(this.extractedFiles[versionPath]);
                 const usersPath = this.fileManager.findFile(this.dsshome + 'config/users.json');
                 if (usersPath) this.parseUsers(this.extractedFiles[usersPath]);
+                this.parseClusters();
                 let logPath = this.fileManager.findFile(this.dsshome + 'run/backend.log')
                     || this.fileManager.findFile(this.dsshome + 'run/fmmain.log')
                     || this.fileManager.findFile('output.log');
@@ -4608,6 +5196,15 @@
                     this.parsedData.userStats = result.userStats;
                 } else {
                     this.parsedData.userStats = { 'Total Users': 'Error parsing' };
+                }
+            }
+            
+            parseClusters() {
+                const parser = new ClustersParser();
+                const result = parser.parse(this.extractedFiles, this.dsshome);
+                this.parsedData.clusters = result.clusters || [];
+                if (this.parsedData.clusters.length > 0) {
+                    this.log(`Found ${this.parsedData.clusters.length} Kubernetes clusters`);
                 }
             }
             
