@@ -1871,7 +1871,7 @@
                     'install.ini', 'config/connections.json', 'config/general-settings.json',
                     'config/license.json', 'config/users.json', 'dss-version.json',
                     'run/backend.log', 'run/fmmain.log', 'run/supervisord.log', 'run/ipython.log',
-                    'bin/env-default.sh', 'bin/env-site.sh'
+                    'bin/env-default.sh', 'bin/env-site.sh', 'config/dip.properties'
                 ];
 
                 this.log("Files to extract with correct paths:", filesToExtract.map(f => configRoot + f));
@@ -2117,7 +2117,8 @@
                     { pattern: /\/env-default\.sh$/, label: 'env-default.sh' },
                     { pattern: /\/env-site\.sh$/, label: 'env-site.sh' },
                     { pattern: /diag\.txt$/, label: 'diag.txt' },
-                    { pattern: /install\.ini$/, label: 'install.ini' }
+                    { pattern: /install\.ini$/, label: 'install.ini' },
+                    { pattern: /\/dip\.properties$/, label: 'dip.properties' }
                 ];
                 
                 for (const file of filesToShow) {
