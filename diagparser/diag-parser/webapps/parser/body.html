@@ -1473,12 +1473,54 @@
         }
 
         class SystemInfoParser extends BaseTextParser {
+            // This routine handles the many variants of OSes supported by Dataiku, esp for custom installs
+            // It leverages DKUDISTRIB when set which provides additional information for, e.g. RHEL variants.
             processContent(content, filename) {
                 const cpuCoresMatch = content.match(/cpu cores\s*:\s*(\d+)/);
-                const osMatch = content.match(/>\s*cat\s+\/etc\/[a-zA-Z-]*-release\s*\n([^\n]+)/);
                 const cpuCores = cpuCoresMatch ? cpuCoresMatch[1] : null;
-                const osInfo = osMatch ? osMatch[1].trim() : null;
-                console.log(`System info - CPU cores: ${cpuCores}, OS: ${osInfo}`);
+
+                // Extract OS info (look first for "cat /etc/*-release" output from Redhat distributions)
+                let osInfo = '';
+                const rhMatch = content.match(/>\s*cat\s+\/etc\/redhat-release\s*\n([^\n]+)/);
+
+                const rhReleaseContents = rhMatch ? rhMatch[1].trim() : null;
+                if (rhReleaseContents) {
+                    console.log(`System info: found /etc/redhat-release line. Match: ${rhReleaseContents}`)
+                    // Found the redhat-release line, check the file is really there
+                    const noFile = rhReleaseContents.match(/No such file or directory/);
+                    if (noFile) {
+                        // No /etc/redhat-release" file found. This is likely a Debian variant or Amazon Linux.
+                        // We use the 'Description' field which is on the third line of the lsb_release output.
+                        const debianMatch = content.match(/>\s*lsb_release -a\s*\n.*\n.*\nDescription:\s+(.+)\n/);
+                        if (debianMatch){
+                            osInfo = debianMatch[1].trim();
+                        } else {
+                            console.log('System info: /etc/redhat-release missing and no lsb_release info');
+                        }
+                    } else {
+                        // redhat-release file is there, grab Redhat variant string.
+                        osInfo = rhReleaseContents;
+                    }
+                } else {
+                    console.log('System info: /etc/redhat-release line could not be found');
+                }
+
+                // Also leverage what DSS detected, if available. This helps since /etc/redhat-release might 
+                // not be sufficient (e.g. Oracle Linux)
+                const dkuDistribMatch = content.match(/DKUDISTRIB=([^\n]+)/);
+                if (dkuDistribMatch) {
+                    console.log(`DKUDISTRIB: ${dkuDistribMatch[1]}`)
+                    // add to existing OS information
+                    osInfo += ` ${dkuDistribMatch[1]}`;
+                } else {
+                    console.log('System info: no DKUDISTRIB found')
+                    if (osInfo.length == 0 ){
+                      // fallback as nothing was found
+                      osInfo = 'no OS information found';
+                    }
+                }
+
+                console.log(`System info: CPU cores: ${cpuCores}, OS: ${osInfo}`);
                 return { cpuCores, osInfo };
             }
         }
