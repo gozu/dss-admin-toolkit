@@ -273,24 +273,7 @@ body {
   margin-bottom: 5px;
 }
 
-.debug-panel {
-  margin-bottom: 25px;
-  background-color: #f8f9fa;
-  border-radius: var(--border-radius);
-  border: 1px solid #e9ecef;
-  padding: 15px;
-}
 
-.debug-panel summary {
-  cursor: pointer;
-  font-weight: 500;
-  color: #6c757d;
-  padding: 5px 0;
-}
-
-.debug-panel summary:hover {
-  color: var(--dataiku-primary);
-}
 
 .table-filters {
   margin-bottom: 25px;
@@ -573,27 +556,7 @@ body {
 .m-20-0 { margin: 20px 0; }
 .mt-15 { margin-top: 15px; }
 
-/* Upload progress pacman loader container and theme */
-.loader-container {
-  width: 100px;
-  height: 100px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin: 0 auto;
-}
 
-.pacman > div:nth-child(1),
-.pacman > div:nth-child(2) {
-  border-top-color: #00b5aa;
-  border-left-color: #00b5aa;
-  border-bottom-color: #00b5aa;
-}
-.pacman > div:nth-child(3),
-.pacman > div:nth-child(4),
-.pacman > div:nth-child(5) {
-  background-color: #00b5aa;
-}
 
 /* Modal content styling */
 .modal-content {

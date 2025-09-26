@@ -142,7 +142,32 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- Add loaders.css CDN -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/loaders.css/0.1.2/loaders.min.css">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="./style.css">
+    
+    <style>
+        /* Pacman loader styling - inline to ensure it loads */
+        .loader-container {
+            width: 100px;
+            height: 100px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+        
+        .pacman > div:nth-child(1),
+        .pacman > div:nth-child(2) {
+            border-top-color: #00b5aa !important;
+            border-left-color: #00b5aa !important;
+            border-bottom-color: #00b5aa !important;
+        }
+        
+        .pacman > div:nth-child(3),
+        .pacman > div:nth-child(4),
+        .pacman > div:nth-child(5) {
+            background-color: #00b5aa !important;
+        }
+    </style>
 </head>
 <body>
     <div class="header">
@@ -188,10 +213,7 @@
                 <div class="info-item"><strong>File:</strong> <span id="file-info">-</span></div>
             </div>
             
-            <details class="debug-panel">
-                <summary>Diag Parser Debug Info (click to expand)</summary>
-                <pre id="debug-logs" style="max-height: 300px; overflow: auto; border: 1px solid #ccc; padding: 10px; font-size: 12px;"></pre>
-            </details>
+
             
             <h3>Filter Tables:</h3>
             <div class="table-filters" id="table-filters">
@@ -328,7 +350,7 @@
 
         class UsersParser extends BaseJSONParser {
             processData(data, filename) {
-                const userStats = {};
+                    const userStats = {};
                 
                 if (data && data.users && Array.isArray(data.users)) {
                     const allUsers = data.users;
@@ -357,7 +379,7 @@
                     }
                 }
                 
-                return { userStats };
+                return { userStats, users: data.users || [] };
             }
         }
 
@@ -1950,7 +1972,10 @@
                 
                 // Extract other root files
                 for (const entry of entries) {
-                    if (!entry.filename.includes('/') && !entry.directory && entry.uncompressedSize < 10 * 1024 * 1024) {
+                    if (entry.filename.includes('datadir_listing')) {
+                        this.log(`Found datadir_listing file: ${entry.filename}, size: ${entry.uncompressedSize}, isDir: ${entry.directory}`);
+                    }
+                    if (!entry.filename.includes('/') && !entry.directory) {
                         try {
                             this.log(`Extracting root file: ${entry.filename} (${UtilityFormatter.formatBytes(entry.uncompressedSize)})`);
                             const writer = new zip.TextWriter();
@@ -1983,7 +2008,7 @@
                 this.parsedData = parser.parsedData;
                 this.extractedFiles = parser.extractedFiles;
                 this.rootFiles = parser.rootFiles;
-                this.debugLogs = parser.debugLogs;
+
                 this.tableContainers = parser.tableContainers;
                 this.downloadUICreated = parser.downloadUICreated;
                 this.downloadToggleBtn = parser.downloadToggleBtn;
@@ -1995,7 +2020,6 @@
             render() {
                 this.renderInfoPanel();
                 this.createFileDownloads();
-                this.updateDebugLogs();
                 this.setupMasonryGrid();
                 this.renderTables();
                 this.hideProgressContainer();
@@ -2060,6 +2084,7 @@
                     { pattern: /\/env-default\.sh$/, label: 'env-default.sh' },
                     { pattern: /\/env-site\.sh$/, label: 'env-site.sh' },
                     { pattern: /diag\.txt$/, label: 'diag.txt' },
+                    { pattern: /datadir_listing\.txt$/, label: 'datadir_listing.txt' },
                     { pattern: /install\.ini$/, label: 'install.ini' }
                 ];
                 
@@ -2163,17 +2188,7 @@
                 return toggleBtn;
             }
             
-            updateDebugLogs() {
-                const debugLogsElement = document.getElementById('debug-logs');
-                if (debugLogsElement && this.debugLogs.length > 0) {
-                    debugLogsElement.textContent = this.debugLogs.join('\n');
-                }
-                
-                const existingDebugPanel = document.querySelector('.debug-panel');
-                if (existingDebugPanel) {
-                    existingDebugPanel.remove();
-                }
-                }
+
                 
             setupMasonryGrid() {
                 const tableContainersDiv = document.getElementById('table-containers');
@@ -2247,6 +2262,32 @@
                         title: 'System Limits',
                         data: this.parsedData.systemLimits
                     };
+                }
+                
+                // User emails by project count
+                if (this.parsedData.projects?.length && this.parsedData.users?.length) {
+                    const userEmailMap = {};
+                    this.parsedData.users.forEach(u => userEmailMap[u.login] = u.email);
+                    
+                    const projectCounts = {};
+                    this.parsedData.projects.forEach(p => {
+                        projectCounts[p.owner] = (projectCounts[p.owner] || 0) + 1;
+                    });
+                    
+                    const usersByProjects = {};
+                    Object.entries(projectCounts)
+                        .sort(([,a], [,b]) => b - a)
+                        .forEach(([login, count]) => {
+                            const email = userEmailMap[login] || login;
+                            usersByProjects[email] = count === 1 ? '1 project' : `${count} projects`;
+                        });
+                    
+                    if (Object.keys(usersByProjects).length > 0) {
+                        chartTables['usersByProjects'] = {
+                            title: 'Users by Project Count',
+                            data: usersByProjects
+                        };
+                    }
                 }
                 
                 this.addTablesToGrid(chartTables);
@@ -2353,7 +2394,6 @@
                         this.createLogErrorsSection(logGroupContainer);
                     
                     this.grid.appendChild(logGroupContainer);
-                    this.addDebugPanel(logGroupContainer);
                 }
             }
             
@@ -2435,27 +2475,7 @@
                 this.tableFiltersDiv.appendChild(filterBtn);
                     }
                     
-            addDebugPanel(logGroupContainer) {
-                    const debugPanel = document.createElement('details');
-                    debugPanel.className = 'debug-panel';
-                    debugPanel.style.marginTop = '20px';
-                    
-                    const debugSummary = document.createElement('summary');
-                    debugSummary.textContent = 'Diag Parser Debug Info (click to expand)';
-                    debugPanel.appendChild(debugSummary);
-                    
-                    const debugPre = document.createElement('pre');
-                    debugPre.id = 'debug-logs';
-                    debugPre.style.maxHeight = '300px';
-                    debugPre.style.overflow = 'auto';
-                    debugPre.style.border = '1px solid #ccc';
-                    debugPre.style.padding = '10px';
-                    debugPre.style.fontSize = '12px';
-                    debugPre.textContent = this.debugLogs.join('\n');
-                    debugPanel.appendChild(debugPre);
-                    
-                    logGroupContainer.appendChild(debugPanel);
-                }
+
                 
             addTablesToGrid(tables) {
                 if (Object.keys(tables).length > 0) {
@@ -2595,8 +2615,7 @@
                     return;
                 }
                 
-                // Clear debug logs
-                this.parser.debugLogs = [];
+
                 
                 // Display file info
                 this.parser.log(`Starting to process diagnostic file: ${file.name}`);
@@ -3602,8 +3621,8 @@
                     const keyCell = document.createElement('td');
                     const valCell = document.createElement('td');
                     
-                    // Format the key
-                    let formattedKey = formatKey(key);
+                    // Format the key (but NOT for usersByProjects since those are email addresses)
+                    let formattedKey = (id === 'usersByProjects') ? key : formatKey(key);
                     keyCell.innerHTML = `<strong>${formattedKey}</strong>`;
                     
                     // Format the value based on the table type
@@ -4874,7 +4893,7 @@
                 this.parser.activeFilter = 'all';
                 this.parser.showPluginDetails = true;
                 this.parser.showCodeEnvDetails = false;
-                this.parser.debugLogs = [];
+
                 this.parser.dsshome = this.parser.fileManager.defaultDsshome;
                 
                 // Force a hard refresh to clear any accumulated DOM elements
@@ -4900,7 +4919,7 @@
                 this.activeFilter = 'all';
                 this.showPluginDetails = true;
                 this.showCodeEnvDetails = false;
-                this.debugLogs = [];
+
                 // Define a default DSS home directory constant
                 this.defaultDsshome = 'data/dataiku/dss_data/';
                 this.dsshome = this.defaultDsshome;
@@ -5031,7 +5050,6 @@
                 }
                 
                 console.log(logMessage);
-                this.debugLogs.push(logMessage);
             }
             
 
@@ -5192,11 +5210,13 @@
             parseUsers(content) {
                 const parser = new UsersParser();
                 const result = parser.parse(content, 'users.json');
+                
                 if (result.userStats && Object.keys(result.userStats).length > 0) {
                     this.parsedData.userStats = result.userStats;
                 } else {
                     this.parsedData.userStats = { 'Total Users': 'Error parsing' };
                 }
+                this.parsedData.users = result.users || [];
             }
             
             parseClusters() {
