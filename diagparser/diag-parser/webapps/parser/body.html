@@ -744,7 +744,8 @@
                     integrationSettings: {},
                     resourceLimits: {},
                     cgroupSettings: {},
-                    proxySettings: {}
+                    proxySettings: {},
+                    disabledFeatures: {}
                 };
                     
                     // Extract enabled settings
@@ -772,7 +773,40 @@
                 result.proxySettings = this.parseProxySettings(data);
                 result.cgroupSettings = this.parseCgroupsSettings(data);
                 
+                // Check for disabled features
+                result.disabledFeatures = this.checkDisabledFeatures(data);
+                
                 return result;
+            }
+            
+            checkDisabledFeatures(data) {
+                const disabled = {};
+                const add = (name, desc, url) => disabled[name] = { status: 'Disabled', description: desc, url: url };
+                
+                // Check AI-driven analytics settings
+                if (data.aiDrivenAnalyticsSettings) {
+                    const ai = data.aiDrivenAnalyticsSettings;
+                    if (!ai.prepareAICompletionEnabled) add('AI: Prepare Completion', 'AI-powered suggestions and completions in visual recipes (Prepare, Group, Window, etc.) to help build transformation steps faster', 'https://knowledge.dataiku.com/latest/data-preparation/prepare-recipe/how-to-generate-steps.html');
+                    if (!ai.aiGenerateSQLEnabled) add('AI: Generate SQL', 'Generate SQL queries from natural language descriptions in SQL notebooks and recipes, powered by LLM integration', 'https://knowledge.dataiku.com/latest/code/sql/concept-ai-sql-assistant.html');
+                    if (!ai.aiExplanationsEnabled) add('AI: Explanations', 'Get AI-generated explanations for code blocks, formulas, recipe logic, and analysis results to improve understanding', 'https://knowledge.dataiku.com/latest/collaboration/wikis-documentation/concept-explain-flow.html');
+                    if (!ai.storiesAIEnabled) add('AI: Stories', 'AI assistance for generating narrative content and insights when creating Dataiku Stories and dashboards', 'https://knowledge.dataiku.com/latest/collaboration/stories/tutorial-stories-with-genai.html');
+                }
+                
+                if (data.codeAssistantSettings?.codeAssistantEnabled === false) add('Code Assistant', 'Inline AI code completion and suggestions in Python/R notebooks and code recipes, powered by LLM services', 'https://doc.dataiku.com/dss/latest/ai-assistants/code-assistant.html');
+                if (data.askDataikuSettings?.enabled === false) add('Ask Dataiku', 'Interactive AI chatbot that answers questions about DSS features, APIs, and best practices within the interface', 'https://doc.dataiku.com/dss/latest/generative-ai/chat-ui/answers.html');
+                if (data.sparkSettings?.sparkEnabled === false) add('Spark', 'Enable Apache Spark for distributed processing of large datasets across visual recipes, code recipes, and SQL', 'https://doc.dataiku.com/dss/latest/spark/index.html');
+                if (data.containerSettings?.cdeEnabled === false) add('Container Execution (CDE)', 'Run code recipes and notebooks in isolated Docker containers with custom dependencies, separate from base DSS environment', 'https://doc.dataiku.com/dss/latest/containers/containerized-execution.html');
+                if (data.cgroupSettings?.enabled === false) add('CGroups', 'Linux control groups to enforce CPU and memory limits per process, preventing resource exhaustion from runaway jobs', 'https://doc.dataiku.com/dss/latest/operations/cgroups.html');
+                if (data.governIntegrationSettings?.enabled === false) add('Govern Integration', 'Connect to Dataiku Govern for centralized governance, compliance tracking, model validation, and artifact management', 'https://knowledge.dataiku.com/latest/admin-configuring/govern/how-to-connect-dss-govern-deployer.html');
+                if (data.popularDatasetsSettings?.enablePopularDatasets === false) add('Popular Datasets', 'Track and surface frequently accessed datasets across projects to help users discover commonly used data sources', 'https://knowledge.dataiku.com/latest/getting-started/dataiku-ui/concept-popular-datasets.html');
+                if (data.impersonation?.enabled === false) add('Impersonation', 'Run jobs as the Unix user who triggered them (instead of the dataiku user) for proper file permissions and security auditing', 'https://doc.dataiku.com/dss/latest/user-isolation/index.html');
+                
+                // Deployer mode check (special case - not binary enabled/disabled)
+                if (data.deployerClientSettings?.mode && data.deployerClientSettings.mode !== 'LOCAL') {
+                    disabled['Deployer Client'] = { status: `Mode: ${data.deployerClientSettings.mode}`, description: 'Deployer mode should be LOCAL for standard deployments. This setting controls how project bundles are managed and deployed to other DSS instances', url: 'https://knowledge.dataiku.com/latest/mlops-o16n/project-deployment/concept-project-deployment.html' };
+                }
+                
+                return disabled;
             }
             
             processSparkSettings(data, result) {
@@ -1972,10 +2006,7 @@
                 
                 // Extract other root files
                 for (const entry of entries) {
-                    if (entry.filename.includes('datadir_listing')) {
-                        this.log(`Found datadir_listing file: ${entry.filename}, size: ${entry.uncompressedSize}, isDir: ${entry.directory}`);
-                    }
-                    if (!entry.filename.includes('/') && !entry.directory) {
+                    if (!entry.filename.includes('/') && !entry.directory && entry.uncompressedSize < 10 * 1024 * 1024) {
                         try {
                             this.log(`Extracting root file: ${entry.filename} (${UtilityFormatter.formatBytes(entry.uncompressedSize)})`);
                             const writer = new zip.TextWriter();
@@ -2084,7 +2115,6 @@
                     { pattern: /\/env-default\.sh$/, label: 'env-default.sh' },
                     { pattern: /\/env-site\.sh$/, label: 'env-site.sh' },
                     { pattern: /diag\.txt$/, label: 'diag.txt' },
-                    { pattern: /datadir_listing\.txt$/, label: 'datadir_listing.txt' },
                     { pattern: /install\.ini$/, label: 'install.ini' }
                 ];
                 
@@ -2119,9 +2149,22 @@
                         this.parser.downloadToggleBtn = this.createToggleButton();
                         this.parser.downloadBtnsContainer = downloadBtnsContainer;
                         
+                        // Create export lite zip button
+                        const exportLiteBtn = document.createElement('button');
+                        exportLiteBtn.className = 'display-log-btn';
+                        exportLiteBtn.style.marginLeft = '10px';
+                        exportLiteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-zip icon-left" viewBox="0 0 16 16"><path d="M6.5 7.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v.938l.4 1.599a1 1 0 0 1-.416 1.074l-.93.62a1 1 0 0 1-1.108 0l-.93-.62a1 1 0 0 1-.416-1.074l.4-1.599V7.5z"/><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm5.5-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H9v1H8v1h1v1H8v1h1v1H7.5V5h-1V4h1V3h-1V2h1V1z"/></svg> Export Lite Diag';
+                        exportLiteBtn.addEventListener('click', () => this.parser.exportLiteZip());
+                        
                         this.parser.downloadUICreated = true;
                         
-                        infoPanel.insertBefore(this.parser.downloadToggleBtn, infoPanel.firstChild);
+                        const btnContainer = document.createElement('div');
+                        btnContainer.style.display = 'flex';
+                        btnContainer.style.gap = '0';
+                        btnContainer.appendChild(this.parser.downloadToggleBtn);
+                        btnContainer.appendChild(exportLiteBtn);
+                        
+                        infoPanel.insertBefore(btnContainer, infoPanel.firstChild);
                         infoPanel.insertBefore(this.parser.downloadBtnsContainer, infoPanel.childNodes[1]);
                     }
                 }
@@ -2226,6 +2269,14 @@
             }
             
             createSmallTables() {
+                // Create Disabled Features card first (at the top)
+                if (this.parsedData.disabledFeatures && Object.keys(this.parsedData.disabledFeatures).length > 0) {
+                    const item = document.createElement('div');
+                    item.className = 'grid-item wide';
+                    this.parser.createTable('disabledFeatures', '⚠️ Disabled Features', this.parsedData.disabledFeatures, item, this.tableFiltersDiv);
+                    this.grid.appendChild(item);
+                }
+                
                 // Create Projects table
                 if (this.parsedData.projects && this.parsedData.projects.length > 0) {
                     this.parser.createProjectsTable(this.grid, this.tableFiltersDiv);
@@ -3566,19 +3617,16 @@
                 
                 const thead = document.createElement('thead');
                 const headerRow = document.createElement('tr');
-                const header1 = document.createElement('th');
-                const header2 = document.createElement('th');
+                const addHeader = (text) => { const th = document.createElement('th'); th.textContent = text; headerRow.appendChild(th); };
                 
-                if (id === 'enabledSettings') {
-                    header1.textContent = 'Setting';
-                    header2.textContent = 'Enabled';
+                if (id === 'disabledFeatures') {
+                    addHeader('Feature'); addHeader('Status'); addHeader('Description');
+                } else if (id === 'enabledSettings') {
+                    addHeader('Setting'); addHeader('Enabled');
                 } else {
-                    header1.textContent = 'Name';
-                    header2.textContent = 'Value';
+                    addHeader('Name'); addHeader('Value');
                 }
                 
-                headerRow.appendChild(header1);
-                headerRow.appendChild(header2);
                 thead.appendChild(headerRow);
                 table.appendChild(thead);
                 
@@ -3620,6 +3668,21 @@
                     const row = document.createElement('tr');
                     const keyCell = document.createElement('td');
                     const valCell = document.createElement('td');
+                    
+                    // Special handling for disabled features table
+                    if (id === 'disabledFeatures') {
+                        keyCell.innerHTML = `<strong><a href="${value.url}" target="_blank" rel="noopener noreferrer">${key}</a></strong>`;
+                        valCell.textContent = value.status;
+                        valCell.style.cssText = 'color: #dc3545; font-weight: bold';
+                        
+                        const descCell = document.createElement('td');
+                        descCell.textContent = value.description;
+                        descCell.style.fontSize = '0.9em';
+                        
+                        row.append(keyCell, valCell, descCell);
+                        tbody.appendChild(row);
+                        continue;
+                    }
                     
                     // Format the key (but NOT for usersByProjects since those are email addresses)
                     let formattedKey = (id === 'usersByProjects') ? key : formatKey(key);
@@ -4904,6 +4967,7 @@
         class DSSParser {
             constructor() {
                 this.extractedFiles = {};
+                this.parsedFiles = new Set(); // Track which files were actually parsed
                 this.parsedData = {
                     keyMetrics: {},
                     enabledSettings: {},
@@ -4913,7 +4977,8 @@
                     authSettings: {},
                     pythonVersionCounts: {},
                     userStats: {},
-                    cgroupSettings: {}
+                    cgroupSettings: {},
+                    disabledFeatures: {}
                 };
                 this.tableContainers = {};
                 this.activeFilter = 'all';
@@ -5031,6 +5096,32 @@
                 this.resultsDisplayer.downloadFile(filename, content);
             }
             
+            async exportLiteZip() {
+                try {
+                    const zipWriter = new zip.ZipWriter(new zip.BlobWriter('application/zip'));
+                    
+                    for (const filePath of this.parsedFiles) {
+                        // Skip log files
+                        if (filePath.match(/\.(log)$/)) continue;
+                        
+                        const content = this.extractedFiles[filePath];
+                        if (content) {
+                            await zipWriter.add(filePath, new zip.TextReader(content));
+                        }
+                    }
+                    
+                    const blob = await zipWriter.close();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'diag-lite.zip';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                } catch (error) {
+                    console.error('Error creating lite zip:', error);
+                    alert('Error creating lite zip file: ' + error.message);
+                }
+            }
             
             // Log both to console and debug logs
             log(message, data) {
@@ -5062,32 +5153,41 @@
             async parseFiles() {
                 // Use unified findFile for all lookups
                 const diagPath = this.fileManager.findFile('diag.txt');
-                if (diagPath) this.parseDiagFile(this.extractedFiles[diagPath]);
+                if (diagPath) { this.parseDiagFile(this.extractedFiles[diagPath]); this.parsedFiles.add(diagPath); }
                 const connectionsPath = this.fileManager.findFile(this.dsshome + 'config/connections.json');
-                if (connectionsPath) this.parseConnections(this.extractedFiles[connectionsPath]);
+                if (connectionsPath) { this.parseConnections(this.extractedFiles[connectionsPath]); this.parsedFiles.add(connectionsPath); }
                 const generalSettingsPath = this.fileManager.findFile(this.dsshome + 'config/general-settings.json');
-                if (generalSettingsPath) this.parseGeneralSettings(this.extractedFiles[generalSettingsPath]);
+                if (generalSettingsPath) { this.parseGeneralSettings(this.extractedFiles[generalSettingsPath]); this.parsedFiles.add(generalSettingsPath); }
                 const licensePath = this.fileManager.findFile(this.dsshome + 'config/license.json');
-                if (licensePath) this.parseLicense(this.extractedFiles[licensePath]);
+                if (licensePath) { this.parseLicense(this.extractedFiles[licensePath]); this.parsedFiles.add(licensePath); }
                 const versionPath = this.fileManager.findFile(this.dsshome + 'dss-version.json');
-                if (versionPath) this.parseVersion(this.extractedFiles[versionPath]);
+                if (versionPath) { this.parseVersion(this.extractedFiles[versionPath]); this.parsedFiles.add(versionPath); }
                 const usersPath = this.fileManager.findFile(this.dsshome + 'config/users.json');
-                if (usersPath) this.parseUsers(this.extractedFiles[usersPath]);
+                if (usersPath) { this.parseUsers(this.extractedFiles[usersPath]); this.parsedFiles.add(usersPath); }
                 this.parseClusters();
-                let logPath = this.fileManager.findFile(this.dsshome + 'run/backend.log')
-                    || this.fileManager.findFile(this.dsshome + 'run/fmmain.log')
-                    || this.fileManager.findFile('output.log');
-                if (logPath) {
-                    this.parseBackendLog(this.extractedFiles[logPath]);
-                    this.actualLogFileName = logPath.split('/').pop();
-                }
                 const supervisordLogPath = this.fileManager.findFile(this.dsshome + 'run/supervisord.log');
-                if (supervisordLogPath) this.parseDSSLastRestart(this.extractedFiles[supervisordLogPath]);
+                if (supervisordLogPath) { this.parseDSSLastRestart(this.extractedFiles[supervisordLogPath]); this.parsedFiles.add(supervisordLogPath); }
                 const envDefaultPath = this.fileManager.findFile(this.dsshome + 'bin/env-default.sh');
-                if (envDefaultPath) this.parseEnvDefault(this.extractedFiles[envDefaultPath]);
+                if (envDefaultPath) { this.parseEnvDefault(this.extractedFiles[envDefaultPath]); this.parsedFiles.add(envDefaultPath); }
                 this.parsePlugins();
                 this.parseCodeEnvs();
                 this.parseProjects();
+                
+                // Track additional config files
+                const installIniPath = this.fileManager.findFile('install.ini');
+                if (installIniPath) this.parsedFiles.add(installIniPath);
+                const envSitePath = this.fileManager.findFile(this.dsshome + 'bin/env-site.sh');
+                if (envSitePath) this.parsedFiles.add(envSitePath);
+                
+                // Track files used by composite parsers
+                for (const path in this.extractedFiles) {
+                    if (path.match(/\/clusters\//) ||  // All cluster files
+                        path.match(/\/plugins\//) ||   // All plugin files
+                        path.match(/\/code-envs\/desc\/.*\/desc\.json$/) ||  // Code env desc files
+                        path.match(/\/projects\/.*\/params\.json$/)) {  // Project params files
+                        this.parsedFiles.add(path);
+                    }
+                }
             }
             
             parseDiagFile(content) {
@@ -5149,6 +5249,7 @@
                 this.parsedData.resourceLimits = result.resourceLimits || {};
                 this.parsedData.cgroupSettings = result.cgroupSettings || {};
                 this.parsedData.proxySettings = result.proxySettings || {};
+                this.parsedData.disabledFeatures = result.disabledFeatures || {};
             }
             
             parseDSSLastRestart(content) {
