@@ -104,7 +104,7 @@ body {
   box-shadow: var(--shadow);
 }
 
-#back-btn {
+#back-btn, .export-lite-btn {
   background-color: var(--dataiku-primary);
   color: white;
   padding: 12px 24px;
@@ -114,10 +114,26 @@ body {
   font-weight: 500;
   transition: all 0.2s;
   box-shadow: 0 2px 5px rgba(0, 181, 170, 0.3);
+  vertical-align: middle;
 }
 
-#back-btn:hover {
+#back-btn:hover, .export-lite-btn:hover {
   background-color: var(--dataiku-primary-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 181, 170, 0.4);
+}
+
+.export-lite-btn {
+  background-color: transparent;
+  color: var(--dataiku-primary);
+  border: 2px solid var(--dataiku-primary);
+  box-shadow: none;
+  margin-left: 10px;
+}
+
+.export-lite-btn:hover {
+  background-color: var(--dataiku-primary);
+  color: white;
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(0, 181, 170, 0.4);
 }

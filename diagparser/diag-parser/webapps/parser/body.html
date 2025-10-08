@@ -175,6 +175,7 @@
         <h1> Diag Parser <sup class="beta-badge">BETA</sup></h1>
         <div id="back-btn-container" class="back-btn-container" style="display: none;">
             <button id="back-btn">Upload New File</button>
+            <button id="export-lite-btn" class="export-lite-btn">Export Lite Diag</button>
         </div>
     </div>
 
@@ -796,6 +797,7 @@
                 if (data.askDataikuSettings?.enabled === false) add('Ask Dataiku', 'Interactive AI chatbot that answers questions about DSS features, APIs, and best practices within the interface', 'https://doc.dataiku.com/dss/latest/generative-ai/chat-ui/answers.html');
                 if (data.sparkSettings?.sparkEnabled === false) add('Spark', 'Enable Apache Spark for distributed processing of large datasets across visual recipes, code recipes, and SQL', 'https://doc.dataiku.com/dss/latest/spark/index.html');
                 if (data.containerSettings?.cdeEnabled === false) add('Container Execution (CDE)', 'Run code recipes and notebooks in isolated Docker containers with custom dependencies, separate from base DSS environment', 'https://doc.dataiku.com/dss/latest/containers/containerized-execution.html');
+                if (data.containerSettings?.k8sEnabled === false) add('Kubernetes', 'Deploy and execute containerized workloads on Kubernetes clusters for scalable, distributed processing', 'https://doc.dataiku.com/dss/latest/containers/kubernetes.html');
                 if (data.cgroupSettings?.enabled === false) add('CGroups', 'Linux control groups to enforce CPU and memory limits per process, preventing resource exhaustion from runaway jobs', 'https://doc.dataiku.com/dss/latest/operations/cgroups.html');
                 if (data.governIntegrationSettings?.enabled === false) add('Govern Integration', 'Connect to Dataiku Govern for centralized governance, compliance tracking, model validation, and artifact management', 'https://knowledge.dataiku.com/latest/admin-configuring/govern/how-to-connect-dss-govern-deployer.html');
                 if (data.popularDatasetsSettings?.enablePopularDatasets === false) add('Popular Datasets', 'Track and surface frequently accessed datasets across projects to help users discover commonly used data sources', 'https://knowledge.dataiku.com/latest/getting-started/dataiku-ui/concept-popular-datasets.html');
@@ -2149,20 +2151,12 @@
                         this.parser.downloadToggleBtn = this.createToggleButton();
                         this.parser.downloadBtnsContainer = downloadBtnsContainer;
                         
-                        // Create export lite zip button
-                        const exportLiteBtn = document.createElement('button');
-                        exportLiteBtn.className = 'display-log-btn';
-                        exportLiteBtn.style.marginLeft = '10px';
-                        exportLiteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-zip icon-left" viewBox="0 0 16 16"><path d="M6.5 7.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v.938l.4 1.599a1 1 0 0 1-.416 1.074l-.93.62a1 1 0 0 1-1.108 0l-.93-.62a1 1 0 0 1-.416-1.074l.4-1.599V7.5z"/><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm5.5-1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H9v1H8v1h1v1H8v1h1v1H7.5V5h-1V4h1V3h-1V2h1V1z"/></svg> Export Lite Diag';
-                        exportLiteBtn.addEventListener('click', () => this.parser.exportLiteZip());
-                        
                         this.parser.downloadUICreated = true;
                         
                         const btnContainer = document.createElement('div');
                         btnContainer.style.display = 'flex';
                         btnContainer.style.gap = '0';
                         btnContainer.appendChild(this.parser.downloadToggleBtn);
-                        btnContainer.appendChild(exportLiteBtn);
                         
                         infoPanel.insertBefore(btnContainer, infoPanel.firstChild);
                         infoPanel.insertBefore(this.parser.downloadBtnsContainer, infoPanel.childNodes[1]);
@@ -4941,6 +4935,7 @@
             initEventListeners() {
                 document.getElementById('file-input').addEventListener('change', e => this.parser.fileProcessor.handleFileSelect(e));
                 document.getElementById('back-btn').addEventListener('click', () => this.reset());
+                document.getElementById('export-lite-btn').addEventListener('click', () => this.parser.exportLiteZip());
             }
 
             reset() {
