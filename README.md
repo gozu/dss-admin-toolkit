@@ -12,7 +12,7 @@ custom  DSS plugins developed for Walmart.
 
 All plugins in this repository, unless otherwise stipulated, are:
 
-   Copyright (c) 2025 Dataiku 
+   Copyright (c) 2026 Dataiku
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
