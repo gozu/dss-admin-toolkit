@@ -7675,6 +7675,40 @@ def api_code_env_cleaner_delete(lang, name):
     return jsonify({"deleted": name}), 200
 
 
+@app.route('/api/tools/project-cleaner/<project_key>', methods=['DELETE'])
+def api_project_cleaner_delete(project_key):
+    """Backup then delete an inactive project after verifying the confirmation header."""
+    confirm = request.headers.get("X-Confirm-Name", "")
+    if confirm != project_key:
+        return jsonify({"error": "Confirmation header does not match project key"}), 400
+
+    client = dataiku.api_client()
+    project = client.get_project(project_key)
+
+    # Backup first — if this fails, do NOT proceed with deletion
+    backup_dir = "/data/dataiku/projectbackups"
+    backup_path = os.path.join(backup_dir, "%s.zip" % project_key)
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+        project.export_to_file(backup_path)
+    except Exception as e:
+        app.logger.error("[project-cleaner] backup failed for %s: %s", project_key, e)
+        return jsonify({"error": "Backup failed: %s" % str(e)}), 500
+
+    # Delete project
+    try:
+        project.delete()
+    except Exception as e:
+        app.logger.error("[project-cleaner] delete failed for %s: %s", project_key, e)
+        return jsonify({"error": "Delete failed (backup saved at %s): %s" % (backup_path, str(e))}), 500
+
+    # Invalidate caches
+    _CACHE.pop('tools_outreach_data', None)
+
+    app.logger.info("[project-cleaner] backed up to %s and deleted %s", backup_path, project_key)
+    return jsonify({"backed_up": backup_path, "deleted": project_key}), 200
+
+
 @app.route('/api/tools/plugins/compare', methods=['POST'])
 def api_tools_plugins_compare():
     """Compare local (Design) plugins with a remote (Automation) node."""

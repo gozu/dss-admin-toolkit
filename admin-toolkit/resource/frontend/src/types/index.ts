@@ -619,7 +619,7 @@ export interface DirTreeLoaderState {
 // COMPARISON TYPES
 // =============================================================================
 
-export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'plugins';
+export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'project-cleaner' | 'plugins';
 
 export interface PluginCompareRow {
   id: string;
@@ -644,6 +644,7 @@ export type PageId =
   | 'logs'
   | 'outreach'
   | 'code-env-cleaner'
+  | 'project-cleaner'
   | 'plugins'
   | 'tracking'
   | 'settings';

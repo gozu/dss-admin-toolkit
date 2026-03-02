@@ -97,6 +97,7 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
       return <LogsPage />;
     case 'outreach':
     case 'code-env-cleaner':
+    case 'project-cleaner':
     case 'plugins':
       return <ToolsView />;
     case 'tracking':

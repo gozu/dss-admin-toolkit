@@ -29,6 +29,9 @@ const CodeEnvCleaner = lazy(() =>
 const PluginComparator = lazy(() =>
   import('./PluginComparator').then((m) => ({ default: m.PluginComparator })),
 );
+const InactiveProjectCleaner = lazy(() =>
+  import('./InactiveProjectCleaner').then((m) => ({ default: m.InactiveProjectCleaner })),
+);
 
 
 // ── Campaign configuration ──
@@ -1931,6 +1934,20 @@ export function ToolsView() {
                 }
               >
                 <CodeEnvCleaner />
+              </Suspense>
+            )}
+
+            {/* Inactive Project Cleaner */}
+            {activePage === 'project-cleaner' && (
+              <Suspense
+                fallback={
+                  <div className="glass-card p-6 text-[var(--text-secondary)]">Loading...</div>
+                }
+              >
+                <InactiveProjectCleaner
+                  recipients={data?.inactiveProjectRecipients ?? []}
+                  isLoading={isLoading}
+                />
               </Suspense>
             )}
 
