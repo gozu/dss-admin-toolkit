@@ -103,19 +103,12 @@ const icons: Record<string, ReactNode> = {
       <polyline points="22,6 12,13 2,6" />
     </svg>
   ),
-  'code-env-cleaner': (
+  cleaners: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
       <line x1="10" y1="11" x2="10" y2="17" />
       <line x1="14" y1="11" x2="14" y2="17" />
-    </svg>
-  ),
-  'project-cleaner': (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 8v13H3V8" />
-      <path d="M1 3h22v5H1z" />
-      <path d="M10 12h4" />
     </svg>
   ),
   plugins: (
@@ -187,8 +180,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'TOOLS',
     items: [
       { id: 'outreach', label: 'Outreach' },
-      { id: 'code-env-cleaner', label: 'CodEnv Cleaner' },
-      { id: 'project-cleaner', label: 'Project Cleaner' },
+      { id: 'cleaners', label: 'Cleaners' },
       { id: 'plugins', label: 'Plugin Sync' },
       { id: 'tracking', label: 'Compliance' },
       { id: 'settings', label: 'Settings' },

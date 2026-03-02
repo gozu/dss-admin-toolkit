@@ -21,7 +21,7 @@ const PAGE_ORDER: PageId[] = [
   'platform-config',
   'logs',
   'outreach',
-  'code-env-cleaner',
+  'cleaners',
   'settings',
 ];
 
