@@ -73,7 +73,7 @@ export function Modal({ isOpen, onClose, title, children, footer, sizePreset = '
           dragHandleClassName="modal-drag-handle"
           className="modal-content flex flex-col overflow-hidden"
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e: React.MouseEvent) => e.stopPropagation()}
         >
           {/* Header */}
           <div className="modal-drag-handle flex items-center justify-between px-4 py-3 border-b border-[var(--border-glass)] cursor-move select-none">
