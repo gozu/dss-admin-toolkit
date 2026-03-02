@@ -1,0 +1,62 @@
+import { useMemo } from 'react';
+import { useDiag } from '../../context/DiagContext';
+import { DataTable } from '../index';
+import { PluginsTable } from '../PluginsTable';
+
+interface TabDef {
+  id: string;
+  label: string;
+  dataKey: string;
+  title: string;
+  sortNumeric?: boolean;
+}
+
+const ALL_TABS: TabDef[] = [
+  { id: 'container', label: 'Container Settings', dataKey: 'containerSettings', title: 'Container Settings' },
+  { id: 'integration', label: 'Integration Settings', dataKey: 'integrationSettings', title: 'Integration Settings' },
+  { id: 'proxy', label: 'Proxy Config', dataKey: 'proxySettings', title: 'Proxy Config' },
+  { id: 'user-stats', label: 'User Statistics', dataKey: 'userStats', title: 'User Statistics', sortNumeric: true },
+];
+
+export function PlatformConfigPage() {
+  const { state } = useDiag();
+  const { parsedData } = state;
+
+  const availableTabs = useMemo(() => {
+    return ALL_TABS.filter((tab) => {
+      const data = parsedData[tab.dataKey as keyof typeof parsedData];
+      return data && typeof data === 'object' && Object.keys(data).length > 0;
+    });
+  }, [parsedData]);
+
+  const hasPlugins = (parsedData.plugins?.length ?? 0) > 0;
+
+  if (availableTabs.length === 0 && !hasPlugins) {
+    return (
+      <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center">
+          <p className="text-[var(--text-secondary)]">No platform configuration data available.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {availableTabs.map((tab) => (
+          <DataTable
+            key={tab.id}
+            id={`${tab.dataKey}-table`}
+            title={tab.title}
+            data={parsedData[tab.dataKey as keyof typeof parsedData] as Record<string, string | number>}
+            sortNumeric={tab.sortNumeric}
+          />
+        ))}
+      </div>
+      <div className="mt-6">
+        <PluginsTable />
+      </div>
+    </div>
+  );
+}
