@@ -184,22 +184,21 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    title: 'TOOLS',
+    items: [
+      { id: 'outreach', label: 'Outreach' },
+      { id: 'code-env-cleaner', label: 'Cleaner' },
+      { id: 'project-cleaner', label: 'Projects' },
+      { id: 'plugins', label: 'Plugins' },
+      { id: 'tracking', label: 'Tracking' },
+      { id: 'settings', label: 'Settings' },
+    ],
+  },
+  {
     title: 'LOGS',
     items: [{ id: 'logs', label: 'Errors' }],
   },
 ];
-
-const TOOLS_SECTION: NavSection = {
-  title: 'TOOLS',
-  items: [
-    { id: 'outreach', label: 'Outreach' },
-    { id: 'code-env-cleaner', label: 'Cleaner' },
-    { id: 'project-cleaner', label: 'Projects' },
-    { id: 'plugins', label: 'Plugins' },
-    { id: 'tracking', label: 'Tracking' },
-    { id: 'settings', label: 'Settings' },
-  ],
-};
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -331,11 +330,6 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0">
         {NAV_SECTIONS.map((section, idx) => renderSection(section, idx))}
-
-        {/* Separator before tools */}
-        <div className="mx-1 my-3 border-t border-[var(--border-default)]" />
-
-        {renderSection(TOOLS_SECTION, 0)}
       </nav>
 
       {/* Contact author */}
