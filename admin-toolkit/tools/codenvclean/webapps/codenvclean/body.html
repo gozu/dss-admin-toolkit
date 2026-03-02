@@ -1,0 +1,666 @@
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 20px; height: 20px;
+    border: 3px solid #e5e7eb; border-top-color: #3b82f6;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+    display: inline-block;
+  }
+  .progress-bar {
+    height: 3px; background: #3b82f6; border-radius: 2px;
+    width: 0%; transition: width 0.3s ease-out;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .fade-in { animation: fadeIn 0.3s ease-out forwards; }
+  .row-fade { animation: fadeIn 0.25s ease-out forwards; }
+</style>
+
+<div id="app" class="max-w-5xl mx-auto px-6 py-8 font-sans">
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-8">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900 flex items-center gap-3">
+        <svg class="w-7 h-7 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+        </svg>
+        Code Env Cleaner
+      </h1>
+      <p class="text-sm text-gray-500 mt-1">Find and remove unused code environments</p>
+    </div>
+    <button onclick="loadEnvs()" id="refresh-btn"
+      class="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-400 transition shadow-sm">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- Scan settings (shown before first scan) -->
+  <div id="scan-settings" class="fade-in">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+      <div class="flex items-center gap-4 justify-between">
+        <div class="flex items-center gap-4">
+          <label class="text-sm font-medium text-gray-700">Parallel threads:</label>
+          <select id="thread-count"
+            class="border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400">
+            <option value="1">1 (sequential)</option>
+            <option value="4" selected>4</option>
+            <option value="8">8</option>
+            <option value="12">12</option>
+            <option value="16">16</option>
+            <option value="20">20</option>
+          </select>
+          <span class="text-xs text-gray-400">Higher = faster scan, more server load</span>
+        </div>
+        <button onclick="loadEnvs()"
+          class="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+          </svg>
+          Scan
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading state -->
+  <div id="loading" class="hidden fade-in">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="progress-bar"></div>
+      <div class="flex items-center justify-center py-16 gap-3">
+        <div class="spinner"></div>
+        <span id="loading-text" class="text-gray-500 text-sm">Loading code environments...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error state -->
+  <div id="error" class="hidden fade-in">
+    <div class="bg-red-50 border border-red-200 rounded-xl p-5 flex items-start gap-3">
+      <svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/>
+      </svg>
+      <div>
+        <p class="font-medium text-red-800">Failed to load code environments</p>
+        <p id="error-detail" class="text-sm text-red-600 mt-1"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats bar -->
+  <div id="stats" class="hidden mb-4 fade-in">
+    <div class="flex items-center gap-4 text-sm">
+      <span class="text-gray-500"><span id="stat-total" class="font-semibold text-gray-800">0</span> environments</span>
+      <span class="text-gray-300">|</span>
+      <span class="text-gray-500"><span id="stat-unused" class="font-semibold text-amber-600">0</span> unused</span>
+      <span class="text-gray-300">|</span>
+      <span class="text-gray-500"><span id="stat-used" class="font-semibold text-green-600">0</span> in use</span>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div id="table-wrap" class="hidden fade-in">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide cursor-pointer select-none hover:text-gray-900" onclick="sortBy('name')">Name <span id="sort-name" class="text-gray-400"></span></th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide">Language</th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide">Mode</th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide cursor-pointer select-none hover:text-gray-900" onclick="sortBy('owner')">Owner <span id="sort-owner" class="text-gray-400"></span></th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide cursor-pointer select-none hover:text-gray-900" onclick="sortBy('usages')">Usages <span id="sort-usages" class="text-gray-400"></span></th>
+            <th class="py-3 px-4 text-right font-semibold text-gray-600 text-xs uppercase tracking-wide">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="env-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Detail view (shown when clicking a usage badge) -->
+  <div id="detail-view" class="hidden fade-in">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="px-6 py-4 border-b border-gray-200 flex items-center gap-4">
+        <button onclick="closeDetail()"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/>
+          </svg>
+          Back
+        </button>
+        <div>
+          <h2 id="detail-env-name" class="text-lg font-semibold text-gray-900"></h2>
+          <p id="detail-env-meta" class="text-sm text-gray-500"></p>
+        </div>
+      </div>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide">Type</th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide">Project</th>
+            <th class="py-3 px-4 text-left font-semibold text-gray-600 text-xs uppercase tracking-wide">Object</th>
+            <th class="py-3 px-4 text-right font-semibold text-gray-600 text-xs uppercase tracking-wide">Link</th>
+          </tr>
+        </thead>
+        <tbody id="detail-tbody"></tbody>
+      </table>
+      <div id="detail-empty" class="hidden py-12 text-center text-gray-400 text-sm">No usages found for this environment</div>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div id="empty-msg" class="hidden fade-in">
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm py-16 text-center">
+      <svg class="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/>
+      </svg>
+      <p class="text-gray-500 font-medium">No code environments found</p>
+      <p class="text-gray-400 text-sm mt-1">All environments are plugin-managed or internal</p>
+    </div>
+  </div>
+</div>
+
+<!-- Delete confirmation modal -->
+<div id="modal-overlay" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50" style="backdrop-filter:blur(2px)">
+  <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-4 fade-in">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+        <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+        </svg>
+      </div>
+      <div>
+        <h2 class="text-lg font-semibold text-gray-900">Delete Code Environment</h2>
+        <p class="text-sm text-gray-500">This action cannot be undone</p>
+      </div>
+    </div>
+    <div class="bg-red-50 border border-red-100 rounded-lg p-3 mb-4">
+      <p class="text-sm text-red-800">You are about to permanently delete:</p>
+      <p id="modal-env-name" class="font-mono font-bold text-red-900 mt-1"></p>
+    </div>
+    <label class="block text-sm text-gray-600 mb-2">
+      Type <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">delete <span id="modal-confirm-hint" class="font-bold"></span></code> to confirm:
+    </label>
+    <input id="modal-input" type="text"
+      class="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-red-400 mb-5"
+      placeholder="delete ..." autocomplete="off">
+    <div class="flex justify-end gap-3">
+      <button onclick="closeModal()"
+        class="px-4 py-2.5 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition">
+        Cancel
+      </button>
+      <button id="modal-delete-btn" onclick="confirmDelete()" disabled
+        class="px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition inline-flex items-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/>
+        </svg>
+        <span id="modal-delete-text">Delete</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var backendUrl = "";
+  var dssBaseUrl = "";
+  var envs = [];
+  var pendingDelete = null;
+  var sortCol = null;   // null = default (unused-first + alpha), "name", "owner", "usages"
+  var sortAsc = true;
+
+  function initDataiku(cb) {
+    var tries = 0;
+    function check() {
+      if (typeof dataiku !== "undefined" && typeof dataiku.getWebAppBackendUrl === "function") {
+        backendUrl = dataiku.getWebAppBackendUrl("").replace(/\/$/, "");
+        dssBaseUrl = window.location.origin;
+        cb();
+      } else if (tries++ < 50) {
+        setTimeout(check, 100);
+      } else {
+        backendUrl = "";
+        dssBaseUrl = window.location.origin;
+        cb();
+      }
+    }
+    check();
+  }
+
+  window.loadEnvs = function () {
+    var loading = document.getElementById("loading");
+    var error = document.getElementById("error");
+    var tableWrap = document.getElementById("table-wrap");
+    var emptyMsg = document.getElementById("empty-msg");
+    var stats = document.getElementById("stats");
+    var scanSettings = document.getElementById("scan-settings");
+    var loadingText = document.getElementById("loading-text");
+    var progressBar = loading.querySelector(".progress-bar");
+    var tbody = document.getElementById("env-tbody");
+    var threadCount = document.getElementById("thread-count").value || "4";
+
+    // Reset UI
+    scanSettings.classList.add("hidden");
+    loading.classList.remove("hidden");
+    error.classList.add("hidden");
+    tableWrap.classList.add("hidden");
+    emptyMsg.classList.add("hidden");
+    stats.classList.add("hidden");
+    document.getElementById("detail-view").classList.add("hidden");
+    tbody.innerHTML = "";
+    envs = [];
+    sortCol = null;
+    sortAsc = true;
+    clearSortIndicators();
+    progressBar.style.width = "0%";
+    loadingText.textContent = "Loading code environments...";
+
+    // Close any previous EventSource
+    if (window._envStream) {
+      window._envStream.close();
+      window._envStream = null;
+    }
+
+    var total = 0;
+    var received = 0;
+    var source = new EventSource(backendUrl + "/api/code-envs/stream?threads=" + threadCount);
+    window._envStream = source;
+
+    source.addEventListener("init", function (e) {
+      var data = JSON.parse(e.data);
+      total = data.total;
+      console.log("[codenvclean] env list fetched in " + data.list_ms + "ms, " + total + " envs to check, " + data.threads + " threads");
+      if (total === 0) {
+        source.close();
+        window._envStream = null;
+        loading.classList.add("hidden");
+        scanSettings.classList.remove("hidden");
+        emptyMsg.classList.remove("hidden");
+        return;
+      }
+      loadingText.textContent = "Checking " + total + " environments (" + data.threads + " thread" + (data.threads > 1 ? "s" : "") + ")...";
+      progressBar.style.width = "5%";
+      tableWrap.classList.remove("hidden");
+    });
+
+    source.addEventListener("env", function (e) {
+      var env = JSON.parse(e.data);
+      received++;
+      envs.push(env);
+
+      // Update progress bar
+      var pct = Math.min(5 + Math.round((received / total) * 95), 100);
+      progressBar.style.width = pct + "%";
+      loadingText.textContent = "Checking usages... " + received + " / " + total;
+
+      // Insert row in sorted position
+      insertEnvRow(env, tbody);
+
+      // Update stats incrementally
+      updateStats();
+      stats.classList.remove("hidden");
+
+      console.log("[codenvclean] " + env.envLang + "/" + env.envName +
+        ": " + env.usageCount + " usages (" + env.usage_ms + "ms)");
+    });
+
+    source.addEventListener("done", function (e) {
+      var data = JSON.parse(e.data);
+      source.close();
+      window._envStream = null;
+      loading.classList.add("hidden");
+      console.log("[codenvclean] all done in " + data.total_ms + "ms");
+    });
+
+    source.addEventListener("error", function (e) {
+      if (e.data) {
+        var data = JSON.parse(e.data);
+        document.getElementById("error-detail").textContent = data.error;
+      }
+      source.close();
+      window._envStream = null;
+      loading.classList.add("hidden");
+      scanSettings.classList.remove("hidden");
+      error.classList.remove("hidden");
+    });
+
+    source.onerror = function () {
+      if (source.readyState === EventSource.CLOSED) return;
+      source.close();
+      window._envStream = null;
+      loading.classList.add("hidden");
+      scanSettings.classList.remove("hidden");
+      document.getElementById("error-detail").textContent = "Connection to server lost";
+      error.classList.remove("hidden");
+    };
+  };
+
+  function buildEnvRow(env) {
+    var tr = document.createElement("tr");
+    tr.className = "border-b border-gray-100 hover:bg-blue-50/40 transition-colors row-fade";
+    tr.setAttribute("data-env", env.envName);
+    tr.setAttribute("data-unused", env.usageCount === 0 ? "1" : "0");
+    tr.setAttribute("data-sortname", env.envName.toLowerCase());
+
+    var unused = env.usageCount === 0;
+    var adminLink = dssBaseUrl + "/admin/code-envs/design/" + env.envLang.toLowerCase() + "/" + env.envName + "/";
+    var tip = usageTooltip(env);
+
+    tr.innerHTML =
+      '<td class="py-3 px-4 font-medium">' +
+        '<a href="' + adminLink + '" target="_blank" class="text-blue-600 hover:text-blue-800 hover:underline">' + esc(env.envName) + '</a>' +
+      "</td>" +
+      '<td class="py-3 px-4 text-gray-600">' +
+        '<span class="inline-flex items-center gap-1.5">' +
+          langLabel(env) +
+        '</span>' +
+      "</td>" +
+      '<td class="py-3 px-4 text-gray-600">' + modeLabel(env.deploymentMode) + "</td>" +
+      '<td class="py-3 px-4 text-gray-600">' + esc(env.owner) + "</td>" +
+      '<td class="py-3 px-4">' +
+        (unused
+          ? '<span class="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-medium px-2.5 py-1 rounded-full border border-amber-200">' +
+              '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>Unused</span>'
+          : '<span class="inline-flex items-center gap-1 bg-green-50 text-green-700 text-xs font-medium px-2.5 py-1 rounded-full border border-green-200 cursor-pointer" ' +
+              'title="' + esc(tip) + '" onclick="showDetail(\'' + esc(env.envName).replace(/'/g, "\\'") + '\')">' +
+              '<span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>' + env.usageCount + ' usage' + (env.usageCount !== 1 ? 's' : '') + '</span>') +
+      "</td>" +
+      '<td class="py-3 px-4 text-right">' +
+        (unused
+          ? '<button onclick="openModal(this)" data-name="' + esc(env.envName) + '" data-lang="' + esc(env.envLang) + '"' +
+              ' class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 transition shadow-sm">' +
+              '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>' +
+              'Delete</button>'
+          : '<span class="text-xs text-gray-400">In use</span>') +
+      "</td>";
+
+    return tr;
+  }
+
+  function insertEnvRow(env, tbody) {
+    var tr = buildEnvRow(env);
+    var unused = env.usageCount === 0;
+
+    // When user has explicit sort active, just append and re-sort
+    if (sortCol) {
+      tbody.appendChild(tr);
+      return;
+    }
+
+    // Default insertion: unused first, then alphabetical within each group
+    var rows = tbody.querySelectorAll("tr");
+    var inserted = false;
+    for (var i = 0; i < rows.length; i++) {
+      var rowUnused = rows[i].getAttribute("data-unused") === "1";
+      var rowName = rows[i].getAttribute("data-sortname");
+
+      if (unused && !rowUnused) {
+        tbody.insertBefore(tr, rows[i]);
+        inserted = true;
+        break;
+      }
+      if (unused === rowUnused && env.envName.toLowerCase() < rowName) {
+        tbody.insertBefore(tr, rows[i]);
+        inserted = true;
+        break;
+      }
+      if (!unused && rowUnused) {
+        continue;
+      }
+    }
+    if (!inserted) {
+      tbody.appendChild(tr);
+    }
+  }
+
+  function updateStats() {
+    var unused = envs.filter(function (e) { return e.usageCount === 0; }).length;
+    document.getElementById("stat-total").textContent = envs.length;
+    document.getElementById("stat-unused").textContent = unused;
+    document.getElementById("stat-used").textContent = envs.length - unused;
+  }
+
+  function modeLabel(mode) {
+    var map = { "DESIGN_MANAGED": "Design", "AUTOMATION_MANAGED": "Automation", "EXTERNAL": "External" };
+    return map[mode] || mode;
+  }
+
+  window.openModal = function (btn) {
+    var name = btn.getAttribute("data-name");
+    var lang = btn.getAttribute("data-lang");
+    var row = btn.closest("tr");
+
+    pendingDelete = { envName: name, envLang: lang, rowEl: row };
+
+    document.getElementById("modal-env-name").textContent = name;
+    document.getElementById("modal-confirm-hint").textContent = name;
+    document.getElementById("modal-input").value = "";
+    document.getElementById("modal-delete-btn").disabled = true;
+    document.getElementById("modal-delete-text").textContent = "Delete";
+    document.getElementById("modal-overlay").classList.remove("hidden");
+    setTimeout(function () { document.getElementById("modal-input").focus(); }, 50);
+  };
+
+  window.closeModal = function () {
+    document.getElementById("modal-overlay").classList.add("hidden");
+    pendingDelete = null;
+  };
+
+  document.getElementById("modal-input").addEventListener("input", function () {
+    if (!pendingDelete) return;
+    var expected = "delete " + pendingDelete.envName;
+    document.getElementById("modal-delete-btn").disabled = this.value !== expected;
+  });
+
+  document.getElementById("modal-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !document.getElementById("modal-delete-btn").disabled) {
+      confirmDelete();
+    }
+  });
+
+  window.confirmDelete = function () {
+    if (!pendingDelete) return;
+    var btn = document.getElementById("modal-delete-btn");
+    var txt = document.getElementById("modal-delete-text");
+    btn.disabled = true;
+    txt.textContent = "Deleting...";
+
+    fetch(backendUrl + "/api/code-envs/" + pendingDelete.envLang + "/" + pendingDelete.envName, {
+      method: "DELETE",
+      headers: { "X-Confirm-Name": pendingDelete.envName },
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (d) { throw new Error(d.error || "HTTP " + r.status); });
+        return r.json();
+      })
+      .then(function () {
+        var row = pendingDelete.rowEl;
+        row.style.transition = "opacity 0.3s, transform 0.3s";
+        row.style.opacity = "0";
+        row.style.transform = "translateX(20px)";
+        setTimeout(function () {
+          row.remove();
+          envs = envs.filter(function (e) { return e.envName !== pendingDelete.envName; });
+          updateStats();
+          if (envs.length === 0) {
+            document.getElementById("table-wrap").classList.add("hidden");
+            document.getElementById("stats").classList.add("hidden");
+            document.getElementById("empty-msg").classList.remove("hidden");
+          }
+          closeModal();
+        }, 300);
+      })
+      .catch(function (err) {
+        alert("Delete failed: " + err.message);
+        btn.disabled = false;
+        txt.textContent = "Delete";
+      });
+  };
+
+  document.getElementById("modal-overlay").addEventListener("click", function (e) {
+    if (e.target === this) closeModal();
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeModal();
+  });
+
+  function esc(s) {
+    var d = document.createElement("div");
+    d.appendChild(document.createTextNode(s || ""));
+    return d.innerHTML;
+  }
+
+  function pyVersion(interp) {
+    var m = (interp || "").match(/PYTHON(\d)(\d+)/);
+    return m ? m[1] + "." + m[2] : interp || "?";
+  }
+
+  function langLabel(env) {
+    if (env.envLang === "PYTHON") {
+      return '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 5.373 3.068 5.373 3.068V6.3h6.627v1.2H3.9S0 6.9 0 12.3s3.4 5.2 3.4 5.2h2V14.3s-.1-3.4 3.3-3.4h5.7s3.2.1 3.2-3.1V3.2S18.1 0 12 0zm-3.2 1.9c.6 0 1.1.5 1.1 1.1s-.5 1.1-1.1 1.1-1.1-.5-1.1-1.1.5-1.1 1.1-1.1z"/></svg>' +
+        "Python " + pyVersion(env.pythonInterpreter);
+    }
+    return '<span class="text-xs">R</span> R';
+  }
+
+  function usageTooltip(env) {
+    if (!env.usages || env.usages.length === 0) return "";
+    var lines = env.usages.slice(0, 8).map(function (u) {
+      var s = u.envUsage || u.usageType || u.type || "?";
+      if (u.projectKey) s += " in " + u.projectKey;
+      if (u.objectId) s += " (" + u.objectId + ")";
+      return s;
+    });
+    if (env.usages.length > 8) lines.push("+" + (env.usages.length - 8) + " more...");
+    return lines.join("\n");
+  }
+
+  function usageLink(u) {
+    if (!u.projectKey) return "";
+    var type = (u.envUsage || u.usageType || u.type || "").toUpperCase();
+    var base = dssBaseUrl + "/projects/" + encodeURIComponent(u.projectKey);
+    if (type === "PROJECT" || !u.objectId) return base + "/";
+    if (type === "NOTEBOOK" || type === "JUPYTER_NOTEBOOK") return base + "/notebooks/" + encodeURIComponent(u.objectId) + "/";
+    if (type === "RECIPE") return base + "/recipes/" + encodeURIComponent(u.objectId) + "/";
+    if (type === "WEBAPP_BACKEND" || type === "WEBAPP") return base + "/webapps/" + encodeURIComponent(u.objectId) + "/view/";
+    return base + "/";
+  }
+
+  // --- Sorting ---
+
+  function clearSortIndicators() {
+    ["sort-name", "sort-owner", "sort-usages"].forEach(function (id) {
+      document.getElementById(id).textContent = "";
+    });
+  }
+
+  window.sortBy = function (col) {
+    if (sortCol === col) {
+      sortAsc = !sortAsc;
+    } else {
+      sortCol = col;
+      sortAsc = true;
+    }
+    clearSortIndicators();
+    var indicator = document.getElementById("sort-" + col);
+    if (indicator) indicator.textContent = sortAsc ? " \u25B2" : " \u25BC";
+    resortTable();
+  };
+
+  function resortTable() {
+    var tbody = document.getElementById("env-tbody");
+    tbody.innerHTML = "";
+    var sorted = envs.slice();
+    if (sortCol === "name") {
+      sorted.sort(function (a, b) {
+        var cmp = a.envName.toLowerCase().localeCompare(b.envName.toLowerCase());
+        return sortAsc ? cmp : -cmp;
+      });
+    } else if (sortCol === "owner") {
+      sorted.sort(function (a, b) {
+        var cmp = (a.owner || "").toLowerCase().localeCompare((b.owner || "").toLowerCase());
+        return sortAsc ? cmp : -cmp;
+      });
+    } else if (sortCol === "usages") {
+      sorted.sort(function (a, b) {
+        var cmp = a.usageCount - b.usageCount;
+        return sortAsc ? cmp : -cmp;
+      });
+    } else {
+      // Default: unused first, then alpha
+      sorted.sort(function (a, b) {
+        if ((a.usageCount === 0) !== (b.usageCount === 0)) return a.usageCount === 0 ? -1 : 1;
+        return a.envName.toLowerCase().localeCompare(b.envName.toLowerCase());
+      });
+    }
+    sorted.forEach(function (env) { insertEnvRowDirect(env, tbody); });
+  }
+
+  function insertEnvRowDirect(env, tbody) {
+    var tr = buildEnvRow(env);
+    tbody.appendChild(tr);
+  }
+
+  // --- Detail view ---
+
+  window.showDetail = function (envName) {
+    var env = null;
+    for (var i = 0; i < envs.length; i++) {
+      if (envs[i].envName === envName) { env = envs[i]; break; }
+    }
+    if (!env) return;
+
+    document.getElementById("table-wrap").classList.add("hidden");
+    document.getElementById("stats").classList.add("hidden");
+
+    var detailView = document.getElementById("detail-view");
+    document.getElementById("detail-env-name").textContent = env.envName;
+    var meta = (env.envLang === "PYTHON" ? "Python " + pyVersion(env.pythonInterpreter) : "R") +
+      " \u00B7 " + modeLabel(env.deploymentMode) +
+      (env.owner ? " \u00B7 " + env.owner : "") +
+      " \u00B7 " + env.usageCount + " usage" + (env.usageCount !== 1 ? "s" : "");
+    document.getElementById("detail-env-meta").textContent = meta;
+
+    var tbody = document.getElementById("detail-tbody");
+    var emptyEl = document.getElementById("detail-empty");
+    tbody.innerHTML = "";
+
+    if (!env.usages || env.usages.length === 0) {
+      emptyEl.classList.remove("hidden");
+    } else {
+      emptyEl.classList.add("hidden");
+      env.usages.forEach(function (u) {
+        var tr = document.createElement("tr");
+        tr.className = "border-b border-gray-100 hover:bg-blue-50/40 transition-colors";
+        var type = u.envUsage || u.usageType || u.type || "?";
+        var link = usageLink(u);
+        tr.innerHTML =
+          '<td class="py-2.5 px-4"><span class="inline-flex items-center px-2 py-0.5 rounded bg-gray-100 text-gray-700 text-xs font-medium">' + esc(type) + '</span></td>' +
+          '<td class="py-2.5 px-4 text-gray-600">' + esc(u.projectKey || "") + '</td>' +
+          '<td class="py-2.5 px-4 font-mono text-xs text-gray-600">' + esc(u.objectId || u.objectName || "") + '</td>' +
+          '<td class="py-2.5 px-4 text-right">' +
+            (link
+              ? '<a href="' + link + '" target="_blank" class="text-blue-600 hover:text-blue-800 hover:underline text-xs">Open \u2197</a>'
+              : '<span class="text-gray-300 text-xs">-</span>') +
+          '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    detailView.classList.remove("hidden");
+  };
+
+  window.closeDetail = function () {
+    document.getElementById("detail-view").classList.add("hidden");
+    document.getElementById("table-wrap").classList.remove("hidden");
+    document.getElementById("stats").classList.remove("hidden");
+  };
+
+  initDataiku(function () {
+    // Don't auto-scan; show settings panel so user can pick thread count
+  });
+})();
+</script>

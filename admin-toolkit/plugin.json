@@ -1,0 +1,10 @@
+{
+    "id": "diag-parser-live",
+    "version": "3.8.9",
+    "meta": {
+        "label": "Diagnostics",
+        "description": "Analyze Dataiku diagnostic files with visualizations and health scoring",
+        "author": "Alex Kaos",
+        "icon": "icon-bar-chart"
+    }
+}

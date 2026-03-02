@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DSS_URL="$(cat /data/keys/dss_url_prod)"
+API_KEY="$(cat /data/keys/dss_api_key_prod)"
+ENDPOINT="/public/api/projects/DIAG_PARSER_BRANCH1/webapps/nOQzJAF/backend/actions/restart"
+
+curl -sS -X PUT -H "Authorization: Bearer ${API_KEY}" "${DSS_URL}${ENDPOINT}"
+echo

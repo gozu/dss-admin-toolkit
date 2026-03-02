@@ -1,0 +1,41 @@
+# DSS credentials
+.dss-url
+.dss-api-key
+
+# Build outputs
+dist/
+resource/dist/
+
+# Dependencies
+resource/frontend/node_modules/
+
+# OS files
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Temporary files
+release_info.json
+
+# Binary / image files — only track text-based sources
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.ico
+*.webp
+*.zip
+*.tar
+*.gz
+*.pdf
+
+# Keep public assets tracked (override above)
+!resource/frontend/public/*.png
+!resource/frontend/public/*.svg
+
+# Screenshots and test artifacts
+resource/frontend/screenshots/
+resource/frontend/test-results/
