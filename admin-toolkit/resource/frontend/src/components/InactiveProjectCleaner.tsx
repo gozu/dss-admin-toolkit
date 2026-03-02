@@ -156,7 +156,7 @@ export function InactiveProjectCleaner({ recipients, isLoading }: InactiveProjec
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Inactive Project Cleaner</h3>
           <p className="text-sm text-[var(--text-muted)] mt-1">
-            No inactive projects found. Projects with 180+ days of inactivity, no active scenarios, and no deployed bundles will appear here.
+            No inactive projects found. Projects with 1+ days of inactivity, no active scenarios, and no deployed bundles will appear here.
           </p>
         </section>
       </div>
@@ -170,7 +170,7 @@ export function InactiveProjectCleaner({ recipients, isLoading }: InactiveProjec
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Inactive Project Cleaner</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Projects inactive for 180+ days with no active scenarios or deployed bundles. A backup is created before deletion.
+            Projects inactive for 1+ days with no active scenarios or deployed bundles. A backup is created before deletion.
           </p>
         </section>
 

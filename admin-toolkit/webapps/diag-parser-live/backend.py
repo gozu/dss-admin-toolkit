@@ -6731,7 +6731,7 @@ def api_tools_outreach_data():
         # 7. Inactive projects (no recent modification, no active scenarios, no deployed bundles)
         inactive_project_recipients_map: Dict[str, Dict[str, Any]] = {}
         inactive_project_count = 0
-        inactive_threshold_days = 180
+        inactive_threshold_days = 1
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         for row in project_rows:
             project_key = str(row.get('projectKey') or '')
