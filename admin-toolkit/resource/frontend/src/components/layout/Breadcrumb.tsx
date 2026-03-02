@@ -41,10 +41,10 @@ const PAGE_LABELS: Record<PageId, string> = {
   'platform-config': 'Platform',
   logs: 'Errors',
   outreach: 'Outreach',
-  'code-env-cleaner': 'Cleaner',
-  'project-cleaner': 'Projects',
-  plugins: 'Plugins',
-  tracking: 'Tracking',
+  'code-env-cleaner': 'CodEnv Cleaner',
+  'project-cleaner': 'Project Cleaner',
+  plugins: 'Plugin Sync',
+  tracking: 'Compliance',
   settings: 'Settings',
 };
 

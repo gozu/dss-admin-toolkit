@@ -91,7 +91,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'outreach', label: 'Outreach', section: 'Tools', keywords: ['email', 'campaign', 'owner'] },
   {
     id: 'code-env-cleaner',
-    label: 'Cleaner',
+    label: 'CodEnv Cleaner',
     section: 'Tools',
     keywords: ['clean', 'delete', 'unused', 'code env'],
   },
