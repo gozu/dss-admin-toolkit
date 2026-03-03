@@ -1,411 +1,231 @@
-# Diag Parser DSS Plugin
+# Diagnostics
 
-A Dataiku DSS plugin that provides a webapp for analyzing Dataiku diagnostic files with visualizations and health scoring.
+Admin toolkit for Dataiku DSS instances — health scoring, outreach campaigns, auditing, and cleanup.
 
-## Plugin Structure
+Connects live to the DSS instance via the Dataiku Python API. No file uploads or diagnostic bundles needed — all data is fetched in real time from the running instance through a Flask backend with 38+ API endpoints.
 
-```
-diagwebappplugin/
-├── plugin.json                 # Plugin manifest (id, version, metadata)
-├── bump_version.py             # Auto-increment version script
-├── Makefile                    # Build & deploy automation
-├── webapps/
-│   └── diag-parser/
-│       ├── webapp.json         # Webapp configuration
-│       ├── body.html           # HTML that loads the React app
-│       ├── backend.py          # Dummy backend (enables SSO settings)
-│       └── app.js              # Empty (all JS is bundled)
-└── resource/
-    ├── dist/                   # Built frontend assets (generated)
-    │   └── assets/
-    │       ├── index.js
-    │       └── index.css
-    └── frontend/               # React source code
-        ├── src/
-        ├── package.json
-        ├── vite.config.ts
-        └── ...
-```
+## Features at a Glance
 
-## Building
-
-### Prerequisites
-- Node.js 18+
-- npm
-- Python 3.x
-- curl (for deployment)
-
-### Build Frontend
-
-```bash
-cd resource/frontend
-npm install
-MODE=production npm run build
-```
-
-This outputs bundled assets to `resource/dist/assets/`.
-
-### Create Plugin Zip
-
-```bash
-make dev    # Development build (includes source)
-make dist   # Production build (git archive, excludes dev files)
-```
-
-## Deployment
-
-### Setup Credentials
-
-Create these files in the plugin root:
-
-```bash
-echo "https://your-dss-instance.com" > .dss-url
-echo "your-api-key" > .dss-api-key
-```
-
-These files are gitignored. The API key needs admin privileges.
-
-### Deploy to DSS
-
-```bash
-make deploy
-```
-
-This will:
-1. Bump the version (both plugin.json and package.json)
-2. Build the frontend
-3. Commit and tag the release
-4. Create a production zip
-5. Install/update the plugin via DSS API
-
-### Manual Deployment
-
-If `make deploy` fails, use these steps:
-
-```bash
-# 1. Build the plugin zip (MUST use `make plugin`, not just git archive)
-make plugin
-
-# 2. The zip is at dist/dss-plugin-diag-parser-{version}.zip
-```
-
-**Important:** Always use `make plugin` or `make dev` to create the zip. Plain `git archive` won't include the built assets in `resource/dist/` since they're not committed.
-
-### DSS API Endpoints
-
-```bash
-DSS_URL="https://your-instance.com"
-API_KEY="your-api-key"
-
-# Update existing plugin
-curl -X POST "${DSS_URL}/public/api/plugins/diag-parser/actions/updateFromZip" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -F "file=@dist/dss-plugin-diag-parser-0.7.3.zip"
-
-# Fresh install (if plugin doesn't exist)
-curl -X POST "${DSS_URL}/public/api/plugins/actions/installFromZip" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -F "file=@dist/dss-plugin-diag-parser-0.7.3.zip"
-
-# Force delete plugin (if update fails or plugin is stuck)
-curl -X POST "${DSS_URL}/public/api/plugins/diag-parser/actions/delete" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"force": true}'
-```
-
-### Troubleshooting
-
-| Error | Cause | Solution |
-|-------|-------|----------|
-| 500 "Could not install" | Plugin in bad state or server issue | Force delete then reinstall |
-| 403 Forbidden | API key lacks admin privileges | Use an admin API key |
-| "Plugin is used" on delete | Webapp instances exist | Use `{"force": true}` in delete |
-| Assets not loading (404) | Used `git archive` instead of `make plugin` | Rebuild with `make plugin` |
-| Version mismatch | package.json not synced | Run `bump_version.py` or check both files |
-
-## Version Scheme
-
-Versions follow `x.y.z` format:
-- Patch (z): 0-9, then rolls to minor
-- Minor (y): 0-9, then rolls to major
-- Example: 0.0.9 → 0.1.0 → 0.9.9 → 1.0.0
-
-## Webapp Configuration
-
-Key settings in `webapp.json`:
-- `baseType: "STANDARD"` - Standard HTML/JS webapp
-- `hasBackend: "true"` - Enables authentication/SSO settings in DSS UI
-- `enableJavascriptModules: "true"` - Required for ES modules (React)
-- `noJSSecurity: "true"` - Required for zip.js web workers
-
-## Development
-
-For local development without DSS:
-
-```bash
-cd resource/frontend
-npm install
-npm run dev
-```
-
-The app runs at http://localhost:5173 with hot reload.
-
-## Current Version
-
-1.0.4
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
-
-## Author
-
-Alex Kaos
-
----
-
-# Technical Architecture
+| Section | Page | What it shows |
+|---------|------|---------------|
+| Overview | Summary | Health score, system facts, version info |
+| Overview | Issues | Disabled features, configuration warnings |
+| Infrastructure | Filesystem | Disk usage across all mount points |
+| Infrastructure | Memory | RAM and swap breakdown |
+| Infrastructure | Dir Usage | Treemap of datadir space consumption |
+| Insights | Projects | Project inventory with footprint and permissions |
+| Insights | Code Envs | Python environments, version distribution, ownership |
+| Insights | Connections | Connection types and counts |
+| Configuration | Runtime | Java heap, Spark settings, resource limits |
+| Configuration | Security | Auth config, user isolation, cgroups |
+| Configuration | Platform | Containers, integrations, proxy settings |
+| Logs | Errors | Backend log errors with context |
+| Tools | Outreach | Email campaigns targeting unhealthy patterns |
+| Tools | Cleaner | Code environment cleanup utility |
+| Tools | Plugins | Installed plugin inventory and comparison |
+| Tools | Tracking | Health score tracking over time |
+| Tools | Settings | Thresholds, preferences, configuration |
 
 ## Overview
 
-This plugin parses ZIP diagnostic bundles from Dataiku DSS instances, extracting and visualizing system health, configuration, and error data. The entire parsing and visualization happens client-side in the browser - no backend processing.
+### Summary
 
-## Data Flow
+The landing page. Displays the composite health score as a gauge, key system facts (DSS version, Python version, Spark version, CPU cores, OS), and a quick snapshot of the instance state.
 
-```
-ZIP Upload → zip.js extraction (web workers, 50 concurrent)
-          → File categorization (regex path matching)
-          → Sequential parsing (17 parsers with dependencies)
-          → React state (DiagContext)
-          → Health scoring & issue detection
-          → Dashboard visualization
-```
+- Health score with category breakdown
+- DSS version, last restart time
+- License info and user counts
+- Alert banner for critical issues
 
-## Supported Diagnostic Types
+### Issues
 
-| Type | Detection | Contents |
-|------|-----------|----------|
-| **Instance Diag** | Contains `diag.txt` | Full DSS instance diagnostics |
-| **Job Diag** | Contains `localconfig.zip` | Job execution diagnostics |
-| **FM Diag** | Contains FM-specific markers | Fleet Manager diagnostics |
-| **Unknown** | Fallback | Partial parsing attempted |
+Lists all disabled features and configuration warnings detected on the instance.
 
-## Frontend Source Structure
+- Disabled feature flags with descriptions
+- Badge counter visible in the sidebar
+- Sortable and filterable table
 
-```
-resource/frontend/src/
-├── main.tsx                    # Entry point
-├── App.tsx                     # Root component, routing
-├── context/
-│   └── DiagContext.tsx         # Global state (Redux-like)
-├── hooks/
-│   ├── useFileProcessor.ts     # ZIP extraction orchestration
-│   ├── useDataParser.ts        # Parser sequencing
-│   ├── useDirTreeLoader.ts     # Async large file extraction
-│   ├── useIssueDetection.ts    # Critical/warning issue detection
-│   ├── useHealthScore.ts       # Health score calculation
-│   └── useTableFilter.ts       # Section visibility toggle
-├── parsers/
-│   ├── index.ts                # Parser exports
-│   ├── BaseJSONParser.ts       # JSON parsing with fallback
-│   ├── BaseTextParser.ts       # Text/regex parsing base
-│   ├── DiagTextParser.ts       # diag.txt → system info
-│   ├── VersionParser.ts        # dss-version.json
-│   ├── VersionExtractionParser.ts  # Python/Spark versions
-│   ├── ConnectionsParser.ts    # connections.json
-│   ├── GeneralSettingsParser.ts    # general-settings.json (complex)
-│   ├── LicenseParser.ts        # license.json
-│   ├── UsersParser.ts          # users.json
-│   ├── ClustersParser.ts       # K8s cluster configs (YAML+logs)
-│   ├── RestartTimeParser.ts    # supervisord.log
-│   ├── JavaMemoryParser.ts     # env-default.sh
-│   ├── PluginDiscoveryParser.ts    # Plugin directory discovery
-│   ├── CodeEnvsParser.ts       # Code environment desc.json
-│   ├── ProjectsParser.ts       # Project params.json
-│   ├── LogParser.ts            # backend.log errors
-│   └── DirListingParser.ts     # datadir_listing.txt → tree
-├── components/
-│   ├── FileUpload.tsx          # Drag & drop upload
-│   ├── ResultsView.tsx         # Main dashboard orchestrator
-│   ├── Header.tsx              # Title, navigation
-│   ├── AlertBanner.tsx         # Critical/warning alerts
-│   ├── HealthScoreCard.tsx     # Overall health gauge
-│   ├── InfoPanel.tsx           # Key system facts
-│   ├── FilterBar.tsx           # Section visibility toggles
-│   ├── DataTables.tsx          # 14 different data tables
-│   ├── ProjectsTable.tsx       # Projects with permissions modal
-│   ├── PluginsTable.tsx        # Plugin list
-│   ├── CodeEnvsTable.tsx       # Code envs with Python distribution
-│   ├── ClustersTable.tsx       # K8s clusters (height-matched layout)
-│   ├── DirTreeSection.tsx      # Directory space analysis
-│   ├── DirTreemap.tsx          # Sunburst/treemap visualization
-│   ├── DirTreeTable.tsx        # Flat directory table
-│   ├── LogErrorsSection.tsx    # Error logs with highlighting
-│   ├── FilesystemChart.tsx     # Disk usage chart
-│   ├── MemoryChart.tsx         # Memory breakdown
-│   ├── ConnectionsChart.tsx    # Connection types chart
-│   └── ...                     # Modals, cards, utilities
-├── types/
-│   └── index.ts                # TypeScript interfaces
-└── styles/
-    └── index.css               # Tailwind + CSS variables
-```
+## Infrastructure
 
-## Parsers Reference
+### Filesystem
 
-### Text Parsers (regex-based)
+Visualizes disk usage across all mounted filesystems reported by the instance.
 
-| Parser | Input File | Extracts |
-|--------|------------|----------|
-| `DiagTextParser` | `diag.txt` | CPU cores, OS info, memory (free -m), system limits (ulimit), filesystem usage (df -h) |
-| `VersionExtractionParser` | `diag.txt` | Python version, Spark version (DKU_SPARK_VERSION) |
-| `JavaMemoryParser` | `bin/env-default.sh` | Java heap: BACKEND, JEK, FEK, DKUJAVABIN |
-| `RestartTimeParser` | `run/supervisord.log` | Last restart time ("backend entered RUNNING") |
-| `LogParser` | `run/backend.log` | Error logs with 10-line before/100-line after context, deduped by 5s window, max 5 errors |
+- Usage bars for each mount point
+- Warning thresholds at 70% and 90%
+- Total vs. used vs. available space
 
-### JSON Parsers
+### Memory
 
-| Parser | Input File | Extracts |
-|--------|------------|----------|
-| `VersionParser` | `dss-version.json` | `product_version` |
-| `ConnectionsParser` | `config/connections.json` | Connection types and counts |
-| `UsersParser` | `config/users.json` | User stats, profiles, groups, enabled/disabled counts |
-| `LicenseParser` | `config/license.json` | Company, license props, usage percentages, expiration |
-| `GeneralSettingsParser` | `config/general-settings.json` | 50+ settings: auth (LDAP/SSO/SAML/OIDC), Spark, containers, K8s, cgroups, proxy, disabled features |
+Breaks down system memory allocation — physical RAM and swap.
 
-### Structured Data Parsers
+- Physical memory: total, used, free, cached, buffers
+- Swap usage
+- Visual bar chart
 
-| Parser | Input Pattern | Extracts |
-|--------|---------------|----------|
-| `ProjectsParser` | `config/projects/*/params.json` | Project key, name, owner, version, permissions matrix |
-| `CodeEnvsParser` | `code-envs/desc/*/desc.json` | Env name, Python version, version distribution |
-| `PluginDiscoveryParser` | Any path with `/plugins/` | Plugin directory names, count |
-| `ClustersParser` | `clusters/*/exec/*_config.yaml`, `kube_config`, `log/*.log` | K8s: region, version, VPC, subnets, node groups (instance type, capacity, spot, taints, labels), server endpoint, status (ON/OFF), uptime |
-| `DirListingParser` | `datadir_listing.txt` | Hierarchical directory tree with cumulative sizes |
+### Dir Usage
 
-## Health Scoring
+Analyzes space consumption within the DSS data directory.
 
-Categories (weighted):
-- **Version (25%)**: Python 3.10+ adoption, Spark 3.x
-- **System (30%)**: Memory availability, disk space, file limits
-- **Config (30%)**: Disabled features, missing recommended settings
-- **Security (15%)**: Impersonation, cgroups configuration
+- Interactive treemap / sunburst visualization
+- Drill-down into subdirectories
+- Flat table view with cumulative sizes
 
-## Issue Detection
+## Insights
 
-Automatic checks for:
-- Filesystem usage ≥70% (warning) / ≥90% (critical)
-- Open files limit <65535
-- Java heap <2GB
-- Python 2.x or 3.6-3.8 (EOL)
-- Spark 2.x
-- Empty cgroups targets
-- Disabled critical features
+### Projects
 
-## Key Implementation Details
+Inventory of all projects on the instance with footprint metrics.
 
-### Large File Handling
-`datadir_listing.txt` can be 100MB+. Handled via:
-1. During extraction: stored as blob with `__BLOB_STORED__` marker
-2. On-demand: `useDirTreeLoader` extracts from original ZIP when DirTreeSection expands
-3. Streaming parse builds tree incrementally
+- Project key, name, owner, DSS version
+- Permissions matrix per project
+- Code env and Code Studio counts
+- Scenario and flow object counts
 
-### Cluster Card Height Matching
-`ClustersTable.tsx` uses a greedy algorithm to pair clusters with similar heights in the 2-column grid, minimizing whitespace. Height score based on: node pool count, optional fields, labels/taints.
+### Code Envs
 
-### Log Syntax Highlighting
-`LogParser` adds HTML spans for: timestamps, log levels (ERROR/WARN/INFO), IP addresses, K8s resources (pod names, namespaces).
+Lists all Python code environments with version and usage details.
 
-## State Shape (DiagContext)
+- Python version distribution chart
+- Owner and creation info
+- Usage count per environment
+- Identification of deprecated Python versions (2.x, 3.6, 3.7)
 
-```typescript
-interface DiagState {
-  // Raw data
-  extractedFiles: Record<string, string>;  // filename → content
-  originalFile: File | null;               // For deferred extraction
+### Connections
 
-  // Metadata
-  diagType: 'instance' | 'job' | 'fm' | 'unknown';
-  dsshome: string;
+Shows all configured data connections grouped by type.
 
-  // Parsed data (populated by parsers)
-  parsedData: {
-    // System
-    cpuCores, osInfo, memoryInfo, systemLimits, filesystemInfo,
-    dssVersion, pythonVersion, sparkVersion, lastRestartTime,
-    javaMemorySettings,
+- Connection type breakdown (HDFS, SQL, S3, etc.)
+- Count per type
+- Visual chart
 
-    // Config
-    connections, connectionCounts, generalSettings, disabledFeatures,
-    enabledSettings, sparkSettings, authSettings, containerSettings,
-    integrationSettings, resourceLimits, cgroupsSettings, proxySettings,
+## Configuration
 
-    // License
-    company, licenseProperties, licenseUsage,
+### Runtime
 
-    // Users & Projects
-    users, userStats, usersByProjects, projects,
+Java memory settings, Spark configuration, and resource limits.
 
-    // Infrastructure
-    clusters, codeEnvs, pythonVersionCounts, plugins, pluginsCount,
+- Java heap for Backend, JEK, FEK processes
+- Spark version and settings
+- Resource limit configuration
 
-    // Logs & Diagnostics
-    formattedLogErrors, rawLogErrors, logStats, dirTree,
-  };
+### Security
 
-  // UI state
-  isLoading, error, activeFilter, projectFiles,
-}
-```
+Authentication and isolation settings.
 
-## Adding a New Parser
+- Auth method (LDAP, SSO, SAML, OIDC, local)
+- User isolation / impersonation status
+- CGroups configuration and targets
+- User and group statistics
 
-1. Create `parsers/MyNewParser.ts` extending `BaseJSONParser` or `BaseTextParser`
-2. Implement `parse(content: string): Partial<ParsedData>`
-3. Export from `parsers/index.ts`
-4. Add to parser sequence in `useDataParser.ts` (order matters for dependencies)
-5. Add types to `types/index.ts`
-6. Create visualization component if needed
+### Platform
 
-## Performance Optimizations
+Container execution, integrations, and network configuration.
 
-- **Web Workers**: zip.js uses workers for parallel extraction
-- **Concurrency Limit**: 50 simultaneous file extractions
-- **Deferred Parsing**: Large files extracted on-demand
-- **useMemo**: Expensive computations memoized (cluster arrangement, health scores)
-- **Virtualization**: Not yet implemented but recommended for large tables
+- Container/Kubernetes settings
+- Integration configuration
+- Proxy settings
 
-## Comparison Mode
+## Logs
 
-The plugin supports comparing two diagnostic files to identify changes between them.
+### Errors
 
-### Features
+Backend log errors extracted with surrounding context for debugging.
 
-- **Side-by-side upload**: Upload "before" and "after" diagnostic files
-- **Auto date detection**: Parses timestamps from filenames (e.g., `dku_diagnosis_2025-02-12-15-11-44.zip`) and automatically swaps files if uploaded in wrong order
-- **Delta visualization**: Shows added, removed, and modified items across all sections
-- **2-column layout**: All comparison grids use max 2 columns for better readability
-- **Smart defaults**: When no changes exist, sections expand and show all values by default
+- Error entries with timestamps and log levels
+- Before/after context lines for each error
+- Badge counter in the sidebar when errors are present
 
-### Comparison Sections
+## Tools
 
-| Section | What's Compared |
-|---------|-----------------|
-| Health Score | Overall score delta with breakdown by category |
-| System Info | DSS version, Python, Spark, memory, filesystem |
-| Resource Charts | Memory usage, filesystem, connections with before/after bars |
-| Configuration | Settings tables with row-level change highlighting |
-| Collections | Users, projects, clusters, code envs, plugins |
+### Outreach
 
-### Components
+Email campaign system for notifying project owners about unhealthy patterns. Select a campaign, review the affected recipients, preview the email, and send — all from the UI.
 
-```
-src/components/comparison/
-├── ComparisonUpload.tsx        # Dual file upload with date validation
-├── ComparisonResultsView.tsx   # Main results orchestrator
-├── ComparisonHealthSection.tsx # Health score comparison
-├── ComparisonSystemSection.tsx # System info deltas
-├── ComparisonChartsSection.tsx # Resource usage charts
-├── ComparisonSettingsSection.tsx # Config tables with filters
-├── ComparisonCollectionsSection.tsx # Collection cards/combined view
-└── DeltaBadge.tsx              # Added/removed/modified badges
-```
+| Campaign | Targets |
+|----------|---------|
+| Code Env Sprawl | Projects with too many code environments |
+| Code Env Ownership | Projects using code envs they don't own |
+| Code Studio Sprawl | Projects with too many Code Studios |
+| Auto-Start Scenarios | Projects with auto-start scenarios |
+| Projects owned by disabled users | Projects owned by disabled user accounts that need reassignment |
+| Deprecated Python Versions | Code envs using Python 2.x, 3.6, 3.7 |
+| Missing Default Code Env | Projects with code envs but no default Python environment |
+| Overshared Projects | Projects with 20+ permission entries |
+| High-Frequency Scenarios | Scenarios running more often than every 30 min |
+| Empty Projects | Projects with no code envs, no Code Studios, and minimal data |
+| Large Flow Projects | Projects with 100+ flow objects |
+| Orphan Notebooks | Projects with many notebooks but few recipes |
+| Failing Scenarios | Scenarios whose last run failed or was aborted |
+| Inactive Projects | 180+ days inactive, no active scenarios or deployed bundles |
+| Unused Code Envs | Code environments with zero usages |
+
+Each campaign supports:
+- Recipient preview with exemption management
+- Email template preview before sending
+- Per-campaign send history
+
+### Cleaner
+
+Code environment cleanup tool for removing unused or orphaned environments.
+
+- Lists code envs with zero usages
+- Bulk selection and deletion
+- Safety checks before removal
+
+### Plugins
+
+Installed plugin inventory with version details.
+
+- Plugin list with versions
+- Cross-instance plugin comparison
+
+### Tracking
+
+Health score history over time.
+
+- Snapshot-based tracking of the composite health score
+- Trend visualization across check-ins
+
+### Settings
+
+Configure thresholds and preferences used across the toolkit.
+
+- Health score factor toggles
+- Threshold values for campaigns and issue detection
+- UI preferences
+
+## Health Score
+
+The composite health score (0–100) is calculated from six weighted categories:
+
+| Category | Weight |
+|----------|--------|
+| Code Environments | 35% |
+| Project Footprint | 30% |
+| System Capacity | 15% |
+| Security & Isolation | 10% |
+| Version Currency | 5% |
+| Runtime Config | 5% |
+
+Each category score is derived from **12 toggleable health factors** that can be individually enabled or disabled in Settings:
+
+- **Python versions** — penalizes deprecated Python (2.x, 3.6, 3.7)
+- **Spark version** — checks for Spark 3.x adoption
+- **Memory availability** — system RAM headroom
+- **Filesystem capacity** — disk usage across mounts
+- **Open files limit** — ulimit threshold (should be 65535+)
+- **User isolation** — impersonation / multi-user separation
+- **CGroups enabled** — resource control via cgroups
+- **CGroups empty targets** — cgroups configured but with no targets
+- **Code envs per project** — flags projects with excessive code envs
+- **Project size pressure** — large flow and dataset counts
+- **Disabled features** — critical features that are turned off
+- **Java memory limits** — JVM heap below recommended thresholds
+
+## Tips
+
+- **Cmd+K / Ctrl+K** — Open the command palette to jump to any page by name or keyword
+- **Collapsible sidebar** — Click the toggle to collapse the sidebar for more screen space
+- **Dark mode** — Automatically follows your system theme
+- **Badge counters** — The sidebar shows badge counts on Issues and Errors when items are detected

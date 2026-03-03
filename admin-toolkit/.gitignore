@@ -39,3 +39,35 @@ release_info.json
 # Screenshots and test artifacts
 resource/frontend/screenshots/
 resource/frontend/test-results/
+
+# Scratch / planning docs
+am.md
+sam.md
+amprompt.md
+codexplan.md
+dbstruct.md
+slack
+HANDOFF-*.md
+PLAN-*.md
+plugins.html
+plan.md
+
+# Holdover scripts
+Makefile.bak*
+restart_wrapper.sh
+switch-billing.sh
+test.sh
+dss_webapp_restart_*
+
+# Ad-hoc debug/test scripts (not in tests/ directory)
+resource/frontend/cluster-debug-test.ts
+resource/frontend/live-card-smoke.mjs
+resource/frontend/remote-compare.mjs
+resource/frontend/screenshot-test.ts
+resource/frontend/take-screenshots.mjs
+
+# Old standalone tool (merged into main plugin)
+tools/
+
+# Old README backup
+README.old.md
