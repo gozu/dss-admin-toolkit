@@ -7677,6 +7677,9 @@ def api_code_env_cleaner_delete(lang, name):
         env_lang = lang.lower()
         os.makedirs(backup_dir, exist_ok=True)
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Directory entries (match DSS on-disk export exactly)
+            for d in ["%s/", "%s/spec/", "%s/actual/"]:
+                zf.writestr(zipfile.ZipInfo(d % env_lang), "")
             # desc.json — strip owner (not present in on-disk version)
             desc = dict(env_def.get("desc") or env_def)
             desc.pop("owner", None)
