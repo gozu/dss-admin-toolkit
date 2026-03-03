@@ -238,7 +238,7 @@ export function useIssueDetection(parsedData: ParsedData) {
     // ============================================
     if (parsedData.disabledFeatures) {
       const aiFeatures = Object.keys(parsedData.disabledFeatures).filter(
-        key => key.startsWith('AI:') || key === 'Code Assistant' || key === 'Ask Dataiku'
+        key => key.startsWith('AI:') || key === 'AI Assistants' || key === 'Code Assistant' || key === 'Ask Dataiku'
       );
 
       if (aiFeatures.length > 0) {
@@ -258,7 +258,7 @@ export function useIssueDetection(parsedData: ParsedData) {
     // ============================================
     if (parsedData.disabledFeatures) {
       const nonAiDisabled = Object.keys(parsedData.disabledFeatures).filter(
-        key => !key.startsWith('AI:') && key !== 'Code Assistant' && key !== 'Ask Dataiku'
+        key => !key.startsWith('AI:') && key !== 'AI Assistants' && key !== 'Code Assistant' && key !== 'Ask Dataiku'
       );
 
       if (nonAiDisabled.length > 0) {

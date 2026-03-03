@@ -80,6 +80,7 @@ interface GeneralSettingsData {
     [key: string]: unknown;
   };
   aiDrivenAnalyticsSettings?: {
+    enabled?: boolean;
     prepareAICompletionEnabled?: boolean;
     aiGenerateSQLEnabled?: boolean;
     aiExplanationsEnabled?: boolean;
@@ -173,30 +174,41 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
     // Check AI-driven analytics settings
     if (data.aiDrivenAnalyticsSettings) {
       const ai = data.aiDrivenAnalyticsSettings;
-      if (!ai.prepareAICompletionEnabled)
-        add(
-          'AI: Prepare Completion',
-          'AI-powered suggestions and completions in visual recipes (Prepare, Group, Window, etc.) to help build transformation steps faster',
-          'https://knowledge.dataiku.com/latest/data-preparation/prepare-recipe/how-to-generate-steps.html'
-        );
-      if (!ai.aiGenerateSQLEnabled)
-        add(
-          'AI: Generate SQL',
-          'Generate SQL queries from natural language descriptions in SQL notebooks and recipes, powered by LLM integration',
-          'https://knowledge.dataiku.com/latest/code/sql/concept-ai-sql-assistant.html'
-        );
-      if (!ai.aiExplanationsEnabled)
-        add(
-          'AI: Explanations',
-          'Get AI-generated explanations for code blocks, formulas, recipe logic, and analysis results to improve understanding',
-          'https://knowledge.dataiku.com/latest/collaboration/wikis-documentation/concept-explain-flow.html'
-        );
-      if (!ai.storiesAIEnabled)
-        add(
-          'AI: Stories',
-          'AI assistance for generating narrative content and insights when creating Dataiku Stories and dashboards',
-          'https://knowledge.dataiku.com/latest/collaboration/stories/tutorial-stories-with-genai.html'
-        );
+      if ('enabled' in ai) {
+        // New format (DSS 14+): single toggle
+        if (ai.enabled === false)
+          add(
+            'AI Assistants',
+            'AI-driven analytics features including prepare completion, SQL generation, explanations, and stories assistance',
+            'https://doc.dataiku.com/dss/latest/ai-assistants/index.html'
+          );
+      } else {
+        // Old format (DSS 12.x): 4 granular toggles
+        if (!ai.prepareAICompletionEnabled)
+          add(
+            'AI: Prepare Completion',
+            'AI-powered suggestions and completions in visual recipes (Prepare, Group, Window, etc.) to help build transformation steps faster',
+            'https://knowledge.dataiku.com/latest/data-preparation/prepare-recipe/how-to-generate-steps.html'
+          );
+        if (!ai.aiGenerateSQLEnabled)
+          add(
+            'AI: Generate SQL',
+            'Generate SQL queries from natural language descriptions in SQL notebooks and recipes, powered by LLM integration',
+            'https://knowledge.dataiku.com/latest/code/sql/concept-ai-sql-assistant.html'
+          );
+        if (!ai.aiExplanationsEnabled)
+          add(
+            'AI: Explanations',
+            'Get AI-generated explanations for code blocks, formulas, recipe logic, and analysis results to improve understanding',
+            'https://knowledge.dataiku.com/latest/collaboration/wikis-documentation/concept-explain-flow.html'
+          );
+        if (!ai.storiesAIEnabled)
+          add(
+            'AI: Stories',
+            'AI assistance for generating narrative content and insights when creating Dataiku Stories and dashboards',
+            'https://knowledge.dataiku.com/latest/collaboration/stories/tutorial-stories-with-genai.html'
+          );
+      }
     }
 
     if (data.codeAssistantSettings?.codeAssistantEnabled === false)
