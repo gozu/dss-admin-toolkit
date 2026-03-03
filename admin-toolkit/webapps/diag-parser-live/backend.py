@@ -738,6 +738,27 @@ def _parse_filesystem_info(df_output: Optional[str]) -> List[Dict[str, str]]:
     return entries
 
 
+def _get_cpu_cores() -> str:
+    """Read /proc/cpuinfo to compute cores and threads, matching the parent webapp's format."""
+    try:
+        cpuinfo = _safe_read_text('/proc/cpuinfo')
+        if not cpuinfo:
+            return str(os.cpu_count() or '??')
+        threads = len(re.findall(r'^processor\s*:', cpuinfo, re.MULTILINE))
+        cores_match = re.search(r'^cpu cores\s*:\s*(\d+)', cpuinfo, re.MULTILINE)
+        if not threads or not cores_match:
+            return str(os.cpu_count() or '??')
+        cores_per_socket = int(cores_match.group(1))
+        physical_ids = re.findall(r'^physical id\s*:\s*(\d+)', cpuinfo, re.MULTILINE)
+        sockets = len(set(physical_ids)) if physical_ids else 1
+        total_cores = sockets * cores_per_socket
+        if threads > total_cores:
+            return f"{total_cores}C / {threads}T"
+        return str(total_cores)
+    except Exception:
+        return str(os.cpu_count() or '??')
+
+
 def _get_os_info() -> str:
     os_release = _safe_read_text('/etc/os-release')
     if os_release:
@@ -4740,7 +4761,7 @@ def api_overview():
         spark_version = _find_spark_version(settings)
 
         return {
-            'cpuCores': str(os.cpu_count() or ''),
+            'cpuCores': _get_cpu_cores(),
             'osInfo': _get_os_info(),
             'memoryInfo': _parse_memory_info(free_output),
             'systemLimits': _parse_system_limits(ulimit_output),
