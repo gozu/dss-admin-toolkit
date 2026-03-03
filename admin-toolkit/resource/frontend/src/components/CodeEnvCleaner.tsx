@@ -190,13 +190,14 @@ export function CodeEnvCleaner() {
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Code Env Cleaner</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Code environments with zero project references. Delete unused envs to free up resources.
+            Code environments with zero project references. Delete unused envs to free up resources. A
+            backup is created before deletion.
           </p>
         </section>
 
         {/* Stats bar */}
         <section className="glass-card p-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-mono text-[var(--text-primary)]">{visibleRows.length}</div>
               <div className="text-xs text-[var(--text-muted)]">Total</div>
@@ -208,6 +209,10 @@ export function CodeEnvCleaner() {
             <div className="text-center">
               <div className="text-2xl font-mono text-[var(--neon-green)]">{inUseCount}</div>
               <div className="text-xs text-[var(--text-muted)]">In Use</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-mono text-[var(--neon-red)]">{deletedKeys.size}</div>
+              <div className="text-xs text-[var(--text-muted)]">Backed Up & Deleted</div>
             </div>
           </div>
         </section>
@@ -344,7 +349,7 @@ export function CodeEnvCleaner() {
               disabled={deleteLoading || deleteInput !== `delete ${deleteTarget?.env.name || ''}`}
               className="px-4 py-1.5 rounded bg-[var(--neon-red)]/20 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/30 disabled:opacity-50 transition-colors"
             >
-              {deleteLoading ? 'Deleting...' : 'Delete'}
+              {deleteLoading ? 'Backing up & deleting...' : 'Delete'}
             </button>
           </div>
         }
@@ -354,6 +359,13 @@ export function CodeEnvCleaner() {
             <p className="text-[var(--text-secondary)]">
               Are you sure you want to delete code environment{' '}
               <span className="font-mono text-[var(--neon-red)]">{deleteTarget.env.name}</span>?
+            </p>
+            <p className="text-sm text-[var(--text-muted)]">
+              A backup will be created at{' '}
+              <code className="px-1.5 py-0.5 rounded bg-[var(--bg-glass)] text-[var(--text-primary)]">
+                /data/dataiku/projectbackups/
+              </code>{' '}
+              before deletion.
             </p>
             <p className="text-sm text-[var(--text-muted)]">
               Type{' '}

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -7655,24 +7656,47 @@ def api_code_env_cleaner_scan():
 
 @app.route('/api/tools/code-env-cleaner/<lang>/<name>', methods=['DELETE'])
 def api_code_env_cleaner_delete(lang, name):
-    """Delete a code env after verifying the confirmation header."""
+    """Backup then delete a code env after verifying the confirmation header."""
     confirm = request.headers.get("X-Confirm-Name", "")
     if confirm != name:
         return jsonify({"error": "Confirmation header does not match env name"}), 400
 
+    client = dataiku.api_client()
+
+    # Fetch the code env definition
     try:
-        client = dataiku.api_client()
+        env_def = client._perform_json("GET", "/admin/code-envs/%s/%s/" % (lang, name))
+    except Exception as e:
+        app.logger.error("[code-env-cleaner] fetch failed for %s/%s: %s", lang, name, e)
+        return jsonify({"error": "Failed to fetch env definition: %s" % str(e)}), 500
+
+    # Backup first — if this fails, do NOT proceed with deletion
+    backup_dir = "/data/dataiku/projectbackups"
+    safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', name)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = os.path.join(backup_dir, "codeenv_%s_%s_%s.zip" % (lang, safe_name, ts))
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("code_env_definition.json", json.dumps(env_def, indent=2))
+    except Exception as e:
+        app.logger.error("[code-env-cleaner] backup failed for %s/%s: %s", lang, name, e)
+        return jsonify({"error": "Backup failed: %s" % str(e)}), 500
+
+    # Delete code env
+    try:
         client._perform_empty("DELETE", "/admin/code-envs/%s/%s/" % (lang, name))
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("[code-env-cleaner] delete failed for %s/%s: %s", lang, name, e)
+        return jsonify({"error": "Delete failed (backup saved at %s): %s" % (backup_path, str(e))}), 500
 
     # Invalidate caches so subsequent fetches reflect the deletion
     _CACHE.pop('code_envs', None)
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
 
-    app.logger.info("[code-env-cleaner] deleted %s/%s", lang, name)
-    return jsonify({"deleted": name}), 200
+    app.logger.info("[code-env-cleaner] backed up to %s and deleted %s/%s", backup_path, lang, name)
+    return jsonify({"backed_up": backup_path, "deleted": name}), 200
 
 
 @app.route('/api/tools/project-cleaner/<project_key>', methods=['DELETE'])
