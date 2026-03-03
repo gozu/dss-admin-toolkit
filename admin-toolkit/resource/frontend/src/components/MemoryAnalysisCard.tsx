@@ -13,13 +13,18 @@ export function MemoryAnalysisCard() {
   const totalVmStr = parsedData.memoryInfo?.total || '';
   const jekStr = parsedData.javaMemorySettings?.JEK || '0g';
   const maxActivitiesRaw = parsedData.maxRunningActivities?.['Max Running Activities'];
+  const maxActivitiesPerJobRaw = parsedData.maxRunningActivities?.['Max Running Activities Per Job'];
   const cgroupLimitStr = String(parsedData.cgroupSettings?.['Memory Limit'] || '0');
 
   // Parse numeric values
   const totalVm = parseInt(totalVmStr.replace(/[^0-9]/g, '')) || 0;
   const jekGB = parseInt(jekStr.replace(/[^0-9]/g, '')) || 0;
   const maxActivities = typeof maxActivitiesRaw === 'number' ? maxActivitiesRaw : 0;
+  const maxActivitiesPerJob = typeof maxActivitiesPerJobRaw === 'number' && maxActivitiesPerJobRaw > 0 ? maxActivitiesPerJobRaw : 1;
   const cgroupLimit = parseInt(cgroupLimitStr.replace(/[^0-9]/g, '')) || 0;
+
+  // JEK is per-job (shared among activities within a job), so max concurrent JEKs = max concurrent jobs
+  const maxJobs = Math.ceil(maxActivities / maxActivitiesPerJob);
 
   // Calculate recommended max based on total memory
   let recommendedMax = 0;
@@ -35,7 +40,7 @@ export function MemoryAnalysisCard() {
 
   // Calculate values
   const cgroupOverageGB = cgroupLimit - recommendedMax;
-  const jekTotal = jekGB * maxActivities;
+  const jekTotal = jekGB * maxJobs;
   const availableGB = cgroupLimit - jekTotal;
 
   // Need cgroup limit to show the card
@@ -87,7 +92,7 @@ export function MemoryAnalysisCard() {
           <tbody>
             <tr><td className="text-[var(--text-secondary)]">CGroup Limit</td><td className="text-right font-mono">{cgroupLimitStr}</td></tr>
             <tr><td colSpan={2} className="py-1"><div className="border-t border-[var(--border-color)] opacity-50" /></td></tr>
-            <tr><td className="text-[var(--text-secondary)] pl-2">JEK × Max Running Activities</td><td className="text-right font-mono text-[var(--neon-cyan)]">- {jekTotal} GB</td></tr>
+            <tr><td className="text-[var(--text-secondary)] pl-2">JEK × Max Jobs ({maxJobs})</td><td className="text-right font-mono text-[var(--neon-cyan)]">- {jekTotal} GB</td></tr>
             <tr><td colSpan={2} className="py-1"><div className="border-t border-[var(--border-color)] opacity-50" /></td></tr>
             <tr><td className="font-medium pt-1" style={{ color: jekColor }}>Available for Backend & Misc.</td><td className="text-right font-mono font-bold pt-1" style={{ color: jekColor }}>{availableGB} GB</td></tr>
           </tbody>

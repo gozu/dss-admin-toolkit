@@ -14,7 +14,7 @@ interface MemoryValues {
   cgroupLimitStr: string;
   cgroupOverageGB: number;
   jekGB: number;
-  maxActivities: number;
+  maxJobs: number;
   jekTotal: number;
   availableGB: number;
   cgroupStatus: 'ok' | 'warning' | 'critical';
@@ -25,12 +25,17 @@ function parseMemoryValues(data: ParsedData): MemoryValues | null {
   const totalVmStr = data.memoryInfo?.total || '';
   const jekStr = data.javaMemorySettings?.JEK || '0g';
   const maxActivitiesRaw = data.maxRunningActivities?.['Max Running Activities'];
+  const maxActivitiesPerJobRaw = data.maxRunningActivities?.['Max Running Activities Per Job'];
   const cgroupLimitStr = String(data.cgroupSettings?.['Memory Limit'] || '0');
 
   const totalVm = parseInt(totalVmStr.replace(/[^0-9]/g, '')) || 0;
   const jekGB = parseInt(jekStr.replace(/[^0-9]/g, '')) || 0;
   const maxActivities = typeof maxActivitiesRaw === 'number' ? maxActivitiesRaw : 0;
+  const maxActivitiesPerJob = typeof maxActivitiesPerJobRaw === 'number' && maxActivitiesPerJobRaw > 0 ? maxActivitiesPerJobRaw : 1;
   const cgroupLimit = parseInt(cgroupLimitStr.replace(/[^0-9]/g, '')) || 0;
+
+  // JEK is per-job (shared among activities within a job), so max concurrent JEKs = max concurrent jobs
+  const maxJobs = Math.ceil(maxActivities / maxActivitiesPerJob);
 
   if (cgroupLimit === 0) return null;
 
@@ -47,7 +52,7 @@ function parseMemoryValues(data: ParsedData): MemoryValues | null {
   }
 
   const cgroupOverageGB = cgroupLimit - recommendedMax;
-  const jekTotal = jekGB * maxActivities;
+  const jekTotal = jekGB * maxJobs;
   const availableGB = cgroupLimit - jekTotal;
 
   const cgroupStatus = cgroupOverageGB > 0 ? 'warning' : 'ok';
@@ -61,7 +66,7 @@ function parseMemoryValues(data: ParsedData): MemoryValues | null {
     cgroupLimitStr,
     cgroupOverageGB,
     jekGB,
-    maxActivities,
+    maxJobs,
     jekTotal,
     availableGB,
     cgroupStatus,
@@ -206,7 +211,7 @@ export function ComparisonMemoryAnalysisCard({ beforeData, afterData }: Comparis
                 <td className="text-right font-mono text-[var(--text-primary)]">{after?.cgroupLimitStr || '—'}</td>
               </tr>
               <tr>
-                <td className="text-[var(--text-secondary)] py-1 pl-2">JEK × Max Activities</td>
+                <td className="text-[var(--text-secondary)] py-1 pl-2">JEK × Max Jobs</td>
                 <td className="text-right font-mono text-[var(--neon-cyan)] opacity-60">
                   {before ? `- ${before.jekTotal} GB` : '—'}
                 </td>
