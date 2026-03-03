@@ -33,7 +33,14 @@ function AppContent() {
   const { state, setMode, setActivePage, resetComparison, dispatch } = useDiag();
   const { parsedData, isLoading, error, mode, comparison, dataSource } = state;
   const { isDetecting } = useDataSource();
-  useApiDataLoader(dataSource === 'api');
+  const [reloadKey, setReloadKey] = useState(0);
+  useApiDataLoader(dataSource === 'api', reloadKey);
+
+  const handleRefreshCache = useCallback(async () => {
+    const url = (globalThis as unknown as { dataiku?: { getWebAppBackendUrl?: (p: string) => string } }).dataiku?.getWebAppBackendUrl?.('/api/cache/clear') ?? '/api/cache/clear';
+    await fetch(url, { method: 'POST', credentials: 'same-origin' });
+    setReloadKey((k) => k + 1);
+  }, []);
 
   // Command palette state
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -162,7 +169,7 @@ function AppContent() {
     // Main results view — new sidebar-based layout
     viewKey = 'results';
     viewContent = (
-      <AppShell onOpenPalette={() => setPaletteOpen(true)}>
+      <AppShell onOpenPalette={() => setPaletteOpen(true)} onRefreshCache={handleRefreshCache}>
         <PageRouter />
       </AppShell>
     );

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 
@@ -199,10 +200,26 @@ const NAV_SECTIONS: NavSection[] = [
 interface SidebarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onRefreshCache?: () => Promise<void>;
 }
 
-export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
+export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
   const { state, setActivePage } = useDiag();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshDone, setRefreshDone] = useState(false);
+
+  const handleRefresh = async () => {
+    if (refreshing || !onRefreshCache) return;
+    setRefreshing(true);
+    setRefreshDone(false);
+    try {
+      await onRefreshCache();
+      setRefreshDone(true);
+      setTimeout(() => setRefreshDone(false), 1500);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const { activePage, parsedData } = state;
   // Badge counts
   const issuesBadge = parsedData.disabledFeatures
@@ -274,20 +291,46 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
     <aside
       className="flex flex-col h-full bg-[var(--bg-sidebar)] border-r border-[var(--border-default)] overflow-hidden"
     >
-      {/* Logo + collapse toggle */}
-      <div className={`flex items-center px-4 py-4 ${collapsed ? 'justify-center px-2' : 'justify-between'}`}>
-        <span
-          className={`font-semibold text-[var(--text-primary)] ${
-            collapsed ? 'text-xs' : 'text-base'
-          }`}
+      {/* Refresh cache + collapse toggle */}
+      <div className={`flex items-center px-4 py-4 ${collapsed ? 'flex-col gap-1.5 px-2' : 'justify-between'}`}>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title={refreshDone ? 'Cache cleared' : 'Refresh cache'}
+          className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 ${collapsed ? 'justify-center' : ''}`}
         >
-          {collapsed ? 'D' : 'Diagnostics'}
-        </span>
+          {refreshDone ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neon-green)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={refreshing ? 'animate-spin' : ''}
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+              <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
+            </svg>
+          )}
+          {!collapsed && (
+            <span className="text-sm font-medium">{refreshDone ? 'Done' : 'Refresh'}</span>
+          )}
+        </button>
         <button
           type="button"
           onClick={onToggleCollapse}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${collapsed ? 'mt-1.5' : ''}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}
         >
           <svg
             width="14"

@@ -1,9 +1,14 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { useModal } from '../hooks/useModal';
 import { useDiag } from '../context/DiagContext';
 import { fetchJson, getBackendUrl } from '../utils/api';
 import type { CodeEnv } from '../types';
+
+interface ManagedFolder {
+  id: string;
+  name: string;
+}
 
 // ── Sort helpers ──
 
@@ -73,6 +78,29 @@ export function CodeEnvCleaner() {
     });
   }, [codeEnvs, projectRows]);
 
+  // Managed folder state
+  const [folders, setFolders] = useState<ManagedFolder[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(true);
+  const [folderId, setFolderId] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchJson<{ folders: ManagedFolder[] }>('/api/managed-folders');
+        if (!cancelled) {
+          setFolders(res.folders);
+          if (res.folders.length > 0) setFolderId(res.folders[0].id);
+        }
+      } catch {
+        // silently handle — dropdown will show "No managed folders"
+      } finally {
+        if (!cancelled) setFoldersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [deletedKeys, setDeletedKeys] = useState<Set<string>>(new Set());
@@ -140,12 +168,13 @@ export function CodeEnvCleaner() {
     if (!deleteTarget) return;
     const expected = `delete ${deleteTarget.env.name}`;
     if (deleteInput !== expected) return;
+    if (!folderId) return;
 
     setDeleteLoading(true);
     setDeleteError(null);
     try {
       await fetchJson(
-        `/api/tools/code-env-cleaner/${deleteTarget.env.language.toUpperCase()}/${deleteTarget.env.name}`,
+        `/api/tools/code-env-cleaner/${deleteTarget.env.language.toUpperCase()}/${deleteTarget.env.name}?folderId=${encodeURIComponent(folderId)}`,
         {
           method: 'DELETE',
           headers: { 'X-Confirm-Name': deleteTarget.env.name },
@@ -158,7 +187,7 @@ export function CodeEnvCleaner() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [deleteTarget, deleteInput, deleteModal]);
+  }, [deleteTarget, deleteInput, deleteModal, folderId]);
 
   const dssBaseUrl = useMemo(() => {
     const bUrl = getBackendUrl('/');
@@ -191,8 +220,30 @@ export function CodeEnvCleaner() {
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Code Env Cleaner</h3>
           <p className="text-sm text-[var(--text-muted)]">
             Code environments with zero project references. Delete unused envs to free up resources. A
-            backup is created before deletion.
+            backup is uploaded to the selected managed folder before deletion.
           </p>
+          <div className="mt-3 flex items-center gap-2">
+            <label className="text-sm text-[var(--text-secondary)] whitespace-nowrap" htmlFor="ce-folder-select">
+              Backup destination
+            </label>
+            <select
+              id="ce-folder-select"
+              value={folderId}
+              onChange={(e) => setFolderId(e.target.value)}
+              disabled={foldersLoading || folders.length === 0}
+              className="input-glass text-sm py-1 px-2 rounded min-w-[200px]"
+            >
+              {foldersLoading ? (
+                <option value="">Loading...</option>
+              ) : folders.length === 0 ? (
+                <option value="">No managed folders in project</option>
+              ) : (
+                folders.map((f) => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))
+              )}
+            </select>
+          </div>
         </section>
 
         {/* Stats bar */}
@@ -277,7 +328,9 @@ export function CodeEnvCleaner() {
                         {isUnused && (
                           <button
                             onClick={() => openDeleteConfirm(row)}
-                            className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors"
+                            disabled={!folderId}
+                            title={!folderId ? 'Select a backup destination first' : undefined}
+                            className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Delete
                           </button>
@@ -361,11 +414,7 @@ export function CodeEnvCleaner() {
               <span className="font-mono text-[var(--neon-red)]">{deleteTarget.env.name}</span>?
             </p>
             <p className="text-sm text-[var(--text-muted)]">
-              A backup will be created at{' '}
-              <code className="px-1.5 py-0.5 rounded bg-[var(--bg-glass)] text-[var(--text-primary)]">
-                /data/dataiku/projectbackups/
-              </code>{' '}
-              before deletion.
+              A backup will be uploaded to the selected managed folder before deletion.
             </p>
             <p className="text-sm text-[var(--text-muted)]">
               Type{' '}

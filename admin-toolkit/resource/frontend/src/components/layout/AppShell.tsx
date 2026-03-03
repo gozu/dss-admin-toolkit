@@ -11,9 +11,10 @@ const SIDEBAR_COLLAPSED = 56;
 interface AppShellProps {
   children: ReactNode;
   onOpenPalette?: () => void;
+  onRefreshCache?: () => Promise<void>;
 }
 
-export function AppShell({ children, onOpenPalette }: AppShellProps) {
+export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < COLLAPSE_BREAKPOINT,
   );
@@ -53,7 +54,7 @@ export function AppShell({ children, onOpenPalette }: AppShellProps) {
         animate={{ width: sidebarWidth }}
         transition={{ type: 'spring', stiffness: 400, damping: 35 }}
       >
-        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((prev) => !prev)} />
+        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((prev) => !prev)} onRefreshCache={onRefreshCache} />
       </motion.div>
 
       {/* Top bar */}

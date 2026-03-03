@@ -23,6 +23,7 @@ app = Flask(__name__)
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE_LOCK = threading.Lock()
 _THREAD_LOCAL = threading.local()
 _PROGRESS: Dict[str, Dict[str, Any]] = {}
 _PROGRESS_LOCK = threading.Lock()
@@ -7593,6 +7594,29 @@ def _cec_fetch_env_with_usages(client, env_info):
     }, usage_ms
 
 
+@app.route('/api/cache/clear', methods=['POST'])
+def api_cache_clear():
+    """Clear the in-memory cache so subsequent requests fetch fresh data."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/managed-folders', methods=['GET'])
+def api_managed_folders():
+    """List managed folders in the current project."""
+    client = dataiku.api_client()
+    project_key = dataiku.default_project_key()
+    project = client.get_project(project_key)
+    folders = project.list_managed_folders()
+    return jsonify({
+        'folders': [
+            {'id': f['id'], 'name': f.get('name') or f['id']}
+            for f in folders
+        ]
+    })
+
+
 @app.route('/api/tools/code-env-cleaner/scan')
 def api_code_env_cleaner_scan():
     """Stream code env data via SSE for real-time progress."""
@@ -7656,12 +7680,28 @@ def api_code_env_cleaner_scan():
 
 @app.route('/api/tools/code-env-cleaner/<lang>/<name>', methods=['DELETE'])
 def api_code_env_cleaner_delete(lang, name):
-    """Backup then delete a code env after verifying the confirmation header."""
+    """Backup to managed folder then delete a code env after verifying the confirmation header."""
+    import tempfile
+
     confirm = request.headers.get("X-Confirm-Name", "")
     if confirm != name:
         return jsonify({"error": "Confirmation header does not match env name"}), 400
 
+    folder_id = request.args.get("folderId", "").strip()
+    if not folder_id:
+        return jsonify({"error": "folderId query parameter is required"}), 400
+
     client = dataiku.api_client()
+    project_key = dataiku.default_project_key()
+    project = client.get_project(project_key)
+
+    # Validate managed folder exists
+    try:
+        dest_folder = project.get_managed_folder(folder_id)
+        dest_folder.get_definition()  # verify it exists
+    except Exception as e:
+        app.logger.error("[code-env-cleaner] invalid folder %s: %s", folder_id, e)
+        return jsonify({"error": "Invalid managed folder: %s" % str(e)}), 400
 
     # Fetch the code env definition
     try:
@@ -7670,80 +7710,102 @@ def api_code_env_cleaner_delete(lang, name):
         app.logger.error("[code-env-cleaner] fetch failed for %s/%s: %s", lang, name, e)
         return jsonify({"error": "Failed to fetch env definition: %s" % str(e)}), 500
 
-    # Backup first — if this fails, do NOT proceed with deletion
-    backup_dir = "/data/dataiku/projectbackups"
-    backup_path = os.path.join(backup_dir, "%s.zip" % name)
+    # Backup first — build ZIP to temp file, upload to managed folder
+    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    zip_filename = "%s.zip" % safe_name
     try:
         env_lang = lang.lower()
-        os.makedirs(backup_dir, exist_ok=True)
-        with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Directory entries (match DSS on-disk export exactly)
-            for d in ["%s/", "%s/spec/", "%s/actual/"]:
-                zf.writestr(zipfile.ZipInfo(d % env_lang), "")
-            # desc.json — strip owner (not present in on-disk version)
-            desc = dict(env_def.get("desc") or env_def)
-            desc.pop("owner", None)
-            zf.writestr("%s/desc.json" % env_lang, json.dumps(desc, indent=2))
-            # spec/requirements.txt
-            zf.writestr("%s/spec/requirements.txt" % env_lang, env_def.get("specPackageList", ""))
-            # spec/resources_init.py (field is resourcesInitScript, NOT specResourcesInit)
-            zf.writestr("%s/spec/resources_init.py" % env_lang, env_def.get("resourcesInitScript", ""))
-            # spec/environment.spec
-            zf.writestr("%s/spec/environment.spec" % env_lang, env_def.get("specCondaEnvironment", ""))
-            # actual/requirements.txt
-            zf.writestr("%s/actual/requirements.txt" % env_lang, env_def.get("actualPackageList", ""))
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp:
+            with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+                # Directory entries (match DSS on-disk export exactly)
+                for d in ["%s/", "%s/spec/", "%s/actual/"]:
+                    zf.writestr(zipfile.ZipInfo(d % env_lang), "")
+                # desc.json — strip owner (not present in on-disk version)
+                desc = dict(env_def.get("desc") or env_def)
+                desc.pop("owner", None)
+                zf.writestr("%s/desc.json" % env_lang, json.dumps(desc, indent=2))
+                # spec/requirements.txt
+                zf.writestr("%s/spec/requirements.txt" % env_lang, env_def.get("specPackageList", ""))
+                # spec/resources_init.py (field is resourcesInitScript, NOT specResourcesInit)
+                zf.writestr("%s/spec/resources_init.py" % env_lang, env_def.get("resourcesInitScript", ""))
+                # spec/environment.spec
+                zf.writestr("%s/spec/environment.spec" % env_lang, env_def.get("specCondaEnvironment", ""))
+                # actual/requirements.txt
+                zf.writestr("%s/actual/requirements.txt" % env_lang, env_def.get("actualPackageList", ""))
+            # Upload to managed folder
+            with open(tmp.name, "rb") as f:
+                dest_folder.put_file(zip_filename, f)
     except Exception as e:
-        app.logger.error("[code-env-cleaner] backup failed for %s/%s: %s", lang, name, e)
-        return jsonify({"error": "Backup failed: %s" % str(e)}), 500
+        app.logger.error("[code-env-cleaner] backup/upload failed for %s/%s: %s", lang, name, e)
+        return jsonify({"error": "Backup upload failed — deletion aborted: %s" % str(e)}), 500
 
     # Delete code env
     try:
         client._perform_empty("DELETE", "/admin/code-envs/%s/%s/" % (lang, name))
     except Exception as e:
         app.logger.error("[code-env-cleaner] delete failed for %s/%s: %s", lang, name, e)
-        return jsonify({"error": "Delete failed (backup saved at %s): %s" % (backup_path, str(e))}), 500
+        return jsonify({"error": "Delete failed (backup saved to managed folder): %s" % str(e)}), 500
 
     # Invalidate caches so subsequent fetches reflect the deletion
     _CACHE.pop('code_envs', None)
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
 
-    app.logger.info("[code-env-cleaner] backed up to %s and deleted %s/%s", backup_path, lang, name)
-    return jsonify({"backed_up": backup_path, "deleted": name}), 200
+    app.logger.info("[code-env-cleaner] backed up %s to managed folder %s and deleted %s/%s", zip_filename, folder_id, lang, name)
+    return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": name}), 200
 
 
 @app.route('/api/tools/project-cleaner/<project_key>', methods=['DELETE'])
 def api_project_cleaner_delete(project_key):
-    """Backup then delete an inactive project after verifying the confirmation header."""
+    """Backup to managed folder then delete an inactive project after verifying the confirmation header."""
+    import tempfile
+
     confirm = request.headers.get("X-Confirm-Name", "")
     if confirm != project_key:
         return jsonify({"error": "Confirmation header does not match project key"}), 400
 
-    client = dataiku.api_client()
-    project = client.get_project(project_key)
+    folder_id = request.args.get("folderId", "").strip()
+    if not folder_id:
+        return jsonify({"error": "folderId query parameter is required"}), 400
 
-    # Backup first — if this fails, do NOT proceed with deletion
-    backup_dir = "/data/dataiku/projectbackups"
-    backup_path = os.path.join(backup_dir, "%s.zip" % project_key)
+    client = dataiku.api_client()
+    plugin_project_key = dataiku.default_project_key()
+    plugin_project = client.get_project(plugin_project_key)
+
+    # Validate managed folder exists
     try:
-        os.makedirs(backup_dir, exist_ok=True)
-        project.export_to_file(backup_path)
+        dest_folder = plugin_project.get_managed_folder(folder_id)
+        dest_folder.get_definition()  # verify it exists
     except Exception as e:
-        app.logger.error("[project-cleaner] backup failed for %s: %s", project_key, e)
-        return jsonify({"error": "Backup failed: %s" % str(e)}), 500
+        app.logger.error("[project-cleaner] invalid folder %s: %s", folder_id, e)
+        return jsonify({"error": "Invalid managed folder: %s" % str(e)}), 400
+
+    target_project = client.get_project(project_key)
+
+    # Backup first — export to temp file, upload to managed folder
+    safe_key = re.sub(r'[^a-zA-Z0-9._-]', '_', project_key)
+    zip_filename = "%s.zip" % safe_key
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=True) as tmp:
+            target_project.export_to_file(tmp.name)
+            with open(tmp.name, "rb") as f:
+                dest_folder.put_file(zip_filename, f)
+    except Exception as e:
+        app.logger.error("[project-cleaner] backup/upload failed for %s: %s", project_key, e)
+        return jsonify({"error": "Backup upload failed — deletion aborted: %s" % str(e)}), 500
 
     # Delete project
     try:
-        project.delete()
+        target_project.delete()
     except Exception as e:
         app.logger.error("[project-cleaner] delete failed for %s: %s", project_key, e)
-        return jsonify({"error": "Delete failed (backup saved at %s): %s" % (backup_path, str(e))}), 500
+        return jsonify({"error": "Delete failed (backup saved to managed folder): %s" % str(e)}), 500
 
     # Invalidate caches
     _CACHE.pop('tools_outreach_data', None)
 
-    app.logger.info("[project-cleaner] backed up to %s and deleted %s", backup_path, project_key)
-    return jsonify({"backed_up": backup_path, "deleted": project_key}), 200
+    app.logger.info("[project-cleaner] backed up %s to managed folder %s and deleted %s", zip_filename, folder_id, project_key)
+    return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": project_key}), 200
 
 
 @app.route('/api/tools/plugins/compare', methods=['POST'])

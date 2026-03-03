@@ -145,7 +145,7 @@ interface LogErrorsResponse {
   logStats?: ParsedData['logStats'];
 }
 
-export function useApiDataLoader(enabled: boolean) {
+export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
   const { dispatch } = useDiag();
   const codeEnvsInterpolationEnabledRef = useRef(false);
   const projectFootprintInterpolationEnabledRef = useRef(false);
@@ -1089,5 +1089,5 @@ export function useApiDataLoader(enabled: boolean) {
       codeEnvsProgressSetterRef.current = null;
       projectFootprintProgressSetterRef.current = null;
     };
-  }, [dispatch, enabled]);
+  }, [dispatch, enabled, reloadKey]);
 }
