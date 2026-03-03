@@ -7676,9 +7676,24 @@ def api_code_env_cleaner_delete(lang, name):
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = os.path.join(backup_dir, "codeenv_%s_%s_%s.zip" % (lang, safe_name, ts))
     try:
+        env_lang = lang.lower()
         os.makedirs(backup_dir, exist_ok=True)
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("code_env_definition.json", json.dumps(env_def, indent=2))
+            # desc.json — the full descriptor
+            desc = env_def.get("desc") if isinstance(env_def.get("desc"), dict) else env_def
+            zf.writestr("%s/desc.json" % env_lang, json.dumps(desc, indent=2))
+            # spec/requirements.txt — user-specified packages
+            spec_packages = env_def.get("specPackageList", "")
+            if spec_packages:
+                zf.writestr("%s/spec/requirements.txt" % env_lang, spec_packages)
+            # spec/resources_init.py — resource init script
+            resources_init = env_def.get("specResourcesInit", "")
+            if resources_init:
+                zf.writestr("%s/spec/resources_init.py" % env_lang, resources_init)
+            # actual/requirements.txt — installed packages (pip freeze)
+            actual_packages = env_def.get("actualPackageList", "")
+            if actual_packages:
+                zf.writestr("%s/actual/requirements.txt" % env_lang, actual_packages)
     except Exception as e:
         app.logger.error("[code-env-cleaner] backup failed for %s/%s: %s", lang, name, e)
         return jsonify({"error": "Backup failed: %s" % str(e)}), 500
