@@ -7672,28 +7672,23 @@ def api_code_env_cleaner_delete(lang, name):
 
     # Backup first — if this fails, do NOT proceed with deletion
     backup_dir = "/data/dataiku/projectbackups"
-    safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', name)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = os.path.join(backup_dir, "codeenv_%s_%s_%s.zip" % (lang, safe_name, ts))
+    backup_path = os.path.join(backup_dir, "%s.zip" % name)
     try:
         env_lang = lang.lower()
         os.makedirs(backup_dir, exist_ok=True)
         with zipfile.ZipFile(backup_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            # desc.json — the full descriptor
-            desc = env_def.get("desc") if isinstance(env_def.get("desc"), dict) else env_def
+            # desc.json — strip owner (not present in on-disk version)
+            desc = dict(env_def.get("desc") or env_def)
+            desc.pop("owner", None)
             zf.writestr("%s/desc.json" % env_lang, json.dumps(desc, indent=2))
-            # spec/requirements.txt — user-specified packages
-            spec_packages = env_def.get("specPackageList", "")
-            if spec_packages:
-                zf.writestr("%s/spec/requirements.txt" % env_lang, spec_packages)
-            # spec/resources_init.py — resource init script
-            resources_init = env_def.get("specResourcesInit", "")
-            if resources_init:
-                zf.writestr("%s/spec/resources_init.py" % env_lang, resources_init)
-            # actual/requirements.txt — installed packages (pip freeze)
-            actual_packages = env_def.get("actualPackageList", "")
-            if actual_packages:
-                zf.writestr("%s/actual/requirements.txt" % env_lang, actual_packages)
+            # spec/requirements.txt
+            zf.writestr("%s/spec/requirements.txt" % env_lang, env_def.get("specPackageList", ""))
+            # spec/resources_init.py (field is resourcesInitScript, NOT specResourcesInit)
+            zf.writestr("%s/spec/resources_init.py" % env_lang, env_def.get("resourcesInitScript", ""))
+            # spec/environment.spec
+            zf.writestr("%s/spec/environment.spec" % env_lang, env_def.get("specCondaEnvironment", ""))
+            # actual/requirements.txt
+            zf.writestr("%s/actual/requirements.txt" % env_lang, env_def.get("actualPackageList", ""))
     except Exception as e:
         app.logger.error("[code-env-cleaner] backup failed for %s/%s: %s", lang, name, e)
         return jsonify({"error": "Backup failed: %s" % str(e)}), 500
