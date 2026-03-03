@@ -753,7 +753,7 @@ def _get_cpu_cores() -> str:
         sockets = len(set(physical_ids)) if physical_ids else 1
         total_cores = sockets * cores_per_socket
         if threads > total_cores:
-            return f"{total_cores}C / {threads}T"
+            return f"{total_cores} Cores / {threads} Threads"
         return str(total_cores)
     except Exception:
         return str(os.cpu_count() or '??')

@@ -34,7 +34,7 @@ export class DiagTextParser extends BaseTextParser<DiagTextResult> {
       const coresPerSocket = parseInt(cpuCoresMatch[1]);
       const sockets = physicalIds ? new Set(physicalIds.map(m => m.match(/(\d+)$/)?.[1])).size : 1;
       const totalCores = sockets * coresPerSocket;
-      cpuCores = threads > totalCores ? `${totalCores}C / ${threads}T` : `${totalCores}`;
+      cpuCores = threads > totalCores ? `${totalCores} Cores / ${threads} Threads` : `${totalCores}`;
     }
     let osInfo = '';
 
