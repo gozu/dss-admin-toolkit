@@ -7,6 +7,7 @@ import type {
   HealthCategory,
   HealthSeverity,
 } from '../types';
+import { useThresholds, type ThresholdSettings } from './useThresholds';
 
 /**
  * Category weights for overall score calculation
@@ -701,12 +702,23 @@ function scoreProjectSizePressure(
  */
 export function calculateHealthScore(
   parsedData: ParsedData,
-  factorToggles: Partial<HealthFactorToggles> = DEFAULT_HEALTH_FACTOR_TOGGLES
+  factorToggles: Partial<HealthFactorToggles> = DEFAULT_HEALTH_FACTOR_TOGGLES,
+  thresholdOverrides?: Partial<ThresholdSettings>
 ): HealthScore {
     const toggles: HealthFactorToggles = {
       ...DEFAULT_HEALTH_FACTOR_TOGGLES,
       ...factorToggles,
     };
+    const t: ThresholdSettings = thresholdOverrides as ThresholdSettings;
+    const categoryWeights: Record<HealthCategory, number> = t ? {
+      ...CATEGORY_WEIGHTS,
+      code_envs: t.weightCodeEnvs,
+      project_footprint: t.weightProjectFootprint,
+      system_capacity: t.weightSystemCapacity,
+      security_isolation: t.weightSecurityIsolation,
+      version_currency: t.weightVersionCurrency,
+      runtime_config: t.weightRuntimeConfig,
+    } : CATEGORY_WEIGHTS;
     const categoryScores: HealthCategoryScore[] = [];
     const allIssues: HealthIssue[] = [];
 
@@ -728,7 +740,7 @@ export function calculateHealthScore(
       category: 'version_currency',
       label: 'Version Currency',
       score: versionCurrencyScore,
-      weight: CATEGORY_WEIGHTS.version_currency,
+      weight: categoryWeights.version_currency,
       issues: versionCurrencyIssues,
     });
     allIssues.push(...versionCurrencyIssues);
@@ -764,7 +776,7 @@ export function calculateHealthScore(
       category: 'system_capacity',
       label: 'System Capacity',
       score: systemCapacityScore,
-      weight: CATEGORY_WEIGHTS.system_capacity,
+      weight: categoryWeights.system_capacity,
       issues: systemCapacityIssues,
     });
     allIssues.push(...systemCapacityIssues);
@@ -800,7 +812,7 @@ export function calculateHealthScore(
       category: 'security_isolation',
       label: 'Security Isolation',
       score: securityIsolationScore,
-      weight: CATEGORY_WEIGHTS.security_isolation,
+      weight: categoryWeights.security_isolation,
       issues: securityIssues,
     });
     allIssues.push(...securityIssues);
@@ -815,7 +827,7 @@ export function calculateHealthScore(
       category: 'code_envs',
       label: 'Code Envs',
       score: codeEnvResult.score,
-      weight: CATEGORY_WEIGHTS.code_envs,
+      weight: categoryWeights.code_envs,
       issues: codeEnvResult.issues,
     });
     allIssues.push(...codeEnvResult.issues);
@@ -830,7 +842,7 @@ export function calculateHealthScore(
       category: 'project_footprint',
       label: 'Project Footprint',
       score: projectFootprintResult.score,
-      weight: CATEGORY_WEIGHTS.project_footprint,
+      weight: categoryWeights.project_footprint,
       issues: projectFootprintResult.issues,
     });
     allIssues.push(...projectFootprintResult.issues);
@@ -857,7 +869,7 @@ export function calculateHealthScore(
       category: 'runtime_config',
       label: 'Runtime Config',
       score: runtimeConfigScore,
-      weight: CATEGORY_WEIGHTS.runtime_config,
+      weight: categoryWeights.runtime_config,
       issues: runtimeConfigIssues,
     });
     allIssues.push(...runtimeConfigIssues);
@@ -884,10 +896,12 @@ export function calculateHealthScore(
     uniqueIssues.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
 
     // Determine status based on score only
+    const criticalBelow = t?.healthCriticalBelow ?? 50;
+    const warningBelow = t?.healthWarningBelow ?? 80;
     let status: HealthScore['status'] = 'healthy';
-    if (overallScore < 50) {
+    if (overallScore < criticalBelow) {
       status = 'critical';
-    } else if (overallScore < 80) {
+    } else if (overallScore < warningBelow) {
       status = 'warning';
     }
 
@@ -910,5 +924,6 @@ export function useHealthScore(
   parsedData: ParsedData,
   factorToggles: Partial<HealthFactorToggles> = DEFAULT_HEALTH_FACTOR_TOGGLES
 ): HealthScore {
-  return useMemo(() => calculateHealthScore(parsedData, factorToggles), [parsedData, factorToggles]);
+  const { thresholds } = useThresholds();
+  return useMemo(() => calculateHealthScore(parsedData, factorToggles, thresholds), [parsedData, factorToggles, thresholds]);
 }

@@ -12,11 +12,116 @@ interface SettingsViewProps {
   onBack: () => void;
 }
 
-const fields: Array<{ key: keyof ThresholdSettings; label: string; description: string; min: number; max: number; step: number }> = [
+type FieldDef = { key: keyof ThresholdSettings; label: string; description: string; min: number; max: number; step: number; type?: 'number' | 'text' };
+
+const mainFields: FieldDef[] = [
   { key: 'codeEnvCountUnhealthy', label: 'Code Env Count Threshold', description: 'Projects with more code envs than this are flagged unhealthy.', min: 0, max: 20, step: 1 },
   { key: 'codeStudioCountUnhealthy', label: 'Code Studio Count Threshold', description: 'Projects with more Code Studios than this are flagged.', min: 0, max: 50, step: 1 },
   { key: 'filesystemWarningPct', label: 'Filesystem Warning %', description: 'Filesystem usage above this triggers a warning.', min: 0, max: 100, step: 5 },
   { key: 'filesystemCriticalPct', label: 'Filesystem Critical %', description: 'Filesystem usage above this triggers a critical alert.', min: 0, max: 100, step: 5 },
+  { key: 'largeFlowThreshold', label: 'Large Flow Threshold', description: 'Flows with more objects than this are flagged.', min: 1, max: 1000, step: 10 },
+  { key: 'inactiveProjectDays', label: 'Inactive Project Days', description: 'Projects inactive for more days than this are flagged.', min: 30, max: 730, step: 30 },
+  { key: 'emptyProjectBytes', label: 'Empty Project Size (bytes)', description: 'Projects larger than this are not considered empty.', min: 0, max: 10485760, step: 1024 },
+  { key: 'orphanNotebookMinCount', label: 'Orphan Notebook Min Count', description: 'Minimum notebook count to flag orphan notebooks.', min: 1, max: 50, step: 1 },
+  { key: 'highFreqScenarioMinutes', label: 'High-Freq Scenario (min)', description: 'Scenarios running more often than this are flagged.', min: 1, max: 1440, step: 5 },
+  { key: 'deprecatedPythonPrefixes', label: 'Deprecated Python Prefixes', description: 'Comma-separated version prefixes to flag (e.g. 2.,3.6,3.7).', min: 0, max: 0, step: 0, type: 'text' },
+  { key: 'disabledFeaturesSeverityCutoff', label: 'Disabled Features Severity Cutoff', description: 'More disabled features than this triggers a warning instead of info.', min: 1, max: 50, step: 1 },
+];
+
+const advancedFields: { group: string; fields: FieldDef[] }[] = [
+  {
+    group: 'Version & System Thresholds',
+    fields: [
+      { key: 'openFilesMinimum', label: 'Open Files Minimum', description: 'Minimum open files limit before flagging.', min: 1024, max: 1048576, step: 1024 },
+      { key: 'javaHeapMinimumMB', label: 'Java Heap Minimum (MB)', description: 'Minimum Java heap per component before flagging.', min: 256, max: 16384, step: 256 },
+      { key: 'pythonCriticalBelow', label: 'Python Critical Below', description: 'Python versions below this are flagged critical (e.g. 3.8).', min: 0, max: 0, step: 0, type: 'text' },
+      { key: 'pythonWarningBelow', label: 'Python Warning Below', description: 'Python versions below this are flagged warning (e.g. 3.10).', min: 0, max: 0, step: 0, type: 'text' },
+      { key: 'sparkVersionMinimum', label: 'Spark Version Minimum', description: 'Spark major version below this is flagged.', min: 1, max: 10, step: 1 },
+      { key: 'projectCountWarning', label: 'Project Count Warning', description: 'More projects than this triggers a warning.', min: 50, max: 5000, step: 50 },
+    ],
+  },
+  {
+    group: 'Health Scoring Weights',
+    fields: [
+      { key: 'weightCodeEnvs', label: 'Weight: Code Envs', description: 'Weight for code environments category.', min: 0, max: 1, step: 0.05 },
+      { key: 'weightProjectFootprint', label: 'Weight: Project Footprint', description: 'Weight for project footprint category.', min: 0, max: 1, step: 0.05 },
+      { key: 'weightSystemCapacity', label: 'Weight: System Capacity', description: 'Weight for system capacity category.', min: 0, max: 1, step: 0.05 },
+      { key: 'weightSecurityIsolation', label: 'Weight: Security Isolation', description: 'Weight for security isolation category.', min: 0, max: 1, step: 0.05 },
+      { key: 'weightVersionCurrency', label: 'Weight: Version Currency', description: 'Weight for version currency category.', min: 0, max: 1, step: 0.05 },
+      { key: 'weightRuntimeConfig', label: 'Weight: Runtime Config', description: 'Weight for runtime configuration category.', min: 0, max: 1, step: 0.05 },
+      { key: 'healthCriticalBelow', label: 'Health Critical Below', description: 'Overall score below this is critical.', min: 0, max: 100, step: 5 },
+      { key: 'healthWarningBelow', label: 'Health Warning Below', description: 'Overall score below this is warning.', min: 0, max: 100, step: 5 },
+    ],
+  },
+  {
+    group: 'Log Parsing',
+    fields: [
+      { key: 'logLinesBefore', label: 'Lines Before Error', description: 'Context lines to show before each error.', min: 0, max: 100, step: 5 },
+      { key: 'logLinesAfter', label: 'Lines After Error', description: 'Context lines to show after each error.', min: 0, max: 500, step: 10 },
+      { key: 'logTimeThresholdSec', label: 'Error Grouping Window (sec)', description: 'Errors within this window are grouped together.', min: 1, max: 60, step: 1 },
+      { key: 'logMaxErrors', label: 'Max Error Signatures', description: 'Maximum number of unique error signatures to display.', min: 1, max: 50, step: 1 },
+    ],
+  },
+  {
+    group: 'Scan Limits',
+    fields: [
+      { key: 'largeFileThresholdGB', label: 'Large File Threshold (GB)', description: 'Files larger than this are flagged during dir scans.', min: 1, max: 1000, step: 10 },
+      { key: 'dirTreeDefaultDepth', label: 'Dir Tree Default Depth', description: 'Default directory tree scan depth.', min: 1, max: 10, step: 1 },
+      { key: 'fileViewerMaxLines', label: 'File Viewer Max Lines', description: 'Maximum lines shown in the file viewer.', min: 1000, max: 100000, step: 1000 },
+      { key: 'syntaxHighlightMaxKB', label: 'Syntax Highlight Max (KB)', description: 'Max file size for syntax highlighting.', min: 100, max: 5000, step: 100 },
+    ],
+  },
+];
+
+const allFields: FieldDef[] = [...mainFields, ...advancedFields.flatMap((g) => g.fields)];
+
+type BackendSettings = Record<string, number>;
+
+const BACKEND_FIELD_GROUPS: { group: string; fields: { key: string; label: string; description: string; min: number; max: number; step: number }[] }[] = [
+  {
+    group: 'Concurrency / Performance',
+    fields: [
+      { key: 'parallel_workers_default', label: 'Default Parallel Workers', description: 'Default thread pool size for parallel API calls.', min: 1, max: 64, step: 1 },
+      { key: 'parallel_workers_max', label: 'Worker Clamp Max', description: 'Maximum worker threads allowed.', min: 1, max: 128, step: 1 },
+      { key: 'code_env_detail_workers', label: 'Code Env Detail Workers', description: 'Workers for fetching code env details.', min: 1, max: 64, step: 1 },
+      { key: 'code_env_timeout_ms', label: 'Code Env API Timeout (ms)', description: 'Backend timeout for code env analysis.', min: 60000, max: 3600000, step: 60000 },
+      { key: 'project_footprint_timeout_ms', label: 'Project Footprint Timeout (ms)', description: 'Backend timeout for project footprint scan.', min: 60000, max: 3600000, step: 60000 },
+    ],
+  },
+  {
+    group: 'Cache TTLs (seconds)',
+    fields: [
+      { key: 'cache_ttl_overview', label: 'Overview', description: 'Cache TTL for overview endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_connections', label: 'Connections', description: 'Cache TTL for connections endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_users', label: 'Users', description: 'Cache TTL for users endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_license', label: 'License', description: 'Cache TTL for license endpoint.', min: 5, max: 3600, step: 60 },
+      { key: 'cache_ttl_projects', label: 'Projects', description: 'Cache TTL for projects endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_code_envs', label: 'Code Envs', description: 'Cache TTL for code envs endpoint.', min: 1, max: 600, step: 5 },
+      { key: 'cache_ttl_usage_full', label: 'Usage Full', description: 'Cache TTL for code env usage endpoint.', min: 1, max: 600, step: 5 },
+      { key: 'cache_ttl_outreach', label: 'Outreach Data', description: 'Cache TTL for outreach data endpoint.', min: 5, max: 600, step: 5 },
+      { key: 'cache_ttl_inactive', label: 'Inactive Projects', description: 'Cache TTL for inactive projects endpoint.', min: 5, max: 600, step: 5 },
+      { key: 'cache_ttl_plugins', label: 'Plugins', description: 'Cache TTL for plugins endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_log_errors', label: 'Log Errors', description: 'Cache TTL for log errors endpoint.', min: 5, max: 3600, step: 30 },
+      { key: 'cache_ttl_dir_tree', label: 'Dir Tree', description: 'Cache TTL for directory tree endpoint.', min: 5, max: 3600, step: 60 },
+    ],
+  },
+  {
+    group: 'Frontend API Timeouts (ms)',
+    fields: [
+      { key: 'fe_timeout_code_envs', label: 'Code Envs Fetch', description: 'Frontend timeout for code envs fetch.', min: 30000, max: 1800000, step: 30000 },
+      { key: 'fe_timeout_project_footprint', label: 'Project Footprint Fetch', description: 'Frontend timeout for project footprint.', min: 30000, max: 1800000, step: 30000 },
+      { key: 'fe_timeout_projects', label: 'Projects Fetch', description: 'Frontend timeout for projects list.', min: 5000, max: 300000, step: 5000 },
+      { key: 'fe_timeout_logs', label: 'Logs Fetch', description: 'Frontend timeout for log errors.', min: 5000, max: 300000, step: 5000 },
+    ],
+  },
+  {
+    group: 'Tracking & Tools',
+    fields: [
+      { key: 'sqlite_connect_timeout', label: 'SQLite Connect Timeout (sec)', description: 'Timeout for SQLite database connections.', min: 5, max: 120, step: 5 },
+      { key: 'tracking_issue_page_size', label: 'Issue Fetch Page Size', description: 'Number of issues fetched per page.', min: 50, max: 5000, step: 50 },
+      { key: 'codenvclean_thread_max', label: 'Codenvclean Thread Max', description: 'Maximum threads for code env cleanup tool.', min: 1, max: 50, step: 1 },
+    ],
+  },
 ];
 
 const CAMPAIGN_LABELS: Record<string, string> = {
@@ -38,31 +143,97 @@ const CAMPAIGN_LABELS: Record<string, string> = {
 
 const CAMPAIGN_IDS = Object.keys(CAMPAIGN_LABELS);
 
+function ThresholdField({
+  field,
+  value,
+  defaultValue,
+  inputValue,
+  onChangeInput,
+  onBlur,
+}: {
+  field: FieldDef;
+  value: ThresholdSettings[keyof ThresholdSettings];
+  defaultValue: ThresholdSettings[keyof ThresholdSettings];
+  inputValue: string | undefined;
+  onChangeInput: (key: keyof ThresholdSettings, raw: string) => void;
+  onBlur: (key: keyof ThresholdSettings) => void;
+}) {
+  const isText = field.type === 'text';
+  return (
+    <label className="block space-y-1">
+      <span className="text-sm font-medium text-[var(--text-primary)]">{field.label}</span>
+      <p className="text-xs text-[var(--text-muted)]">{field.description}</p>
+      <input
+        type={isText ? 'text' : 'number'}
+        value={inputValue ?? value}
+        onChange={(e) => onChangeInput(field.key, e.target.value)}
+        onBlur={() => onBlur(field.key)}
+        min={isText ? undefined : field.min}
+        max={isText ? undefined : field.max}
+        step={isText ? undefined : field.step}
+        className="mt-1 w-full input-glass font-mono"
+      />
+      {value !== defaultValue && (
+        <span className="text-[10px] text-[var(--neon-amber)]">
+          Default: {String(defaultValue)}
+        </span>
+      )}
+    </label>
+  );
+}
+
 export function SettingsView({ onBack }: SettingsViewProps) {
   const { ultraWideEnabled } = useUltraWideLayout();
   const { thresholds, setThreshold, resetDefaults, defaults } = useThresholds();
   const [inputValues, setInputValues] = useState<Partial<Record<keyof ThresholdSettings, string>>>({});
   const { state } = useDiag();
   const { parsedData } = state;
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // Backend settings state
+  const [backendSettings, setBackendSettings] = useState<BackendSettings>({});
+  const [backendDefaults, setBackendDefaults] = useState<BackendSettings>({});
+  const [backendLoading, setBackendLoading] = useState(true);
+  const [backendInputs, setBackendInputs] = useState<Partial<Record<string, string>>>({});
+
+  useEffect(() => {
+    fetchJson<BackendSettings>('/api/settings')
+      .then((data) => {
+        setBackendSettings(data);
+        setBackendDefaults(data);
+      })
+      .catch(() => {})
+      .finally(() => setBackendLoading(false));
+  }, []);
+
+  const updateBackendSetting = useCallback((key: string, value: number) => {
+    const prev = backendSettings[key];
+    setBackendSettings((s) => ({ ...s, [key]: value }));
+    fetchJson<BackendSettings>('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    }).catch(() => {
+      setBackendSettings((s) => ({ ...s, [key]: prev }));
+    });
+  }, [backendSettings]);
 
   const mailChannels = useMemo(() => parsedData.mailChannels ?? [], [parsedData.mailChannels]);
   const [selectedChannel, setSelectedChannel] = useState(() =>
     loadFromStorage('selectedChannel', ''),
   );
 
-  // Auto-select first mail channel when available and none selected
   useEffect(() => {
     if (!selectedChannel && mailChannels.length > 0) {
       setSelectedChannel(mailChannels[0].id);
     }
   }, [selectedChannel, mailChannels]);
 
-  // Persist selected channel
   useEffect(() => {
     saveToStorage('selectedChannel', selectedChannel);
   }, [selectedChannel]);
 
-  const isDefault = fields.every((f) => thresholds[f.key] === defaults[f.key]);
+  const isDefault = allFields.every((f) => thresholds[f.key] === defaults[f.key]);
 
   // Campaign toggle state
   const [campaignSettings, setCampaignSettings] = useState<Record<string, boolean>>({});
@@ -78,14 +249,12 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const toggleCampaign = useCallback((campaignId: string) => {
     const current = campaignSettings[campaignId] ?? true;
     const next = !current;
-    // Optimistic update
     setCampaignSettings((prev) => ({ ...prev, [campaignId]: next }));
     fetchJson('/api/tracking/campaign-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ campaign_id: campaignId, enabled: next }),
     }).catch(() => {
-      // Revert on error
       setCampaignSettings((prev) => ({ ...prev, [campaignId]: current }));
     });
   }, [campaignSettings]);
@@ -150,17 +319,34 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   }, [newExemptionCampaign, newExemptionKey, newExemptionReason]);
 
   const removeExemption = useCallback((exemptionId: number) => {
-    // Optimistic removal
     setExemptions((prev) => prev.filter((e) => e.exemption_id !== exemptionId));
     fetchJson('/api/tracking/exemptions', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ exemption_id: exemptionId }),
     }).catch(() => {
-      // Revert by re-fetching
       fetchJson<{ exemptions: CampaignExemption[] }>('/api/tracking/exemptions')
         .then((data) => setExemptions(data.exemptions))
         .catch(() => {});
+    });
+  }, []);
+
+  const handleInputChange = useCallback((key: keyof ThresholdSettings, raw: string) => {
+    setInputValues((prev) => ({ ...prev, [key]: raw }));
+    const field = allFields.find((f) => f.key === key);
+    if (field?.type === 'text') {
+      setThreshold(key, raw as never);
+    } else {
+      const v = Number(raw);
+      if (raw !== '' && !Number.isNaN(v)) setThreshold(key, v as never);
+    }
+  }, [setThreshold]);
+
+  const handleInputBlur = useCallback((key: keyof ThresholdSettings) => {
+    setInputValues((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
     });
   }, []);
 
@@ -194,41 +380,118 @@ export function SettingsView({ onBack }: SettingsViewProps) {
             </div>
           </section>
 
+          {/* Main Settings — Check Thresholds */}
           <section className="glass-card p-4">
+            <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-3">Check Thresholds</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {fields.map((field) => (
-                <label key={field.key} className="block space-y-1">
-                  <span className="text-sm font-medium text-[var(--text-primary)]">{field.label}</span>
-                  <p className="text-xs text-[var(--text-muted)]">{field.description}</p>
-                  <input
-                    type="number"
-                    value={inputValues[field.key] ?? thresholds[field.key]}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      setInputValues((prev) => ({ ...prev, [field.key]: raw }));
-                      const v = Number(raw);
-                      if (raw !== '' && !Number.isNaN(v)) setThreshold(field.key, v);
-                    }}
-                    onBlur={() => {
-                      setInputValues((prev) => {
-                        const next = { ...prev };
-                        delete next[field.key];
-                        return next;
-                      });
-                    }}
-                    min={field.min}
-                    max={field.max}
-                    step={field.step}
-                    className="mt-1 w-full input-glass font-mono"
-                  />
-                  {thresholds[field.key] !== defaults[field.key] && (
-                    <span className="text-[10px] text-[var(--neon-amber)]">
-                      Default: {defaults[field.key]}
-                    </span>
-                  )}
-                </label>
+              {mainFields.map((field) => (
+                <ThresholdField
+                  key={field.key}
+                  field={field}
+                  value={thresholds[field.key]}
+                  defaultValue={defaults[field.key]}
+                  inputValue={inputValues[field.key]}
+                  onChangeInput={handleInputChange}
+                  onBlur={handleInputBlur}
+                />
               ))}
             </div>
+          </section>
+
+          {/* Backend Settings */}
+          <section className="glass-card p-4 space-y-3">
+            <div>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Backend Settings</h3>
+              <p className="text-sm text-[var(--text-muted)]">
+                Configure server-side concurrency, cache TTLs, and timeouts. Changes are sent to the backend immediately.
+              </p>
+            </div>
+            {backendLoading ? (
+              <div className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]">
+                <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                Loading backend settings...
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {BACKEND_FIELD_GROUPS.map(({ group, fields }) => (
+                  <div key={group}>
+                    <h4 className="text-sm font-semibold text-[var(--text-secondary)] mb-2">{group}</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {fields.map((f) => (
+                        <label key={f.key} className="block space-y-1">
+                          <span className="text-sm font-medium text-[var(--text-primary)]">{f.label}</span>
+                          <p className="text-xs text-[var(--text-muted)]">{f.description}</p>
+                          <input
+                            type="number"
+                            value={backendInputs[f.key] ?? backendSettings[f.key] ?? ''}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setBackendInputs((prev) => ({ ...prev, [f.key]: raw }));
+                              const v = Number(raw);
+                              if (raw !== '' && !Number.isNaN(v)) updateBackendSetting(f.key, v);
+                            }}
+                            onBlur={() => {
+                              setBackendInputs((prev) => {
+                                const next = { ...prev };
+                                delete next[f.key];
+                                return next;
+                              });
+                            }}
+                            min={f.min}
+                            max={f.max}
+                            step={f.step}
+                            className="mt-1 w-full input-glass font-mono"
+                          />
+                          {backendSettings[f.key] !== backendDefaults[f.key] && (
+                            <span className="text-[10px] text-[var(--neon-amber)]">
+                              Default: {backendDefaults[f.key]}
+                            </span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Advanced Settings — Collapsible */}
+          <section className="glass-card p-4 space-y-3">
+            <button
+              onClick={() => setAdvancedOpen(!advancedOpen)}
+              className="flex items-center gap-2 w-full text-left"
+            >
+              <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>
+                &#9654;
+              </span>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Advanced Settings</h3>
+              <span className="text-xs text-[var(--text-muted)] ml-auto">
+                Health weights, log parsing, scan limits
+              </span>
+            </button>
+            {advancedOpen && (
+              <div className="space-y-4 pt-2">
+                {advancedFields.map(({ group, fields }) => (
+                  <div key={group}>
+                    <h4 className="text-sm font-semibold text-[var(--text-secondary)] mb-2">{group}</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {fields.map((field) => (
+                        <ThresholdField
+                          key={field.key}
+                          field={field}
+                          value={thresholds[field.key]}
+                          defaultValue={defaults[field.key]}
+                          inputValue={inputValues[field.key]}
+                          onChangeInput={handleInputChange}
+                          onBlur={handleInputBlur}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="glass-card p-4 space-y-3">

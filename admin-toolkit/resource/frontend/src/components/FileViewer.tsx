@@ -13,10 +13,22 @@ interface FileViewerProps {
   onDownload: (filename: string, content: string) => void;
 }
 
-// For log files, show only last N lines
-const MAX_LOG_LINES = 10000;
-// Max size for syntax highlighting (JSON needs complete structure)
-const MAX_HIGHLIGHT_SIZE = 500 * 1024; // 500KB
+// Read configurable limits from localStorage thresholds
+function getFileViewerLimits() {
+  try {
+    const raw = window.localStorage.getItem('diagparser.thresholds');
+    if (raw) {
+      const t = JSON.parse(raw);
+      return {
+        maxLogLines: typeof t.fileViewerMaxLines === 'number' ? t.fileViewerMaxLines : 10000,
+        maxHighlightSize: (typeof t.syntaxHighlightMaxKB === 'number' ? t.syntaxHighlightMaxKB : 500) * 1024,
+      };
+    }
+  } catch { /* use defaults */ }
+  return { maxLogLines: 10000, maxHighlightSize: 500 * 1024 };
+}
+
+const { maxLogLines: MAX_LOG_LINES, maxHighlightSize: MAX_HIGHLIGHT_SIZE } = getFileViewerLimits();
 
 // Check if file is a log file
 const isLogFile = (name: string): boolean => {

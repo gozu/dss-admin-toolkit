@@ -3,7 +3,17 @@ import type { DirEntry, DirTreeData } from '../types';
 import { fetchJson } from '../utils/api';
 import { useDiag } from '../context/DiagContext';
 
-const DEFAULT_MAX_DEPTH = 3;
+function _readDirTreeDepth(): number {
+  try {
+    const raw = window.localStorage.getItem('diagparser.thresholds');
+    if (raw) {
+      const t = JSON.parse(raw);
+      if (typeof t.dirTreeDefaultDepth === 'number') return t.dirTreeDefaultDepth;
+    }
+  } catch { /* use default */ }
+  return 3;
+}
+const DEFAULT_MAX_DEPTH = _readDirTreeDepth();
 const EXPAND_DEPTH = 5;
 
 export type FootprintScope = 'dss' | 'project';

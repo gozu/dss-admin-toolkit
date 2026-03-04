@@ -493,6 +493,13 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         dispatch({ type: 'SET_LOADING', payload: false });
         log('Core data ready, released loading state');
 
+        // Fetch backend settings for configurable timeouts
+        let beSettings: Record<string, number> = {};
+        try {
+          beSettings = await fetchJson<Record<string, number>>('/api/settings');
+          log('Backend settings loaded');
+        } catch { log('Backend settings fetch failed, using defaults', 'warn'); }
+
         // Phase 3: heavier endpoints
         log('Phase 3 starting');
         const timed = <T>(path: string, timeoutMs: number): Promise<T> => {
@@ -669,7 +676,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           };
 
           const codeEnvsProgressPromise = pollCodeEnvProgress();
-          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', 620000));
+          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', beSettings.fe_timeout_code_envs ?? 620000));
           codeEnvsProgressActive = false;
           await codeEnvsProgressPromise;
           codeEnvsDone = true;
@@ -890,7 +897,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
           const projectFootprintProgressPromise = pollProjectFootprintProgress();
           const projectFootprintRes = await settle(
-            timed<ProjectFootprintResponse>('/api/project-footprint', 620000),
+            timed<ProjectFootprintResponse>('/api/project-footprint', beSettings.fe_timeout_project_footprint ?? 620000),
           );
           projectFootprintProgressActive = false;
           await projectFootprintProgressPromise;
@@ -1006,7 +1013,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
         const runProjects = async () => {
           const projectsRes: PromiseSettledResult<ProjectsResponse | null> = basicProjectsEnabled
-            ? await settle(timed<ProjectsResponse>('/api/projects', 45000))
+            ? await settle(timed<ProjectsResponse>('/api/projects', beSettings.fe_timeout_projects ?? 45000))
             : { status: 'fulfilled', value: null };
           if (cancelled) return;
           if (!basicProjectsEnabled) {
@@ -1030,7 +1037,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         };
 
         const runLogs = async () => {
-          const logsRes = await settle(timed<LogErrorsResponse>('/api/logs/errors', 30000));
+          const logsRes = await settle(timed<LogErrorsResponse>('/api/logs/errors', beSettings.fe_timeout_logs ?? 30000));
           if (cancelled) return;
           if (logsRes.status === 'fulfilled' && logsRes.value) {
             const displayedErrors = logsRes.value.logStats?.['Displayed Errors'] || 0;

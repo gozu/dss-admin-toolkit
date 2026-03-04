@@ -30,6 +30,41 @@ _PROGRESS_LOCK = threading.Lock()
 _PROGRESS_EVENT_LIMIT = 10000
 _PROGRESS_RETENTION_SEC = 1800
 
+# ── Configurable backend settings (updated via /api/settings) ──
+_BACKEND_SETTINGS: Dict[str, Any] = {
+    # Concurrency
+    'parallel_workers_default': 8,
+    'parallel_workers_max': 32,
+    'code_env_detail_workers': 32,
+    # Timeouts
+    'code_env_timeout_ms': 600000,
+    'project_footprint_timeout_ms': 600000,
+    # Cache TTLs (seconds)
+    'cache_ttl_overview': 300,
+    'cache_ttl_connections': 300,
+    'cache_ttl_users': 300,
+    'cache_ttl_license': 600,
+    'cache_ttl_projects': 300,
+    'cache_ttl_code_envs': 5,
+    'cache_ttl_usage_full': 5,
+    'cache_ttl_outreach': 20,
+    'cache_ttl_inactive': 20,
+    'cache_ttl_plugins': 300,
+    'cache_ttl_log_errors': 300,
+    'cache_ttl_dir_tree': 600,
+    # Frontend API timeouts (served to frontend for sync)
+    'fe_timeout_code_envs': 620000,
+    'fe_timeout_project_footprint': 620000,
+    'fe_timeout_projects': 45000,
+    'fe_timeout_logs': 30000,
+    # Tracking
+    'sqlite_connect_timeout': 30,
+    'tracking_issue_page_size': 500,
+    # Codenvclean
+    'codenvclean_thread_max': 20,
+}
+_BACKEND_SETTINGS_LOCK = threading.Lock()
+
 # ── Tracking database (optional, graceful fallback) ──
 try:
     from tracking import TrackingDB, extract_findings_from_outreach_data
@@ -1482,10 +1517,10 @@ def _parallel_workers(default: int = 8) -> int:
     raw = os.environ.get('DIAG_PARSER_MAX_WORKERS')
     if raw:
         try:
-            return max(1, min(32, int(raw)))
+            return max(1, min(_BACKEND_SETTINGS['parallel_workers_max'], int(raw)))
         except Exception:
             pass
-    return max(1, min(32, default))
+    return max(1, min(_BACKEND_SETTINGS['parallel_workers_max'], default))
 
 
 def _record_benchmark_operation(name: str, elapsed_ms: float, calls: int = 1) -> None:
@@ -4773,7 +4808,7 @@ def api_overview():
             'instanceInfo': instance_info,
         }
 
-    data = _cache_get('overview', 300, loader)
+    data = _cache_get('overview', _BACKEND_SETTINGS['cache_ttl_overview'], loader)
     return jsonify(data)
 
 
@@ -4819,7 +4854,7 @@ def api_connections():
 
         return {'connections': connection_counts, 'connectionDetails': details}
 
-    data = _cache_get('connections', 300, loader)
+    data = _cache_get('connections', _BACKEND_SETTINGS['cache_ttl_connections'], loader)
     return jsonify(data)
 
 
@@ -4860,7 +4895,7 @@ def api_users():
             ],
         }
 
-    data = _cache_get('users', 300, loader)
+    data = _cache_get('users', _BACKEND_SETTINGS['cache_ttl_users'], loader)
     return jsonify(data)
 
 
@@ -4879,7 +4914,7 @@ def api_license():
         parsed['licenseSource'] = source if license_data else 'none'
         return _ensure_license_fallback(parsed, dip_home)
 
-    data = _cache_get('license', 600, loader)
+    data = _cache_get('license', _BACKEND_SETTINGS['cache_ttl_license'], loader)
     return jsonify(data)
 
 
@@ -4997,7 +5032,7 @@ def api_projects():
         app.logger.info("[projects] done count=%s elapsed=%.2fs", len(projects), time.time() - started)
         return {'projects': projects}
 
-    data = _cache_get('projects', 300, loader)
+    data = _cache_get('projects', _BACKEND_SETTINGS['cache_ttl_projects'], loader)
     return jsonify(data)
 
 
@@ -5006,7 +5041,7 @@ def api_code_envs():
     client = dataiku.api_client()
 
     def loader():
-        timeout_ms = 600000
+        timeout_ms = _BACKEND_SETTINGS['code_env_timeout_ms']
         started = time.time()
         deadline = started + (timeout_ms / 1000.0)
         project_limit = 0
@@ -5297,7 +5332,7 @@ def api_code_envs():
             app.logger.info("[code-envs] listed=%s", len(envs))
 
             env_details: List[Dict[str, Any]] = []
-            max_workers = min(_parallel_workers(32), len(envs))
+            max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), len(envs))
             env_detail_total = len(envs)
             env_detail_done = 0
             _update_progress_summary(False)
@@ -5468,7 +5503,7 @@ def api_code_envs():
         finally:
             setattr(_THREAD_LOCAL, 'bench_record_op', previous_recorder)
 
-    data = _cache_get('code_envs', 5, loader)
+    data = _cache_get('code_envs', _BACKEND_SETTINGS['cache_ttl_code_envs'], loader)
     return jsonify(data)
 
 
@@ -5499,7 +5534,7 @@ def api_project_footprint():
     client = dataiku.api_client()
 
     def loader():
-        timeout_ms = 600000
+        timeout_ms = _BACKEND_SETTINGS['project_footprint_timeout_ms']
         project_limit = 0
         project_selection = 'all_by_project_key'
         limit_label = 'all' if project_limit <= 0 else str(project_limit)
@@ -6110,7 +6145,7 @@ def api_tools_outreach_data():
         size_by_env = _get_code_env_size_map(client)
         usage_data = _cache_get(
             'project_code_env_usage_full',
-            5,
+            _BACKEND_SETTINGS['cache_ttl_usage_full'],
             lambda: _collect_project_code_env_usage(
                 client,
                 project_info,
@@ -6905,7 +6940,7 @@ def api_tools_outreach_data():
             'unusedCodeEnvRecipients': unused_code_env_recipients,
         }
 
-    data = _cache_get('tools_outreach_data', 20, loader)
+    data = _cache_get('tools_outreach_data', _BACKEND_SETTINGS['cache_ttl_outreach'], loader)
 
     # ── Tracking: ingest run on fresh cache load ──
     cache_entry = _CACHE.get('tools_outreach_data')
@@ -7805,7 +7840,7 @@ def api_tools_inactive_projects():
             })
         return {'projects': results}
 
-    data = _cache_get('inactive_projects', 20, _load)
+    data = _cache_get('inactive_projects', _BACKEND_SETTINGS['cache_ttl_inactive'], _load)
     return jsonify(data)
 
 
@@ -7994,7 +8029,7 @@ def api_plugins():
         plugin_details.sort(key=lambda d: d.get('id', ''))
         return {'plugins': plugins, 'pluginDetails': plugin_details, 'pluginsCount': len(plugins)}
 
-    data = _cache_get('plugins', 300, loader)
+    data = _cache_get('plugins', _BACKEND_SETTINGS['cache_ttl_plugins'], loader)
     return jsonify(data)
 
 
@@ -8018,7 +8053,7 @@ def api_logs_errors():
             log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
         return _parse_log_errors(log_content)
 
-    data = _cache_get('log_errors', 300, loader)
+    data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
     return jsonify(data)
 
 
@@ -8048,5 +8083,26 @@ def api_dir_tree():
             project_key=project_key,
         )
 
-    data = _cache_get(cache_key, 600, loader)
+    data = _cache_get(cache_key, _BACKEND_SETTINGS['cache_ttl_dir_tree'], loader)
     return jsonify(data)
+
+
+@app.route('/api/settings', methods=['GET'])
+def api_settings_get():
+    with _BACKEND_SETTINGS_LOCK:
+        return jsonify(dict(_BACKEND_SETTINGS))
+
+
+@app.route('/api/settings', methods=['PUT'])
+def api_settings_put():
+    body = request.get_json(force=True, silent=True) or {}
+    with _BACKEND_SETTINGS_LOCK:
+        for key, value in body.items():
+            if key in _BACKEND_SETTINGS:
+                expected_type = type(_BACKEND_SETTINGS[key])
+                try:
+                    _BACKEND_SETTINGS[key] = expected_type(value)
+                except (ValueError, TypeError):
+                    pass
+    with _BACKEND_SETTINGS_LOCK:
+        return jsonify(dict(_BACKEND_SETTINGS))
