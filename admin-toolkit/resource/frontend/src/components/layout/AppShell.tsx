@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
+import { exportAllTablesToZip } from '../../utils/exportTables';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -86,6 +87,20 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Export all tables as CSV zip */}
+          <button
+            type="button"
+            onClick={exportAllTablesToZip}
+            title="Export all tables to CSV (zip)"
+            className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+
           {/* Cmd+K search button */}
           <button
             type="button"
