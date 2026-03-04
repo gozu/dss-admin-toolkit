@@ -1366,26 +1366,18 @@ export function ToolsView() {
   );
 
   // Effect 1: Seed data from parsed ZIP (runs when parsedData changes, no API call)
-  // Use a stable signature to avoid re-seeding on every partial-row progress update.
-  const outreachSeedSignature = `${parsedData.projectFootprint?.length ?? 0}:${parsedData.codeEnvs?.length ?? 0}:${parsedData.users?.length ?? 0}`;
-  const lastSeedSignatureRef = useRef('');
   useEffect(() => {
-    if (outreachSeedSignature === lastSeedSignatureRef.current) return;
     const outreachThresholds: OutreachThresholds = {
       codeEnvCountUnhealthy: thresholds.codeEnvCountUnhealthy,
       codeStudioCountUnhealthy: thresholds.codeStudioCountUnhealthy,
     };
     const localSeed = buildOutreachDataFromParsedData(parsedData, outreachThresholds);
     if (localSeed) {
-      lastSeedSignatureRef.current = outreachSeedSignature;
       setData(localSeed);
       restoreFromSource(localSeed);
       setIsLoading(false);
-      log(
-        `Seeded outreach data from loaded analysis: projects=${localSeed.summary.unhealthyProjectCount}, code_envs=${localSeed.summary.unhealthyCodeEnvCount}, unusedCodeEnvs=${localSeed.summary.unusedCodeEnvCount ?? 0}, unusedCodeEnvRecipients=${localSeed.unusedCodeEnvRecipients?.length ?? 0}`,
-      );
     }
-  }, [outreachSeedSignature, parsedData, thresholds.codeEnvCountUnhealthy, thresholds.codeStudioCountUnhealthy, log, restoreFromSource]);
+  }, [parsedData, thresholds.codeEnvCountUnhealthy, thresholds.codeStudioCountUnhealthy, restoreFromSource]);
 
   // Effect 2: Fetch API outreach data in background — triggers server-side tracking ingest
   // and enriches data with real mail channels. Runs once on mount.
