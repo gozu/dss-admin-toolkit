@@ -3,45 +3,21 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
 
-// Lazy-load all page components
-const SummaryPage = lazy(() =>
-  import('../pages/SummaryPage').then((m) => ({ default: m.SummaryPage })),
-);
-const IssuesPage = lazy(() =>
-  import('../pages/IssuesPage').then((m) => ({ default: m.IssuesPage })),
-);
-const FilesystemPage = lazy(() =>
-  import('../pages/FilesystemPage').then((m) => ({ default: m.FilesystemPage })),
-);
-const MemoryPage = lazy(() =>
-  import('../pages/MemoryPage').then((m) => ({ default: m.MemoryPage })),
-);
-const DirectoryPage = lazy(() =>
-  import('../pages/DirectoryPage').then((m) => ({ default: m.DirectoryPage })),
-);
-const ProjectsPage = lazy(() =>
-  import('../pages/ProjectsPage').then((m) => ({ default: m.ProjectsPage })),
-);
-const CodeEnvsPage = lazy(() =>
-  import('../pages/CodeEnvsPage').then((m) => ({ default: m.CodeEnvsPage })),
-);
-const ConnectionsPage = lazy(() =>
-  import('../pages/ConnectionsPage').then((m) => ({ default: m.ConnectionsPage })),
-);
-const RuntimeConfigPage = lazy(() =>
-  import('../pages/RuntimeConfigPage').then((m) => ({ default: m.RuntimeConfigPage })),
-);
-const SecurityConfigPage = lazy(() =>
-  import('../pages/SecurityConfigPage').then((m) => ({ default: m.SecurityConfigPage })),
-);
-const PlatformConfigPage = lazy(() =>
-  import('../pages/PlatformConfigPage').then((m) => ({ default: m.PlatformConfigPage })),
-);
-const LogsPage = lazy(() =>
-  import('../pages/LogsPage').then((m) => ({ default: m.LogsPage })),
-);
+// Eagerly import lightweight page components to avoid Suspense/AnimatePresence conflicts
+import { SummaryPage } from '../pages/SummaryPage';
+import { IssuesPage } from '../pages/IssuesPage';
+import { FilesystemPage } from '../pages/FilesystemPage';
+import { MemoryPage } from '../pages/MemoryPage';
+import { DirectoryPage } from '../pages/DirectoryPage';
+import { ProjectsPage } from '../pages/ProjectsPage';
+import { CodeEnvsPage } from '../pages/CodeEnvsPage';
+import { ConnectionsPage } from '../pages/ConnectionsPage';
+import { RuntimeConfigPage } from '../pages/RuntimeConfigPage';
+import { SecurityConfigPage } from '../pages/SecurityConfigPage';
+import { PlatformConfigPage } from '../pages/PlatformConfigPage';
+import { LogsPage } from '../pages/LogsPage';
 
-// Lazy-load tools and settings views
+// Lazy-load only the heavy views
 const ToolsView = lazy(() => import('../ToolsView').then((m) => ({ default: m.ToolsView })));
 const TrackingView = lazy(() =>
   import('../TrackingView').then((m) => ({ default: m.TrackingView })),

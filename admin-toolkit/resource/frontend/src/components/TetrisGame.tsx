@@ -19,7 +19,7 @@ const SHAPES: Record<string, { blocks: [number, number][]; color: string }> = {
 };
 const SHAPE_KEYS = Object.keys(SHAPES);
 const LINE_SCORES = [0, 100, 300, 500, 800];
-const SPEED_BASE = 400;
+const SPEED_BASE = 800;
 const SPEED_MIN = 40;
 const SPEED_DECREASE = 30;
 const HARD_DROP_LOCK_DELAY_MS = 500;
