@@ -169,15 +169,6 @@ export function CodeEnvsTable() {
                 }}
               />
             </div>
-            {codeEnvs.length === 0 && (
-              <div className="mt-2 text-[11px] text-[var(--text-muted)] text-center">
-                Press{' '}
-                <kbd className="px-1 py-0.5 font-mono bg-[var(--bg-elevated)] border border-[var(--border-glass)] rounded text-[var(--text-secondary)]">
-                  T
-                </kbd>{' '}
-                to play Tetris while you wait
-              </div>
-            )}
           </div>
         ))}
 
