@@ -1075,7 +1075,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             return 3;
           })();
           dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: true, error: null, scope: 'dss', projectKey: '' } });
-          const dirRes = await settle(timed<DirTreeData>(`/api/dir-tree?maxDepth=${dirTreeDepth}&scope=dss`, beSettings.fe_timeout_logs ?? 30000));
+          const dirRes = await settle(timed<DirTreeData>(`/api/dir-tree?maxDepth=${dirTreeDepth}&scope=dss`, beSettings.fe_timeout_dir_tree ?? 300000));
           if (cancelled) return;
           if (dirRes.status === 'fulfilled' && dirRes.value) {
             dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, tree: dirRes.value, expandedNodes: new Map(), error: null } });
