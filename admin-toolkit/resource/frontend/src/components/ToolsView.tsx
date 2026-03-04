@@ -1929,14 +1929,24 @@ export function ToolsView() {
               </>
             )}
 
-            {/* Cleaners */}
-            {activePage === 'cleaners' && (
+            {/* CodEnv Cleaner */}
+            {activePage === 'code-env-cleaner' && (
               <Suspense
                 fallback={
                   <div className="glass-card p-6 text-[var(--text-secondary)]">Loading...</div>
                 }
               >
                 <CodeEnvCleaner />
+              </Suspense>
+            )}
+
+            {/* Project Cleaner */}
+            {activePage === 'project-cleaner' && (
+              <Suspense
+                fallback={
+                  <div className="glass-card p-6 text-[var(--text-secondary)]">Loading...</div>
+                }
+              >
                 <InactiveProjectCleaner
                   recipients={data?.inactiveProjectRecipients ?? []}
                   isLoading={isLoading || !apiDataLoaded}
