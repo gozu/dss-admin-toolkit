@@ -127,11 +127,13 @@ def ping():
 
 def _cache_get(key: str, ttl: int, loader):
     now = time.time()
-    entry = _CACHE.get(key)
-    if entry and now - entry['ts'] < ttl:
-        return entry['value']
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry and now - entry['ts'] < ttl:
+            return entry['value']
     value = loader()
-    _CACHE[key] = {'ts': now, 'value': value}
+    with _CACHE_LOCK:
+        _CACHE[key] = {'ts': now, 'value': value}
     return value
 
 
@@ -4587,15 +4589,27 @@ def _collect_project_code_env_usage(
     }
 
 
-def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_depth: int) -> Dict[str, Any]:
+def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_depth: int,
+                          bonus_depth: int = 0) -> Dict[str, Any]:
     details = _footprint_details_map(footprint)
     children: List[Dict[str, Any]] = []
     has_hidden = False
-    if depth < max_depth:
+    effective_max = max_depth + bonus_depth
+    if depth < effective_max:
+        # Pre-sort children by size to identify top-N for adaptive depth
+        child_items = []
         for child_name, child_footprint in details.items():
+            child_size = _coerce_int(_footprint_attr(child_footprint, 'size', 'totalSize', 'bytes'), 0)
+            child_items.append((child_name, child_footprint, child_size))
+        child_items.sort(key=lambda x: x[2], reverse=True)
+
+        top_n = 5
+        for idx, (child_name, child_footprint, _child_size) in enumerate(child_items):
             clean_name = str(child_name).strip('/') or str(child_name)
             child_path = f"{path.rstrip('/')}/{clean_name}" if path != '/' else f"/{clean_name}"
-            child = _build_footprint_node(clean_name, child_path, child_footprint, depth + 1, max_depth)
+            child_bonus = 2 if (idx < top_n and bonus_depth == 0 and depth == 0) else bonus_depth
+            child = _build_footprint_node(clean_name, child_path, child_footprint, depth + 1, max_depth,
+                                          bonus_depth=child_bonus)
             children.append(child)
     elif details:
         has_hidden = True
@@ -4701,10 +4715,14 @@ def _build_dir_tree_from_footprint(
     target_path: Optional[str] = None,
     scope: str = 'dss',
     project_key: Optional[str] = None,
+    footprint_payload: Optional[Any] = None,
 ) -> Dict[str, Any]:
     scope = scope if scope in ('dss', 'project') else 'dss'
-    footprint_scope = 'all-dss' if scope == 'dss' else scope
-    root_footprint = _compute_footprint_payload(client, footprint_scope, project_key)
+    if footprint_payload is not None:
+        root_footprint = footprint_payload
+    else:
+        footprint_scope = 'all-dss' if scope == 'dss' else scope
+        root_footprint = _compute_footprint_payload(client, footprint_scope, project_key)
     root_meta = _scope_root(scope, project_key)
     root_path = root_meta['path']
 
@@ -8071,9 +8089,19 @@ def api_dir_tree():
     if scope != 'project':
         project_key = None
 
-    cache_key = f"dir_tree:{scope}:{project_key or '-'}:{path or 'root'}:{max_depth}"
+    # Layer 1: cache the raw footprint payload (expensive DSS API call)
+    footprint_scope = 'all-dss' if scope == 'dss' else scope
+    footprint_cache_key = f"footprint:{footprint_scope}:{project_key or '-'}"
 
-    def loader():
+    def footprint_loader():
+        return _compute_footprint_payload(client, footprint_scope, project_key)
+
+    cached_footprint = _cache_get(footprint_cache_key, _BACKEND_SETTINGS['cache_ttl_dir_tree'], footprint_loader)
+
+    # Layer 2: cache the tree view (cheap in-memory tree build from cached payload)
+    tree_cache_key = f"dir_tree:{scope}:{project_key or '-'}:{path or 'root'}:{max_depth}"
+
+    def tree_loader():
         return _build_dir_tree_from_footprint(
             client,
             dip_home,
@@ -8081,9 +8109,10 @@ def api_dir_tree():
             target_path=path,
             scope=scope,
             project_key=project_key,
+            footprint_payload=cached_footprint,
         )
 
-    data = _cache_get(cache_key, _BACKEND_SETTINGS['cache_ttl_dir_tree'], loader)
+    data = _cache_get(tree_cache_key, _BACKEND_SETTINGS['cache_ttl_dir_tree'], tree_loader)
     return jsonify(data)
 
 

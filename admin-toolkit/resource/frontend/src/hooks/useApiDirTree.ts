@@ -96,6 +96,8 @@ export function useApiDirTree() {
   const { state: diagState, dispatch } = useDiag();
   const state = diagState.apiDirTree;
   const loadAbortRef = useRef<AbortController | null>(null);
+  const expandAbortRef = useRef<AbortController | null>(null);
+  const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const abortLoad = useCallback(() => {
     const controller = loadAbortRef.current;
@@ -114,6 +116,14 @@ export function useApiDirTree() {
       if (loadAbortRef.current) {
         loadAbortRef.current.abort();
         loadAbortRef.current = null;
+      }
+      if (expandAbortRef.current) {
+        expandAbortRef.current.abort();
+        expandAbortRef.current = null;
+      }
+      if (expandTimerRef.current) {
+        clearTimeout(expandTimerRef.current);
+        expandTimerRef.current = null;
       }
     };
   }, []);
@@ -278,40 +288,74 @@ export function useApiDirTree() {
     }
   }, [dispatch]);
 
-  const expandDirectory = useCallback(async (dirPath: string): Promise<DirEntry | null> => {
-    if (!dirPath) return null;
-    const scopeQuery = buildScopeQuery(state.scope, state.projectKey);
-    const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
+  const expandDirectory = useCallback((dirPath: string): Promise<DirEntry | null> => {
+    if (!dirPath) return Promise.resolve(null);
 
-    dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
-    dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: true, error: null } });
-    try {
-      const data = await fetchJson<DirTreeExpandResponse>(url);
-      if (data.debug) {
-        const dbg = data.debug;
-        dispatch({
-          type: 'ADD_DEBUG_LOG',
-          payload: {
-            scope: 'dir-tree',
-            level: 'info',
-            message: `Expand debug ${dirPath}: total=${formatBytes(dbg.totalSize)} files=${(dbg.totalFiles ?? 0).toLocaleString()} scanned=${dbg.entriesScanned ?? 0} symlinks=${dbg.symlinksSeen ?? 0}`,
-          },
-        });
-      }
-      const node = data.node || null;
-      if (node) {
-        dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
-        dispatch({ type: 'SET_API_DIR_TREE_EXPANDED_NODE', payload: { path: dirPath, node } });
-      } else {
-        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false } });
-      }
-      return node;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
-      dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: message } });
-      return null;
+    // Abort any in-flight expand request
+    if (expandAbortRef.current) {
+      expandAbortRef.current.abort();
+      expandAbortRef.current = null;
     }
+    // Clear any pending debounce timer
+    if (expandTimerRef.current) {
+      clearTimeout(expandTimerRef.current);
+      expandTimerRef.current = null;
+    }
+
+    return new Promise((resolve) => {
+      expandTimerRef.current = setTimeout(async () => {
+        expandTimerRef.current = null;
+        const scopeQuery = buildScopeQuery(state.scope, state.projectKey);
+        const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
+        const controller = new AbortController();
+        expandAbortRef.current = controller;
+
+        dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: true, error: null } });
+        try {
+          const data = await fetchJson<DirTreeExpandResponse>(url, { signal: controller.signal });
+          if (expandAbortRef.current === controller) {
+            expandAbortRef.current = null;
+          }
+          if (data.debug) {
+            const dbg = data.debug;
+            dispatch({
+              type: 'ADD_DEBUG_LOG',
+              payload: {
+                scope: 'dir-tree',
+                level: 'info',
+                message: `Expand debug ${dirPath}: total=${formatBytes(dbg.totalSize)} files=${(dbg.totalFiles ?? 0).toLocaleString()} scanned=${dbg.entriesScanned ?? 0} symlinks=${dbg.symlinksSeen ?? 0}`,
+              },
+            });
+          }
+          const node = data.node || null;
+          if (node) {
+            dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
+            dispatch({ type: 'SET_API_DIR_TREE_EXPANDED_NODE', payload: { path: dirPath, node } });
+          } else {
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false } });
+          }
+          resolve(node);
+        } catch (err) {
+          if (expandAbortRef.current === controller) {
+            expandAbortRef.current = null;
+          }
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            dispatch({
+              type: 'ADD_DEBUG_LOG',
+              payload: { scope: 'dir-tree', level: 'info', message: `Expand canceled ${dirPath}` },
+            });
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: null } });
+            resolve(null);
+            return;
+          }
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
+          dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: message } });
+          resolve(null);
+        }
+      }, 150);
+    });
   }, [dispatch, state.scope, state.projectKey]);
 
   return {
