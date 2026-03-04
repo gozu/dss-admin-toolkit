@@ -176,7 +176,7 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'CONFIGURATION',
+    title: 'DSS CONFIG',
     items: [
       { id: 'runtime-config', label: 'Runtime' },
       { id: 'security-config', label: 'Security' },
