@@ -89,13 +89,21 @@ export function InactiveProjectCleaner() {
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [deletedKeys, setDeletedKeys] = useState<Set<string>>(new Set());
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
-  // Delete confirmation modal
+  // Delete confirmation modal (single)
   const deleteModal = useModal();
   const [deleteTarget, setDeleteTarget] = useState<ProjectRow | null>(null);
   const [deleteInput, setDeleteInput] = useState('');
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Bulk delete modal
+  const bulkDeleteModal = useModal();
+  const [bulkDeleteInput, setBulkDeleteInput] = useState('');
+  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+  const [bulkDeleteProgress, setBulkDeleteProgress] = useState('');
 
   const visibleRows = useMemo(
     () => rows.filter((r) => !deletedKeys.has(r.projectKey)),
@@ -133,6 +141,68 @@ export function InactiveProjectCleaner() {
     },
     [deleteModal],
   );
+
+  const toggleSelect = useCallback((projectKey: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectKey)) next.delete(projectKey);
+      else next.add(projectKey);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedKeys((prev) => {
+      const allKeys = visibleRows.map((r) => r.projectKey);
+      const allSelected = allKeys.every((k) => prev.has(k));
+      if (allSelected) return new Set();
+      return new Set(allKeys);
+    });
+  }, [visibleRows]);
+
+  const selectedRows = useMemo(
+    () => visibleRows.filter((r) => selectedKeys.has(r.projectKey)),
+    [visibleRows, selectedKeys],
+  );
+
+  const openBulkDelete = useCallback(() => {
+    setBulkDeleteInput('');
+    setBulkDeleteError(null);
+    setBulkDeleteProgress('');
+    bulkDeleteModal.open();
+  }, [bulkDeleteModal]);
+
+  const confirmBulkDelete = useCallback(async () => {
+    const count = selectedRows.length;
+    if (count === 0) return;
+    const expected = `delete ${count} projects`;
+    if (bulkDeleteInput !== expected) return;
+    if (!folderId) return;
+
+    setBulkDeleteLoading(true);
+    setBulkDeleteError(null);
+    try {
+      for (let i = 0; i < selectedRows.length; i++) {
+        const row = selectedRows[i];
+        setBulkDeleteProgress(`Deleting ${i + 1} of ${count}: ${row.projectKey}...`);
+        await fetchJson(
+          `/api/tools/project-cleaner/${row.projectKey}?folderId=${encodeURIComponent(folderId)}`,
+          {
+            method: 'DELETE',
+            headers: { 'X-Confirm-Name': row.projectKey },
+          },
+        );
+        setDeletedKeys((prev) => new Set([...prev, row.projectKey]));
+      }
+      setSelectedKeys(new Set());
+      bulkDeleteModal.close();
+    } catch (err) {
+      setBulkDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkDeleteLoading(false);
+      setBulkDeleteProgress('');
+    }
+  }, [selectedRows, bulkDeleteInput, bulkDeleteModal, folderId]);
 
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -248,12 +318,45 @@ export function InactiveProjectCleaner() {
           </div>
         </section>
 
+        {/* Bulk action bar */}
+        {selectedKeys.size > 0 && (
+          <section className="glass-card p-3 flex items-center justify-between">
+            <span className="text-sm text-[var(--text-secondary)]">
+              {selectedKeys.size} project{selectedKeys.size !== 1 ? 's' : ''} selected
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedKeys(new Set())}
+                className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] transition-colors"
+              >
+                Clear
+              </button>
+              <button
+                onClick={openBulkDelete}
+                disabled={!folderId}
+                className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete Selected
+              </button>
+            </div>
+          </section>
+        )}
+
         {/* Project table */}
         <section className="glass-card p-4">
           <div className="overflow-auto max-h-[60vh]">
             <table className="table-dark w-full">
               <thead>
                 <tr>
+                  <th className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={visibleRows.length > 0 && visibleRows.every((r) => selectedKeys.has(r.projectKey))}
+                      onChange={toggleSelectAll}
+                      className="accent-[var(--neon-cyan)]"
+                      title="Select all projects"
+                    />
+                  </th>
                   <th className="cursor-pointer select-none" onClick={() => toggleSort('name')}>
                     Project Name{sortIndicator('name')}
                   </th>
@@ -269,6 +372,14 @@ export function InactiveProjectCleaner() {
               <tbody>
                 {sortedRows.map((row) => (
                   <tr key={row.projectKey} className="hover:bg-[var(--bg-glass)]">
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedKeys.has(row.projectKey)}
+                        onChange={() => toggleSelect(row.projectKey)}
+                        className="accent-[var(--neon-cyan)]"
+                      />
+                    </td>
                     <td>
                       <a
                         href={`${dssBaseUrl}/projects/${row.projectKey}/`}
@@ -308,6 +419,65 @@ export function InactiveProjectCleaner() {
           </div>
         </section>
       </div>
+
+      {/* Bulk Delete Confirmation Modal */}
+      <Modal
+        isOpen={bulkDeleteModal.isOpen}
+        onClose={bulkDeleteModal.close}
+        title="Confirm Bulk Deletion"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <button
+              onClick={bulkDeleteModal.close}
+              className="px-3 py-1.5 rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] text-[var(--text-secondary)]"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmBulkDelete}
+              disabled={bulkDeleteLoading || bulkDeleteInput !== `delete ${selectedRows.length} projects`}
+              className="px-4 py-1.5 rounded bg-[var(--neon-red)]/20 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/30 disabled:opacity-50 transition-colors"
+            >
+              {bulkDeleteLoading ? 'Deleting...' : `Delete ${selectedRows.length} Projects`}
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-[var(--text-secondary)]">
+            Are you sure you want to delete {selectedRows.length} project{selectedRows.length !== 1 ? 's' : ''}?
+          </p>
+          <div className="max-h-32 overflow-y-auto rounded bg-[var(--bg-glass)] p-2">
+            {selectedRows.map((r) => (
+              <div key={r.projectKey} className="text-xs font-mono text-[var(--neon-red)] py-0.5">{r.projectKey}</div>
+            ))}
+          </div>
+          <p className="text-sm text-[var(--text-muted)]">
+            A backup will be uploaded to the selected managed folder before each deletion.
+          </p>
+          <p className="text-sm text-[var(--text-muted)]">
+            Type{' '}
+            <code className="px-1.5 py-0.5 rounded bg-[var(--bg-glass)] text-[var(--text-primary)]">
+              delete {selectedRows.length} projects
+            </code>{' '}
+            to confirm.
+          </p>
+          <input
+            type="text"
+            value={bulkDeleteInput}
+            onChange={(e) => setBulkDeleteInput(e.target.value)}
+            placeholder={`delete ${selectedRows.length} projects`}
+            className="w-full input-glass font-mono text-sm"
+            autoFocus
+          />
+          {bulkDeleteProgress && (
+            <div className="text-sm text-[var(--text-secondary)]">{bulkDeleteProgress}</div>
+          )}
+          {bulkDeleteError && (
+            <div className="text-sm text-[var(--neon-red)]">{bulkDeleteError}</div>
+          )}
+        </div>
+      </Modal>
 
       {/* Delete Confirmation Modal */}
       <Modal

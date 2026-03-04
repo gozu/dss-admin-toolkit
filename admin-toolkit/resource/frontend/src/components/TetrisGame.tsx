@@ -19,10 +19,11 @@ const SHAPES: Record<string, { blocks: [number, number][]; color: string }> = {
 };
 const SHAPE_KEYS = Object.keys(SHAPES);
 const LINE_SCORES = [0, 100, 300, 500, 800];
-const SPEED_BASE = 800;
-const SPEED_MIN = 80;
-const SPEED_DECREASE = 60;
-const HARD_DROP_LOCK_DELAY_MS = 1000;
+const SPEED_BASE = 400;
+const SPEED_MIN = 40;
+const SPEED_DECREASE = 30;
+const HARD_DROP_LOCK_DELAY_MS = 500;
+const SOFT_DROP_INTERVAL_MS = 40;
 
 // ---- color map (resolves CSS vars at paint time) ----
 const PIECE_COLORS: Record<string, string> = {
@@ -141,6 +142,8 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
   const rotAnimRef = useRef<RotationAnim | null>(null);
   const rafIdRef = useRef<number | null>(null);
   const hardDropLockUntilRef = useRef<number | null>(null);
+  const hardDropLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const softDropIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ---- canvas paint ----
   const paint = useCallback(() => {
@@ -289,6 +292,39 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
     return until !== null && performance.now() < until;
   }
 
+  function clearHardDropLockState() {
+    hardDropLockUntilRef.current = null;
+    if (hardDropLockTimerRef.current) {
+      clearTimeout(hardDropLockTimerRef.current);
+      hardDropLockTimerRef.current = null;
+    }
+  }
+
+  function finalizeHardDropLock() {
+    hardDropLockTimerRef.current = null;
+    const g = gs.current;
+    if (!g || !g.gameActive || hardDropLockUntilRef.current === null) {
+      clearHardDropLockState();
+      return;
+    }
+    if (g.paused) {
+      hardDropLockTimerRef.current = setTimeout(finalizeHardDropLock, 50);
+      return;
+    }
+    if (isHardDropGraceActive()) {
+      const remaining = Math.max(1, Math.ceil((hardDropLockUntilRef.current ?? performance.now()) - performance.now()));
+      hardDropLockTimerRef.current = setTimeout(finalizeHardDropLock, remaining);
+      return;
+    }
+    lockPiece();
+  }
+
+  function scheduleHardDropLock() {
+    clearHardDropLockState();
+    hardDropLockUntilRef.current = performance.now() + HARD_DROP_LOCK_DELAY_MS;
+    hardDropLockTimerRef.current = setTimeout(finalizeHardDropLock, HARD_DROP_LOCK_DELAY_MS);
+  }
+
   function settleCurrentPieceToFloor(scorePerCell = 0): number {
     const g = gs.current;
     if (!g) return 0;
@@ -314,7 +350,7 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
         paint();
         return false;
       }
-      hardDropLockUntilRef.current = null;
+      clearHardDropLockState();
       lockPiece();
       return false;
     }
@@ -327,6 +363,33 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
       lockPiece();
       return false;
     }
+  }
+
+  function clearSoftDrop() {
+    if (softDropIntervalRef.current) {
+      clearInterval(softDropIntervalRef.current);
+      softDropIntervalRef.current = null;
+    }
+  }
+
+  function softDropStep() {
+    const g = gs.current;
+    if (!g || !g.gameActive || g.paused || isHardDropGraceActive()) {
+      clearSoftDrop();
+      return;
+    }
+    if (moveDown()) {
+      g.score += 1;
+      syncDisplay();
+    } else {
+      clearSoftDrop();
+    }
+  }
+
+  function startSoftDrop() {
+    if (softDropIntervalRef.current) return;
+    softDropStep(); // immediate first step
+    softDropIntervalRef.current = setInterval(softDropStep, SOFT_DROP_INTERVAL_MS);
   }
 
   function moveLeft() {
@@ -416,17 +479,18 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
     const g = gs.current;
     if (!g) return;
     if (hardDropLockUntilRef.current !== null && isHardDropGraceActive()) return;
+    clearSoftDrop();
     rotAnimRef.current = null;
     settleCurrentPieceToFloor(2);
     syncDisplay();
-    hardDropLockUntilRef.current = performance.now() + HARD_DROP_LOCK_DELAY_MS;
+    scheduleHardDropLock();
     paint();
   }
 
   function lockPiece() {
     const g = gs.current;
     if (!g) return;
-    hardDropLockUntilRef.current = null;
+    clearHardDropLockState();
     rotAnimRef.current = null;
     for (const [x, y] of absBlocks(g.currentPiece.blocks, g.currentPiece.x, g.currentPiece.y)) {
       if (y >= 0 && y < ROWS) g.board[y][x] = g.currentPiece.color;
@@ -458,7 +522,7 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
   function spawnPiece() {
     const g = gs.current;
     if (!g) return;
-    hardDropLockUntilRef.current = null;
+    clearHardDropLockState();
     g.currentPiece = g.nextPiece;
     g.nextPiece = randomPiece();
     paintNext();
@@ -482,7 +546,8 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
   function restartGame() {
     const g = gs.current;
     if (!g) return;
-    hardDropLockUntilRef.current = null;
+    clearHardDropLockState();
+    clearSoftDrop();
     g.board = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
     g.score = 0;
     g.level = 1;
@@ -547,10 +612,7 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
           break;
         case 'ArrowDown':
           e.preventDefault();
-          if (moveDown()) {
-            g.score += 1;
-            syncDisplay();
-          }
+          if (!e.repeat) startSoftDrop();
           break;
         case 'ArrowUp':
           e.preventDefault();
@@ -568,12 +630,22 @@ export function TetrisGame({ cellSize = DEFAULT_CELL, progressPct = 0 }: { cellS
           break;
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowDown') clearSoftDrop();
+    };
+
     document.addEventListener('keydown', onKey);
+    document.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', clearSoftDrop);
 
     return () => {
       if (gameLoopRef.current) clearInterval(gameLoopRef.current);
+      clearHardDropLockState();
+      clearSoftDrop();
       if (rafIdRef.current != null) cancelAnimationFrame(rafIdRef.current);
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', clearSoftDrop);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -195,8 +195,21 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
       </header>
 
       {/* Main content area — scrollable */}
-      <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col">
+      <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col relative">
         {children}
+
+        {/* Floating Submit Bug button */}
+        <a
+          href="mailto:alex.kaos@dataiku.com?subject=Admin%20Toolkit%20feedback"
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-full bg-[var(--neon-cyan)]/15 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/40 hover:bg-[var(--neon-cyan)]/25 hover:border-[var(--neon-cyan)]/60 transition-colors shadow-lg backdrop-blur-sm text-sm font-medium"
+          title="Send feedback via email"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+            <polyline points="22,6 12,13 2,6" />
+          </svg>
+          Submit Bug
+        </a>
       </main>
     </div>
   );

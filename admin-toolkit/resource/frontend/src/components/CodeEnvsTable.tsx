@@ -174,7 +174,7 @@ export function CodeEnvsTable() {
 
       {!showTetris && !(isLoading && codeEnvs.length === 0) && (
         <>
-          <div className="max-h-[70vh] overflow-y-auto">
+          <div>
             {codeEnvs.length === 0 ? (
               <div className="p-4 text-sm text-[var(--text-secondary)]">
                 Waiting for code environment data...
