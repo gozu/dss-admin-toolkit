@@ -15,6 +15,7 @@ import type {
   DataSource,
   DebugLevel,
   LayoutMode,
+  ApiDirTreeState,
 } from '../types';
 
 const DEFAULT_DSSHOME = 'data/dataiku/dss_data/';
@@ -27,6 +28,16 @@ const initialComparisonState: ComparisonState = {
   viewMode: 'delta',
   isProcessingBefore: false,
   isProcessingAfter: false,
+};
+
+const initialApiDirTreeState: ApiDirTreeState = {
+  isLoading: false,
+  isExpanding: false,
+  error: null,
+  tree: null,
+  expandedNodes: new Map(),
+  scope: 'dss',
+  projectKey: '',
 };
 
 function loadLayoutMode(): LayoutMode {
@@ -51,6 +62,7 @@ function buildInitialState(layoutMode: LayoutMode): DiagStateWithComparison {
     originalFile: null,
     dataSource: 'api',
     debugLogs: [],
+    apiDirTree: initialApiDirTreeState,
     // New comparison state
     mode: 'single',
     activePage: 'summary' as PageId,
@@ -125,6 +137,13 @@ function diagReducer(
           projectFootprint: [...existing, ...newRows],
         },
       };
+    }
+    case 'SET_API_DIR_TREE':
+      return { ...state, apiDirTree: { ...state.apiDirTree, ...action.payload } };
+    case 'SET_API_DIR_TREE_EXPANDED_NODE': {
+      const next = new Map(state.apiDirTree.expandedNodes);
+      next.set(action.payload.path, action.payload.node);
+      return { ...state, apiDirTree: { ...state.apiDirTree, expandedNodes: next, isExpanding: false } };
     }
     case 'RESET':
       return buildInitialState(state.layoutMode);

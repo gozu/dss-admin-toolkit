@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DirEntry, DirTreeData } from '../types';
+import { useCallback, useEffect, useRef } from 'react';
+import type { DirEntry, DirTreeData, FootprintScope } from '../types';
 import { fetchJson } from '../utils/api';
 import { useDiag } from '../context/DiagContext';
 
@@ -16,7 +16,7 @@ function _readDirTreeDepth(): number {
 const DEFAULT_MAX_DEPTH = _readDirTreeDepth();
 const EXPAND_DEPTH = 5;
 
-export type FootprintScope = 'dss' | 'project';
+export type { FootprintScope };
 
 interface DirTreeDebugError {
   kind?: string;
@@ -71,16 +71,6 @@ interface DirTreeLoadOptions {
   projectKey?: string;
 }
 
-interface ApiDirTreeState {
-  isLoading: boolean;
-  isExpanding: boolean;
-  error: string | null;
-  tree: DirTreeData | null;
-  expandedNodes: Map<string, DirEntry>;
-  scope: FootprintScope;
-  projectKey: string;
-}
-
 function buildScopeQuery(scope: FootprintScope, projectKey: string): string {
   const params = new URLSearchParams();
   params.set('scope', scope);
@@ -103,17 +93,9 @@ function formatBytes(bytes: number | undefined): string {
 }
 
 export function useApiDirTree() {
-  const { dispatch } = useDiag();
+  const { state: diagState, dispatch } = useDiag();
+  const state = diagState.apiDirTree;
   const loadAbortRef = useRef<AbortController | null>(null);
-  const [state, setState] = useState<ApiDirTreeState>({
-    isLoading: false,
-    isExpanding: false,
-    error: null,
-    tree: null,
-    expandedNodes: new Map(),
-    scope: 'dss',
-    projectKey: '',
-  });
 
   const abortLoad = useCallback(() => {
     const controller = loadAbortRef.current;
@@ -124,7 +106,7 @@ export function useApiDirTree() {
       type: 'ADD_DEBUG_LOG',
       payload: { scope: 'dir-tree', level: 'warn', message: 'Aborted root directory scan request' },
     });
-    setState(prev => ({ ...prev, isLoading: false, error: null }));
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: null } });
   }, [dispatch]);
 
   useEffect(() => {
@@ -150,13 +132,7 @@ export function useApiDirTree() {
     loadAbortRef.current = controller;
 
     dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `GET ${url}` } });
-    setState(prev => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      scope,
-      projectKey,
-    }));
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: true, error: null, scope, projectKey } });
 
     try {
       const data = await fetchJson<DirTreeResponse>(url, { signal: controller.signal });
@@ -280,13 +256,10 @@ export function useApiDirTree() {
           message: `Loaded dir tree (${scope}) root with ${data.root?.children?.length || 0} children`,
         }
       });
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        tree: data,
-        expandedNodes: new Map(),
-        error: null,
-      }));
+      dispatch({
+        type: 'SET_API_DIR_TREE',
+        payload: { isLoading: false, tree: data, expandedNodes: new Map(), error: null },
+      });
     } catch (err) {
       if (loadAbortRef.current === controller) {
         loadAbortRef.current = null;
@@ -296,12 +269,12 @@ export function useApiDirTree() {
           type: 'ADD_DEBUG_LOG',
           payload: { scope: 'dir-tree', level: 'info', message: `Root load canceled (${scope})` },
         });
-        setState(prev => ({ ...prev, isLoading: false, error: null }));
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: null } });
         return;
       }
       const message = err instanceof Error ? err.message : 'Unknown error';
       dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Root load failed: ${message}` } });
-      setState(prev => ({ ...prev, isLoading: false, error: message }));
+      dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: message } });
     }
   }, [dispatch]);
 
@@ -311,7 +284,7 @@ export function useApiDirTree() {
     const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
 
     dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
-    setState(prev => ({ ...prev, isExpanding: true, error: null }));
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: true, error: null } });
     try {
       const data = await fetchJson<DirTreeExpandResponse>(url);
       if (data.debug) {
@@ -328,19 +301,15 @@ export function useApiDirTree() {
       const node = data.node || null;
       if (node) {
         dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
-        setState(prev => {
-          const next = new Map(prev.expandedNodes);
-          next.set(dirPath, node);
-          return { ...prev, expandedNodes: next, isExpanding: false };
-        });
+        dispatch({ type: 'SET_API_DIR_TREE_EXPANDED_NODE', payload: { path: dirPath, node } });
       } else {
-        setState(prev => ({ ...prev, isExpanding: false }));
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false } });
       }
       return node;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
-      setState(prev => ({ ...prev, isExpanding: false, error: message }));
+      dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: message } });
       return null;
     }
   }, [dispatch, state.scope, state.projectKey]);

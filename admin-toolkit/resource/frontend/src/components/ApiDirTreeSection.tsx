@@ -1,22 +1,36 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { DirTreemap } from './DirTreemap';
 import { DirTreeTable } from './DirTreeTable';
 import { useApiDirTree } from '../hooks';
-import type { FootprintScope } from '../hooks/useApiDirTree';
+import { useDiag } from '../context/DiagContext';
+import type { FootprintScope } from '../types';
 
 export function ApiDirTreeSection() {
   const { state, loadRoot, abortLoad, expandDirectory } = useApiDirTree();
-  const [scope, setScope] = useState<FootprintScope>('dss');
-  const [projectKey, setProjectKey] = useState('PYTHONAUDIT_TEST');
+  const { dispatch } = useDiag();
   const autoLoadTriggeredRef = useRef(false);
+
+  const scope = state.scope;
+  const projectKey = state.projectKey;
+
+  const setScope = useCallback((s: FootprintScope) => {
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { scope: s } });
+  }, [dispatch]);
+
+  const setProjectKey = useCallback((k: string) => {
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { projectKey: k } });
+  }, [dispatch]);
 
   const scopeLabel = useMemo(() => {
     if (scope === 'project') return `Project ${projectKey || '(unset)'}`;
     return 'DSS Data Directory';
   }, [scope, projectKey]);
 
+  // Auto-load only if no data has been loaded yet
   useEffect(() => {
+    if (state.tree || state.isLoading || autoLoadTriggeredRef.current) return;
+
     const startAutoLoad = () => {
       if (autoLoadTriggeredRef.current) return;
       autoLoadTriggeredRef.current = true;
@@ -32,7 +46,7 @@ export function ApiDirTreeSection() {
     const onLoad = () => startAutoLoad();
     window.addEventListener('load', onLoad, { once: true });
     return () => window.removeEventListener('load', onLoad);
-  }, [loadRoot]);
+  }, [loadRoot, setScope, state.tree, state.isLoading]);
 
   const handleLoad = useCallback(() => {
     if (!state.isLoading) {

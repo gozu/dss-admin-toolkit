@@ -487,6 +487,18 @@ export interface ParsedData {
 }
 
 // Context state
+export type FootprintScope = 'dss' | 'project';
+
+export interface ApiDirTreeState {
+  isLoading: boolean;
+  isExpanding: boolean;
+  error: string | null;
+  tree: DirTreeData | null;
+  expandedNodes: Map<string, DirEntry>;
+  scope: FootprintScope;
+  projectKey: string;
+}
+
 export interface DiagState {
   extractedFiles: ExtractedFiles;
   parsedData: ParsedData;
@@ -501,6 +513,7 @@ export interface DiagState {
   originalFile: File | null; // Original zip file for deferred extraction
   dataSource: DataSource;
   debugLogs: DebugLogEntry[];
+  apiDirTree: ApiDirTreeState;
 }
 
 // Context actions
@@ -524,6 +537,8 @@ export type DiagAction =
   | { type: 'CLEAR_DEBUG_LOGS' }
   | { type: 'APPEND_PARTIAL_CODE_ENVS'; payload: CodeEnv[] }
   | { type: 'APPEND_PARTIAL_PROJECT_FOOTPRINT'; payload: ProjectFootprintRow[] }
+  | { type: 'SET_API_DIR_TREE'; payload: Partial<ApiDirTreeState> }
+  | { type: 'SET_API_DIR_TREE_EXPANDED_NODE'; payload: { path: string; node: DirEntry } }
   | { type: 'RESET' };
 
 // Health Score types
