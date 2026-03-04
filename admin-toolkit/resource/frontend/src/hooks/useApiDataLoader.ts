@@ -12,6 +12,7 @@ import type {
   CodeEnv,
   ProjectFootprintRow,
   PluginInfo,
+  DirTreeData,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
 import { useProgressInterpolation } from './useProgressInterpolation';
@@ -1062,6 +1063,30 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           }
         };
 
+        const runDirTree = async () => {
+          const dirTreeDepth = (() => {
+            try {
+              const raw = window.localStorage.getItem('diagparser.thresholds');
+              if (raw) {
+                const t = JSON.parse(raw);
+                if (typeof t.dirTreeDefaultDepth === 'number') return t.dirTreeDefaultDepth;
+              }
+            } catch { /* use default */ }
+            return 3;
+          })();
+          dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: true, error: null, scope: 'dss', projectKey: '' } });
+          const dirRes = await settle(timed<DirTreeData>(`/api/dir-tree?maxDepth=${dirTreeDepth}&scope=dss`, beSettings.fe_timeout_logs ?? 30000));
+          if (cancelled) return;
+          if (dirRes.status === 'fulfilled' && dirRes.value) {
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, tree: dirRes.value, expandedNodes: new Map(), error: null } });
+            log(`Loaded dir tree (${dirRes.value.root?.children?.length || 0} children)`);
+          } else {
+            const msg = settledError(dirRes);
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: msg } });
+            log(`Failed /api/dir-tree: ${msg}`, 'warn');
+          }
+        };
+
         log(
           'Phase 3 strategy: launch all endpoints in parallel; heavy endpoints are code-envs + project-footprint',
         );
@@ -1070,7 +1095,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         const lowStart = nowMs();
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
-        const lowGate = Promise.allSettled([runProjects(), runLogs()]);
+        const lowGate = Promise.allSettled([runProjects(), runLogs(), runDirTree()]);
 
         await heavyGate;
         clearTimeout(slowHeavyTimer);

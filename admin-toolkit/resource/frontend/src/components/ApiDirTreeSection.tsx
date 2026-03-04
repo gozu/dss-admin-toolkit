@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { DirTreemap } from './DirTreemap';
 import { DirTreeTable } from './DirTreeTable';
@@ -9,7 +9,6 @@ import type { FootprintScope } from '../types';
 export function ApiDirTreeSection() {
   const { state, loadRoot, abortLoad, expandDirectory } = useApiDirTree();
   const { dispatch } = useDiag();
-  const autoLoadTriggeredRef = useRef(false);
 
   const scope = state.scope;
   const projectKey = state.projectKey;
@@ -26,27 +25,6 @@ export function ApiDirTreeSection() {
     if (scope === 'project') return `Project ${projectKey || '(unset)'}`;
     return 'DSS Data Directory';
   }, [scope, projectKey]);
-
-  // Auto-load only if no data has been loaded yet
-  useEffect(() => {
-    if (state.tree || state.isLoading || autoLoadTriggeredRef.current) return;
-
-    const startAutoLoad = () => {
-      if (autoLoadTriggeredRef.current) return;
-      autoLoadTriggeredRef.current = true;
-      setScope('dss');
-      loadRoot({ scope: 'dss' });
-    };
-
-    if (document.readyState === 'complete') {
-      startAutoLoad();
-      return;
-    }
-
-    const onLoad = () => startAutoLoad();
-    window.addEventListener('load', onLoad, { once: true });
-    return () => window.removeEventListener('load', onLoad);
-  }, [loadRoot, setScope, state.tree, state.isLoading]);
 
   const handleLoad = useCallback(() => {
     if (!state.isLoading) {
