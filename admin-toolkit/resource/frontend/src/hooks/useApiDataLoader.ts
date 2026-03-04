@@ -9,6 +9,7 @@ import type {
   User,
   Project,
   MailChannel,
+  CodeEnv,
   ProjectFootprintRow,
   PluginInfo,
 } from '../types';
@@ -553,6 +554,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           };
 
           let codeEnvsRowsSince = 0;
+          const codeEnvsPartialBuffer: CodeEnv[] = [];
           const pollCodeEnvProgress = async () => {
             while (!cancelled && codeEnvsProgressActive) {
               try {
@@ -622,6 +624,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   replayCodeEnvProgressEvents(payload.events);
                 }
                 codeEnvsProgressCursor = nextCursor;
+                if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
+                  codeEnvsPartialBuffer.push(...(payload.partialRows as unknown as CodeEnv[]));
+                }
                 if (typeof payload.partialRowsNext === 'number') {
                   codeEnvsRowsSince = payload.partialRowsNext;
                 }
@@ -719,12 +724,27 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             }
           } else {
             codeEnvsInterpolationEnabledRef.current = false;
-            setCodeEnvsLoading({
-              active: false,
-              progressPct: 0,
-              phase: 'error',
-              message: 'Code env analysis failed',
-            });
+            if (codeEnvsPartialBuffer.length > 0) {
+              currentParsedData = {
+                ...currentParsedData,
+                codeEnvs: codeEnvsPartialBuffer,
+              };
+              dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+              setCodeEnvsLoading({
+                active: false,
+                progressPct: 100,
+                phase: 'done',
+                message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
+              });
+              log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
+            } else {
+              setCodeEnvsLoading({
+                active: false,
+                progressPct: 0,
+                phase: 'error',
+                message: 'Code env analysis failed',
+              });
+            }
             log(`Failed /api/code-envs: ${settledError(codeEnvsRes)}`, 'warn');
           }
         };
