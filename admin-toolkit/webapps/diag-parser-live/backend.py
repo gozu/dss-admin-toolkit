@@ -5006,7 +5006,7 @@ def api_code_envs():
     client = dataiku.api_client()
 
     def loader():
-        timeout_ms = 120000
+        timeout_ms = 600000
         started = time.time()
         deadline = started + (timeout_ms / 1000.0)
         project_limit = 0
@@ -5499,7 +5499,7 @@ def api_project_footprint():
     client = dataiku.api_client()
 
     def loader():
-        timeout_ms = 120000
+        timeout_ms = 600000
         project_limit = 0
         project_selection = 'all_by_project_key'
         limit_label = 'all' if project_limit <= 0 else str(project_limit)

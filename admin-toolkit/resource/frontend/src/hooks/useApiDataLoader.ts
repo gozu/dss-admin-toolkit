@@ -648,7 +648,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           };
 
           const codeEnvsProgressPromise = pollCodeEnvProgress();
-          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', 130000));
+          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', 620000));
           codeEnvsProgressActive = false;
           await codeEnvsProgressPromise;
           codeEnvsDone = true;
@@ -869,7 +869,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
           const projectFootprintProgressPromise = pollProjectFootprintProgress();
           const projectFootprintRes = await settle(
-            timed<ProjectFootprintResponse>('/api/project-footprint', 130000),
+            timed<ProjectFootprintResponse>('/api/project-footprint', 620000),
           );
           projectFootprintProgressActive = false;
           await projectFootprintProgressPromise;
