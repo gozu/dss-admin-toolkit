@@ -1182,7 +1182,7 @@ export function ToolsView() {
   const { parsedData, activePage } = state;
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
-  const [apiDataLoaded, setApiDataLoaded] = useState(false);
+  const [_apiDataLoaded, setApiDataLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(null);
 
@@ -1947,10 +1947,7 @@ export function ToolsView() {
                   <div className="glass-card p-6 text-[var(--text-secondary)]">Loading...</div>
                 }
               >
-                <InactiveProjectCleaner
-                  recipients={data?.inactiveProjectRecipients ?? []}
-                  isLoading={isLoading || !apiDataLoaded}
-                />
+                <InactiveProjectCleaner />
               </Suspense>
             )}
 

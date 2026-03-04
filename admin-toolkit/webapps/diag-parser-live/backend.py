@@ -7776,6 +7776,39 @@ def api_code_env_cleaner_delete(lang, name):
     return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": name}), 200
 
 
+@app.route('/api/tools/inactive-projects', methods=['GET'])
+def api_tools_inactive_projects():
+    """Fast endpoint: list inactive projects using only list_projects() (~0.1s)."""
+    from datetime import datetime, timezone
+
+    def _load():
+        client = dataiku.api_client()
+        catalog = _list_projects_catalog(client)
+        inactive_threshold_days = 1
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        results = []
+        for entry in catalog:
+            last_modified_ms = entry.get('lastModifiedOn')
+            if last_modified_ms is None:
+                continue
+            try:
+                days_inactive = (now_ms - int(last_modified_ms)) / (1000 * 60 * 60 * 24)
+            except (TypeError, ValueError):
+                continue
+            if days_inactive < inactive_threshold_days:
+                continue
+            results.append({
+                'projectKey': entry['key'],
+                'name': entry.get('name', entry['key']),
+                'owner': entry.get('owner', 'Unknown'),
+                'daysInactive': round(days_inactive),
+            })
+        return {'projects': results}
+
+    data = _cache_get('inactive_projects', 20, _load)
+    return jsonify(data)
+
+
 @app.route('/api/tools/project-cleaner/<project_key>', methods=['DELETE'])
 def api_project_cleaner_delete(project_key):
     """Backup to managed folder then delete an inactive project after verifying the confirmation header."""
@@ -7824,6 +7857,7 @@ def api_project_cleaner_delete(project_key):
 
     # Invalidate caches
     _CACHE.pop('tools_outreach_data', None)
+    _CACHE.pop('inactive_projects', None)
 
     app.logger.info("[project-cleaner] backed up %s to managed folder %s and deleted %s", zip_filename, folder_id, project_key)
     return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": project_key}), 200

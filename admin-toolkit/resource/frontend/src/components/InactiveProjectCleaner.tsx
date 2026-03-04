@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { useModal } from '../hooks/useModal';
 import { fetchJson, getBackendUrl } from '../utils/api';
-import type { OutreachRecipient } from '../types';
 
 interface ManagedFolder {
   id: string;
@@ -43,27 +42,26 @@ function defaultSort(rows: ProjectRow[]): ProjectRow[] {
 
 // ── Component ──
 
-interface InactiveProjectCleanerProps {
-  recipients: OutreachRecipient[];
-  isLoading: boolean;
-}
+export function InactiveProjectCleaner() {
+  // Fetch inactive projects from dedicated fast endpoint
+  const [rows, setRows] = useState<ProjectRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-export function InactiveProjectCleaner({ recipients, isLoading }: InactiveProjectCleanerProps) {
-  // Flatten recipients → projects into a flat list
-  const rows = useMemo(() => {
-    const result: ProjectRow[] = [];
-    for (const r of recipients) {
-      for (const p of r.projects || []) {
-        result.push({
-          projectKey: p.projectKey,
-          name: p.name || p.projectKey,
-          owner: r.owner,
-          daysInactive: p.daysInactive ?? 0,
-        });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchJson<{ projects: ProjectRow[] }>('/api/tools/inactive-projects');
+        if (!cancelled) setRows(res.projects);
+      } catch (err) {
+        if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
-    }
-    return result;
-  }, [recipients]);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Managed folder state
   const [folders, setFolders] = useState<ManagedFolder[]>([]);
@@ -174,6 +172,17 @@ export function InactiveProjectCleaner({ recipients, isLoading }: InactiveProjec
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Inactive Project Cleaner</h3>
           <p className="text-sm text-[var(--text-muted)] mt-1">Loading inactive project data...</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="space-y-4">
+        <section className="glass-card p-4">
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Inactive Project Cleaner</h3>
+          <p className="text-sm text-[var(--neon-red)] mt-1">Failed to load inactive projects: {fetchError}</p>
         </section>
       </div>
     );
