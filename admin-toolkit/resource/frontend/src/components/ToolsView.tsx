@@ -897,6 +897,8 @@ interface CampaignPanelProps {
   onUnexempt?: (entityKey: string) => void;
   isEntityExempt?: (entityKey: string) => boolean;
   alwaysExpanded?: boolean;
+  hideCodeEnvs?: boolean;
+  hideObjects?: boolean;
 }
 
 function CampaignPanel({
@@ -915,6 +917,8 @@ function CampaignPanel({
   onUnexempt,
   isEntityExempt,
   alwaysExpanded,
+  hideCodeEnvs,
+  hideObjects,
 }: CampaignPanelProps) {
   const [collapsed, setCollapsed] = useState(alwaysExpanded ? false : (defaultCollapsed ?? false));
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -1015,8 +1019,8 @@ function CampaignPanel({
                   <th>Owner</th>
                   <th>Email</th>
                   <th className="text-right">Projects</th>
-                  <th className="text-right">Code Envs</th>
-                  <th className="text-right">Objects</th>
+                  {!hideCodeEnvs && <th className="text-right">Code Envs</th>}
+                  {!hideObjects && <th className="text-right">Objects</th>}
                   {onExempt && <th className="w-24 text-right">Exempt</th>}
                 </tr>
               </thead>
@@ -1050,8 +1054,8 @@ function CampaignPanel({
                           {recipient.email}
                         </td>
                         <td className="text-right font-mono">{recipient.projectKeys.length}</td>
-                        <td className="text-right font-mono">{recipient.codeEnvNames.length}</td>
-                        <td className="text-right font-mono">{recipient.usageDetails.length}</td>
+                        {!hideCodeEnvs && <td className="text-right font-mono">{recipient.codeEnvNames.length}</td>}
+                        {!hideObjects && <td className="text-right font-mono">{recipient.usageDetails.length}</td>}
                         {onExempt && (
                           <td className="text-right text-xs">
                             {sinCount && (
@@ -1070,7 +1074,7 @@ function CampaignPanel({
                               className={exempt ? 'bg-green-500/10' : ''}
                             >
                               <td></td>
-                              <td colSpan={4} className="pl-8 text-sm">
+                              <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-8 text-sm">
                                 <span className="text-[var(--text-primary)]">{sin.label}</span>
                                 {sin.details && (
                                   <span className="ml-2 text-xs text-[var(--text-muted)]">
@@ -1078,7 +1082,6 @@ function CampaignPanel({
                                   </span>
                                 )}
                               </td>
-                              <td></td>
                               {onExempt && onUnexempt && (
                                 <td>
                                   {exempt ? (
@@ -1102,10 +1105,9 @@ function CampaignPanel({
                             {sin.children?.map((child) => (
                               <tr key={`${recipient.recipientKey}:${sin.key}:${child}`}>
                                 <td></td>
-                                <td colSpan={4} className="pl-14 text-xs text-[var(--text-muted)]">
+                                <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-14 text-xs text-[var(--text-muted)]">
                                   {child}
                                 </td>
-                                <td></td>
                                 {onExempt && onUnexempt && <td></td>}
                               </tr>
                             ))}
@@ -1422,6 +1424,52 @@ export function ToolsView() {
       setApiDataLoaded(true);
       log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Effect: Fetch inactive project recipients from fast endpoint (~0.1s)
+  useEffect(() => {
+    fetchJson<{ projects: Array<{ projectKey: string; name: string; owner: string; daysInactive: number }> }>(
+      '/api/tools/inactive-projects'
+    ).then((res) => {
+      const recipientsMap = new Map<string, OutreachRecipient>();
+      for (const p of res.projects) {
+        const owner = p.owner || 'Unknown';
+        if (!recipientsMap.has(owner)) {
+          recipientsMap.set(owner, makeRecipient(owner, new Map()));
+        }
+        const r = recipientsMap.get(owner)!;
+        r.projectKeys.push(p.projectKey);
+        r.projects = [...(r.projects || []), { projectKey: p.projectKey, name: p.name, daysInactive: p.daysInactive }];
+      }
+      const recipients = finalizeRecipients(recipientsMap);
+      setData((prev) => {
+        const base = prev || {
+          summary: {
+            projectCount: 0,
+            unhealthyProjectCount: 0,
+            unhealthyCodeEnvCount: 0,
+            projectRecipientCount: 0,
+            codeEnvRecipientCount: 0,
+          },
+          mailChannels: [],
+          templates: defaultTemplates(),
+          unhealthyProjects: [],
+          unhealthyCodeEnvs: [],
+          unhealthyCodeStudioProjects: [],
+          projectRecipients: [],
+          codeEnvRecipients: [],
+          codeStudioRecipients: [],
+          autoScenarioRecipients: [],
+        } satisfies OutreachData;
+        return {
+          ...base,
+          inactiveProjectRecipients: recipients,
+          summary: { ...base.summary, inactiveProjectCount: res.projects.length },
+        };
+      });
+      log(`Fast inactive-projects endpoint: ${res.projects.length} projects, ${recipientsMap.size} recipients`);
+    }).catch(() => {}); // silent — outreach-data may still backfill
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1919,6 +1967,8 @@ export function ToolsView() {
                                 isEntityExempt(selectedConfig.id, entityKey)
                               }
                               alwaysExpanded
+                              hideCodeEnvs={selectedConfig.id === 'inactive_project'}
+                              hideObjects={selectedConfig.id === 'inactive_project'}
                             />
                           );
                         })()}
