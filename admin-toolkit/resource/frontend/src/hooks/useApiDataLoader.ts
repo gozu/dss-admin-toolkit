@@ -9,7 +9,6 @@ import type {
   User,
   Project,
   MailChannel,
-  CodeEnv,
   ProjectFootprintRow,
   PluginInfo,
 } from '../types';
@@ -623,10 +622,6 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   replayCodeEnvProgressEvents(payload.events);
                 }
                 codeEnvsProgressCursor = nextCursor;
-                if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
-                  const rows = payload.partialRows as unknown as CodeEnv[];
-                  dispatch({ type: 'APPEND_PARTIAL_CODE_ENVS', payload: rows });
-                }
                 if (typeof payload.partialRowsNext === 'number') {
                   codeEnvsRowsSince = payload.partialRowsNext;
                 }
