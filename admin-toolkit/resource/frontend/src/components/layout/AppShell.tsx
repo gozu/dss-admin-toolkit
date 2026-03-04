@@ -1,10 +1,9 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
 import { exportAllTablesToZip } from '../../utils/exportTables';
-import { loadFromStorage, saveToStorage } from '../../utils/storage';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -21,20 +20,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
     () => typeof window !== 'undefined' && window.innerWidth < COLLAPSE_BREAKPOINT,
   );
   const [showAbout, setShowAbout] = useState(false);
-  const [showDisclaimer, setShowDisclaimer] = useState(
-    () => !loadFromStorage('disclaimerSeen', false),
-  );
   const { theme, toggle: toggleTheme } = useTheme();
-
-  // Auto-dismiss disclaimer toast after 4s
-  useEffect(() => {
-    if (!showDisclaimer) return;
-    const timer = setTimeout(() => {
-      setShowDisclaimer(false);
-      saveToStorage('disclaimerSeen', true);
-    }, 4000);
-    return () => clearTimeout(timer);
-  }, [showDisclaimer]);
 
   // Listen for viewport changes to auto-collapse
   useEffect(() => {
@@ -97,6 +83,9 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
           </span>
           <span className="px-1.5 py-0.5 text-[10px] font-mono font-medium rounded bg-[var(--neon-cyan)]/10 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/30">
             ALPHA
+          </span>
+          <span className="hidden lg:inline text-[10px] text-[var(--text-muted)] italic ml-1">
+            Experimental — use outside sandbox at your own risk
           </span>
         </div>
 
@@ -233,20 +222,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
           </svg>
         </a>
 
-        {/* First-time disclaimer toast */}
-        <AnimatePresence>
-          {showDisclaimer && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 20 }}
-              transition={{ duration: 0.3 }}
-              className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg bg-black/80 text-white/90 text-sm font-medium backdrop-blur-md shadow-xl border border-white/10 max-w-lg text-center"
-            >
-              This tool is experimental and may contain bugs. Use outside of sandbox environments is at your own risk.
-            </motion.div>
-          )}
-        </AnimatePresence>
+
       </main>
     </div>
   );
