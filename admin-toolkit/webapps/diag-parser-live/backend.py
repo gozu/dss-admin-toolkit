@@ -3286,7 +3286,7 @@ def _build_project_info(client: Any, limit: int, include_settings: bool = True) 
             pass
         return (key, info)
 
-    workers = min(_parallel_workers(3), len(project_keys))
+    workers = min(_parallel_workers(8), len(project_keys))
     if workers <= 1:
         for key in project_keys:
             _, info = _fetch_project_settings(key)
@@ -4212,7 +4212,7 @@ def _collect_project_code_env_usage(
     catalog_rows: List[Dict[str, Any]] = []
 
     if include_code_env_usage_api:
-        env_workers = min(_parallel_workers(3), len(envs))
+        env_workers = min(_parallel_workers(8), len(envs))
         _notify_progress(progress_cb, 'code_env_usage_api_pool_start', f"code env usage API scan started envs={len(envs)} workers={env_workers}")
         if env_workers <= 1:
             for env in envs:
@@ -4405,7 +4405,7 @@ def _collect_project_code_env_usage(
 
         project_keys = list(project_info.keys())
         scan_results: List[Dict[str, Any]] = []
-        scan_workers = min(_parallel_workers(3), len(project_keys))
+        scan_workers = min(_parallel_workers(8), len(project_keys))
         _notify_progress(
             progress_cb,
             'project_scan_pool_start',
@@ -5297,7 +5297,7 @@ def api_code_envs():
             app.logger.info("[code-envs] listed=%s", len(envs))
 
             env_details: List[Dict[str, Any]] = []
-            max_workers = min(_parallel_workers(12), len(envs))
+            max_workers = min(_parallel_workers(32), len(envs))
             env_detail_total = len(envs)
             env_detail_done = 0
             _update_progress_summary(False)

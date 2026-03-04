@@ -1,6 +1,6 @@
 {
     "id": "diag-parser-live",
-    "version": "0.4.016",
+    "version": "0.4.017",
     "meta": {
         "label": "Diagnostics",
         "description": "Analyze Dataiku diagnostic files with visualizations and health scoring",
