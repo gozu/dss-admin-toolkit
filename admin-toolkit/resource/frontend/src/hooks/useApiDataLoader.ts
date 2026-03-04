@@ -259,6 +259,11 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         );
       });
 
+    const endpointTimings: Array<{ label: string; durationMs: number; status: 'ok' | 'fail' | 'skip' }> = [];
+    const recordTiming = (label: string, durationMs: number, status: 'ok' | 'fail' | 'skip' = 'ok') => {
+      endpointTimings.push({ label, durationMs: Math.round(durationMs), status });
+    };
+
     const run = async () => {
       log(`Diag Parser version v${__APP_VERSION__}`);
       log('Starting live data load');
@@ -277,12 +282,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         log('GET /api/overview');
         const overview = await fetchJson<OverviewResponse>('/api/overview');
         log(`GET /api/overview OK (${fmtMs(overviewStart)})`);
+        recordTiming('/api/overview', nowMs() - overviewStart);
         let rawSettings: Record<string, unknown> = {};
         try {
           const settingsStart = nowMs();
           log('GET /api/settings/raw');
           rawSettings = await fetchJson<Record<string, unknown>>('/api/settings/raw');
           log(`GET /api/settings/raw OK (${fmtMs(settingsStart)})`);
+          recordTiming('/api/settings/raw', nowMs() - settingsStart);
         } catch {
           log('GET /api/settings/raw failed, continuing with defaults', 'warn');
           rawSettings = {};
@@ -364,12 +371,19 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
         // Phase 2: load secondary data in parallel
         log('Phase 2 starting');
+        const timedFetch = <T>(label: string, promise: Promise<T>): Promise<T> => {
+          const s = nowMs();
+          return promise.then(
+            (v) => { recordTiming(label, nowMs() - s); return v; },
+            (e) => { recordTiming(label, nowMs() - s, 'fail'); throw e; },
+          );
+        };
         const phase2 = await Promise.allSettled([
-          fetchJson<ConnectionsResponse>('/api/connections'),
-          fetchJson<UsersResponse>('/api/users'),
-          fetchJson<PluginsResponse>('/api/plugins'),
-          fetchText('/api/java-memory'),
-          fetchJson<MailChannelsResponse>('/api/mail-channels'),
+          timedFetch('/api/connections', fetchJson<ConnectionsResponse>('/api/connections')),
+          timedFetch('/api/users', fetchJson<UsersResponse>('/api/users')),
+          timedFetch('/api/plugins', fetchJson<PluginsResponse>('/api/plugins')),
+          timedFetch('/api/java-memory', fetchText('/api/java-memory')),
+          timedFetch('/api/mail-channels', fetchJson<MailChannelsResponse>('/api/mail-channels')),
         ]);
 
         if (cancelled) return;
@@ -484,10 +498,17 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         const timed = <T>(path: string, timeoutMs: number): Promise<T> => {
           const started = nowMs();
           log(`GET ${path}`);
-          return withTimeout(fetchJson<T>(path), path, timeoutMs).then((value) => {
-            log(`GET ${path} OK (${fmtMs(started)})`);
-            return value;
-          });
+          return withTimeout(fetchJson<T>(path), path, timeoutMs).then(
+            (value) => {
+              log(`GET ${path} OK (${fmtMs(started)})`);
+              recordTiming(path, nowMs() - started);
+              return value;
+            },
+            (err) => {
+              recordTiming(path, nowMs() - started, 'fail');
+              throw err;
+            },
+          );
         };
         const settle = async <T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> => {
           try {
@@ -989,6 +1010,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             : { status: 'fulfilled', value: null };
           if (cancelled) return;
           if (!basicProjectsEnabled) {
+            recordTiming('/api/projects', 0, 'skip');
             log('Skipped /api/projects in lean live mode');
             currentParsedData = {
               ...currentParsedData,
@@ -1081,6 +1103,15 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
             log(`Computed users-by-projects (${Object.keys(usersByProjects).length} users)`);
           }
+        }
+        // Emit timing summary table
+        if (endpointTimings.length > 0) {
+          const rows = endpointTimings.map((t) => {
+            const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+            const flag = t.status === 'fail' ? ' FAIL' : t.status === 'skip' ? ' SKIP' : '';
+            return `${t.label}|${dur}${flag}`;
+          });
+          log(`TIMING_TABLE:${rows.join(';;')}`);
         }
         log('Live data load completed');
       } catch (err) {
