@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
-
 import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
 
@@ -212,7 +211,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
-  const { state, setActivePage } = useDiag();
+  const { state, setActivePage, addDebugLog } = useDiag();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshDone, setRefreshDone] = useState(false);
 
@@ -249,7 +248,10 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
       <button
         key={item.id}
         type="button"
-        onClick={() => setActivePage(item.id)}
+        onClick={() => {
+          addDebugLog(`Navigate: ${activePage} → ${item.id} (clicked "${item.label}")`, 'navigation');
+          setActivePage(item.id);
+        }}
         title={collapsed ? item.label : undefined}
         className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-colors ${
           isActive

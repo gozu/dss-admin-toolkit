@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
@@ -110,28 +110,36 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
 }
 
 export function PageRouter() {
-  const { state, setActivePage } = useDiag();
+  const { state, setActivePage, addDebugLog } = useDiag();
   const { activePage } = state;
+  const prevPageRef = useRef(activePage);
+
+  useEffect(() => {
+    if (prevPageRef.current !== activePage) {
+      addDebugLog(`Page rendered: ${activePage} (prev: ${prevPageRef.current})`, 'navigation');
+      prevPageRef.current = activePage;
+    }
+  }, [activePage, addDebugLog]);
 
   const handleBackToSummary = () => {
     setActivePage('summary');
   };
 
   return (
-    <Suspense fallback={<LoadingSpinner />}>
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activePage}
-          variants={crossfadeVariants}
-          initial="initial"
-          animate="animate"
-          exit="exit"
-          transition={crossfadeTransition}
-          className="flex-1 flex flex-col"
-        >
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={activePage}
+        variants={crossfadeVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={crossfadeTransition}
+        className="flex-1 flex flex-col"
+      >
+        <Suspense fallback={<LoadingSpinner />}>
           {renderPage(activePage, handleBackToSummary)}
-        </motion.div>
-      </AnimatePresence>
-    </Suspense>
+        </Suspense>
+      </motion.div>
+    </AnimatePresence>
   );
 }
