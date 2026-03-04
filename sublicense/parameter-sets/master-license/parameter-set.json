@@ -1,0 +1,21 @@
+{
+    "meta" : {
+        "label": "Master License",
+        "description": "",
+        "icon": "icon-rocket"
+    },
+    "defaultDefinableInline": false,
+    "defaultDefinableAtProjectLevel": false,
+
+    "pluginParams": [
+    ],
+
+    "params": [
+        {
+            "name": "License JSON",
+            "label": "The master license to be distributed.",
+            "description": "Paste license.json file here.",
+            "type": "STRING"
+        }
+    ]
+}
