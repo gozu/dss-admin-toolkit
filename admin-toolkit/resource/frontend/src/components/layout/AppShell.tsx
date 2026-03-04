@@ -1,9 +1,10 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
 import { exportAllTablesToZip } from '../../utils/exportTables';
+import { loadFromStorage, saveToStorage } from '../../utils/storage';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -20,7 +21,20 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
     () => typeof window !== 'undefined' && window.innerWidth < COLLAPSE_BREAKPOINT,
   );
   const [showAbout, setShowAbout] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(
+    () => !loadFromStorage('disclaimerSeen', false),
+  );
   const { theme, toggle: toggleTheme } = useTheme();
+
+  // Auto-dismiss disclaimer toast after 4s
+  useEffect(() => {
+    if (!showDisclaimer) return;
+    const timer = setTimeout(() => {
+      setShowDisclaimer(false);
+      saveToStorage('disclaimerSeen', true);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [showDisclaimer]);
 
   // Listen for viewport changes to auto-collapse
   useEffect(() => {
@@ -198,18 +212,41 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
       <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col relative">
         {children}
 
-        {/* Floating Submit Bug button */}
+        {/* Floating bug report button */}
         <a
           href="mailto:alex.kaos@dataiku.com?subject=Admin%20Toolkit%20feedback"
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-full bg-[var(--neon-cyan)]/15 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/40 hover:bg-[var(--neon-cyan)]/25 hover:border-[var(--neon-cyan)]/60 transition-colors shadow-lg backdrop-blur-sm text-sm font-medium"
-          title="Send feedback via email"
+          className="fixed bottom-6 right-3 z-50 flex items-center justify-center w-9 h-9 rounded-full bg-[var(--neon-cyan)]/15 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/40 hover:bg-[var(--neon-cyan)]/25 hover:border-[var(--neon-cyan)]/60 transition-colors shadow-lg backdrop-blur-sm"
+          title="Report a bug"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-            <polyline points="22,6 12,13 2,6" />
+            <path d="M8 2l1.88 1.88" />
+            <path d="M14.12 3.88L16 2" />
+            <path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" />
+            <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" />
+            <path d="M12 20v-9" />
+            <path d="M6.53 9C4.6 8.8 3 7.1 3 5" />
+            <path d="M6 13H2" />
+            <path d="M3 21c0-2.1 1.7-3.9 3.8-4" />
+            <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" />
+            <path d="M22 13h-4" />
+            <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" />
           </svg>
-          Submit Bug
         </a>
+
+        {/* First-time disclaimer toast */}
+        <AnimatePresence>
+          {showDisclaimer && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.3 }}
+              className="fixed bottom-16 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-lg bg-black/80 text-white/90 text-sm font-medium backdrop-blur-md shadow-xl border border-white/10 max-w-lg text-center"
+            >
+              This tool is experimental and may contain bugs. Use outside of sandbox environments is at your own risk.
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
     </div>
   );
