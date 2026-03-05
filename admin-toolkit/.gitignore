@@ -49,8 +49,27 @@ dbstruct.md
 slack
 HANDOFF-*.md
 PLAN-*.md
+PLAN.md
 plugins.html
 plan.md
+codex-*.md
+CLAUDE-*.md
+!CLAUDE.md
+webapps.html
+
+# Superseded by Makefile
+bump_version.py
+
+# One-time migration scripts
+scripts/rename-secure-wrapper.sh
+
+# Deploy / restart logs
+tam-restart-*.log
+
+# Temp docs
+docs/api-optimization-animated.html
+docs/webapp-api-latency-diagrams.md
+docs/webapp-api-latency-live.html
 
 # Holdover scripts
 Makefile.bak*
