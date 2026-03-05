@@ -7,7 +7,7 @@
 #   make deploy COMMIT_MSG="Deploy update"
 #
 # PROD wrappers installed by your setup script:
-#   /data/dss-secure-actions/bin/dss_plugin_update_diag-parser-live
+#   /data/dss-secure-actions/bin/dss_plugin_update_admin-toolkit
 #   /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1_nOQzJAF
 # ============================================================================
 
@@ -41,7 +41,7 @@ WEBAPP_ID ?= $(shell cat .dss-webapp-id 2>/dev/null || echo haoMNtw)
 
 # PROD deploy (locked down) wrappers
 SECURE_DIST_DIR ?= /data/dist
-SECURE_PLUGIN_WRAPPER ?= /data/dss-secure-actions/bin/dss_plugin_update_diag-parser-live
+SECURE_PLUGIN_WRAPPER ?= /data/dss-secure-actions/bin/dss_plugin_update_admin-toolkit
 SECURE_RESTART_WRAPPER ?= /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1_nOQzJAF
 
 # ----------------------------

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 
 type Theme = 'dark' | 'light';
-const THEME_STORAGE_KEY = 'diag-parser-live-theme';
+const THEME_STORAGE_KEY = 'admin-toolkit-theme';
 
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(() => {
