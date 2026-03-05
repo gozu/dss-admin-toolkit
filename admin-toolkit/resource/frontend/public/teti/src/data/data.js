@@ -125,8 +125,8 @@ export const statsSecondary = {
 // manually remove type: dir
 export const songsobj = [
     {
-        "name": "Korobeiniki - Type A.mp3",
-        "path": "assets/songs/Korobeiniki - Type A.mp3",
+        "name": "Korobeiniki-TypeA.mp3",
+        "path": "assets/songs/Korobeiniki-TypeA.mp3",
         "type": "file"
     }
 ];
