@@ -1,7 +1,7 @@
 {
   "meta": {
-    "label": "Diagnostics",
-    "description": "Analyze Dataiku diagnostics with live API data and visualizations",
+    "label": "Admin Toolkit",
+    "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
     "icon": "icon-bar-chart"
   },
   "baseType": "STANDARD",
