@@ -40,6 +40,9 @@ release_info.json
 resource/frontend/screenshots/
 resource/frontend/test-results/
 
+# Claude Code config
+CLAUDE.md
+
 # Scratch / planning docs
 am.md
 sam.md
