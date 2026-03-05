@@ -111,13 +111,6 @@ def _get_tracking_db():
 
 # Visual / non-code recipe types that never reference a code environment.
 # Skipping these avoids unnecessary per-recipe API calls.
-_NON_CODE_RECIPE_TYPES = frozenset({
-    'SYNC', 'JOIN', 'VSTACK', 'PIVOT', 'WINDOW', 'GROUP',
-    'DISTINCT', 'SORT', 'SPLIT', 'TOPN', 'DOWNLOAD',
-    'SAMPLING', 'PREPARE', 'SHAKER', 'MERGE', 'CONTINUOUS_SYNC',
-})
-
-
 @app.route('/__ping')
 def ping():
     return jsonify({'status': 'ok'})
@@ -3539,23 +3532,63 @@ def _build_project_footprint_map_with_deadline(
     return footprint_map
 
 
-def _load_code_env_catalog_entry(env_listing: Dict[str, Any], size_by_env: Dict[str, int]) -> Optional[Dict[str, Any]]:
+def _check_env_usages(
+    env_listing: Dict[str, Any],
+    project_info: Dict[str, Dict[str, str]],
+    size_by_env: Dict[str, int],
+) -> Optional[Dict[str, Any]]:
+    """Fetch usages for a single code env via the Dataiku API.
+
+    Returns a dict with env metadata and normalized usages, or None if the env
+    should be skipped (e.g. plugin-managed or missing name).
+    """
     if not isinstance(env_listing, dict):
         return None
     env_name = env_listing.get('envName') or env_listing.get('name') or env_listing.get('id')
     env_lang_raw = env_listing.get('envLang') or env_listing.get('language') or env_listing.get('type') or 'PYTHON'
     if not env_name:
         return None
-    language = _normalize_language(env_lang_raw)
-    env_key = f"{language}:{env_name}"
-    owner = _extract_code_env_owner(env_listing, {})
+
+    normalized_lang = _normalize_language(env_lang_raw)
+    env_key = f"{normalized_lang}:{env_name}"
+
+    client = _thread_client()
+    try:
+        env_obj = client.get_code_env(normalized_lang.upper(), env_name)
+        settings_raw = _safe_get_raw(env_obj.get_settings())
+        if settings_raw.get('deploymentMode') in {'PLUGIN_MANAGED', 'DSS_INTERNAL'}:
+            return None
+        usages = env_obj.list_usages() if hasattr(env_obj, 'list_usages') else []
+    except Exception as exc:
+        app.logger.warning("[code-env-usage] failed to check %s: %s", env_key, exc)
+        usages = []
+        settings_raw = {}
+
+    owner = _extract_code_env_owner(env_listing, settings_raw)
+
+    normalized_usages: List[Dict[str, Any]] = []
+    for raw_usage in usages:
+        usage = _usage_to_dict(raw_usage)
+        project_key = _extract_usage_project_key(usage)
+        if not project_key or project_key not in project_info:
+            continue
+        normalized = _normalize_usage_entry(usage, project_info)
+        normalized_usages.append({
+            'projectKey': project_key,
+            'usageType': str(normalized.get('usageType') or 'UNKNOWN'),
+            'objectType': str(normalized.get('objectType') or normalized.get('usageType') or 'UNKNOWN'),
+            'objectId': str(normalized.get('objectId') or ''),
+            'objectName': str(normalized.get('objectName') or normalized.get('objectId') or ''),
+        })
+
     return {
         'envKey': env_key,
         'name': str(env_name),
-        'language': language,
+        'language': normalized_lang,
         'owner': owner,
         'sizeBytes': _coerce_int(size_by_env.get(env_key), 0),
         'pythonVersion': str(env_listing.get('pythonVersion') or env_listing.get('pythonInterpreter') or ''),
+        'usages': normalized_usages,
     }
 
 
@@ -3584,54 +3617,6 @@ def _fetch_code_env_details(
             except Exception:
                 usages = []
     return settings_raw, usages
-
-
-def _load_code_env_usage_payload(
-    env_listing: Dict[str, Any],
-    project_info: Dict[str, Dict[str, str]],
-    size_by_env: Dict[str, int],
-) -> Optional[Dict[str, Any]]:
-    if not isinstance(env_listing, dict):
-        return None
-
-    env_name = env_listing.get('envName') or env_listing.get('name') or env_listing.get('id')
-    env_lang_raw = env_listing.get('envLang') or env_listing.get('language') or env_listing.get('type') or 'PYTHON'
-    if not env_name:
-        return None
-
-    normalized_lang = _normalize_language(env_lang_raw)
-    env_key = f"{normalized_lang}:{env_name}"
-
-    client = _thread_client()
-    settings_raw, usages = _fetch_code_env_details(client, normalized_lang.upper(), env_name)
-
-    owner = _extract_code_env_owner(env_listing, settings_raw)
-    normalized_usages: List[Dict[str, Any]] = []
-    for raw_usage in usages:
-        usage = _usage_to_dict(raw_usage)
-        project_key = _extract_usage_project_key(usage)
-        if not project_key or project_key not in project_info:
-            continue
-        normalized = _normalize_usage_entry(usage, project_info)
-        normalized_usages.append({
-            'projectKey': project_key,
-            'usageType': str(normalized.get('usageType') or 'UNKNOWN'),
-            'objectType': str(normalized.get('objectType') or normalized.get('usageType') or 'UNKNOWN'),
-            'objectId': str(normalized.get('objectId') or ''),
-            'objectName': str(normalized.get('objectName') or normalized.get('objectId') or ''),
-            'source': 'code_env_usage_api',
-        })
-
-    return {
-        'envKey': env_key,
-        'name': str(env_name),
-        'language': normalized_lang,
-        'owner': owner,
-        'sizeBytes': _coerce_int(size_by_env.get(env_key), 0),
-        'pythonVersion': str(env_listing.get('pythonVersion') or env_listing.get('pythonInterpreter') or ''),
-        'deploymentMode': str(env_listing.get('deploymentMode') or ''),
-        'usages': normalized_usages,
-    }
 
 
 def _load_code_env_full_details(
@@ -3727,485 +3712,6 @@ def _load_code_env_full_details(
     }
 
 
-def _collect_project_python_objects(
-    project_obj: Any,
-    project_key: str,
-    progress_cb: Optional[Callable[..., None]] = None,
-    deadline_ts: Optional[float] = None,
-) -> Dict[str, Any]:
-    objects: List[Dict[str, Any]] = []
-    started = time.time()
-    metrics: Dict[str, Any] = {
-        'recipesListed': 0,
-        'recipeObjects': 0,
-        'webappsListed': 0,
-        'webappObjects': 0,
-        'notebooksListed': 0,
-        'notebookObjects': 0,
-        'scenariosListed': 0,
-        'scenarioObjects': 0,
-        'objectsFound': 0,
-    }
-
-    def _deadline_reached(step_name: str) -> bool:
-        if deadline_ts is None:
-            return False
-        if time.time() < deadline_ts:
-            return False
-        _notify_progress(progress_cb, step_name, 'deadline reached during project object scan', 'warn', project_key)
-        return True
-
-    _notify_progress(progress_cb, 'project_objects_scan_start', 'project object scan started', 'info', project_key)
-
-    # As requested, this follows the same collection pattern used in:
-    # /data/projects/pythonaudit/.../project_standards_check_spec.py
-    recipe_step_started = time.time()
-    recipe_objects = 0
-    recipes: List[Any] = []
-    try:
-        recipes = _bench_call('list_project_recipes', project_obj.list_recipes) or []
-    except Exception as exc:
-        _notify_progress(progress_cb, 'project_scan_recipes_error', f"failed to list recipes: {exc}", 'warn', project_key)
-    metrics['recipesListed'] = len(recipes)
-    for recipe in recipes:
-        if _deadline_reached('project_scan_recipes_timeout'):
-            break
-        recipe_name = recipe.get('name')
-        if not recipe_name:
-            continue
-        recipe_type = str(recipe.get('type') or 'recipe').strip().upper()
-        if recipe_type in _NON_CODE_RECIPE_TYPES:
-            continue
-
-        # Try to extract env info directly from listing data (avoids per-recipe API calls).
-        listing_params = recipe.get('params') if isinstance(recipe, dict) else None
-        if isinstance(listing_params, dict) and isinstance(listing_params.get('envSelection'), dict):
-            payload: Dict[str, Any] = {'rawParams': listing_params}
-            objects.append({
-                'projectKey': project_key,
-                'usageType': 'RECIPE',
-                'objectType': f"RECIPE_{recipe_type}",
-                'objectId': str(recipe_name),
-                'objectName': str(recipe_name),
-                'payload': payload,
-                'source': 'project_object_scan',
-            })
-            recipe_objects += 1
-            continue
-
-        # Fallback: per-recipe API call when listing data lacks params.
-        try:
-            recipe_obj = _bench_call('get_recipe', project_obj.get_recipe, recipe_name)
-            settings = _bench_call('get_recipe_settings', recipe_obj.get_settings)
-            payload: Dict[str, Any] = {}
-            if hasattr(settings, 'get_code_env_settings'):
-                try:
-                    env_settings = settings.get_code_env_settings()
-                    if isinstance(env_settings, dict):
-                        payload['codeEnvSettings'] = env_settings
-                except Exception:
-                    pass
-            if hasattr(settings, 'get_recipe_raw_definition'):
-                try:
-                    raw_def = settings.get_recipe_raw_definition()
-                    if isinstance(raw_def, dict):
-                        payload['recipeRawDefinition'] = raw_def
-                except Exception:
-                    pass
-            raw_params = getattr(settings, 'raw_params', None)
-            if isinstance(raw_params, dict):
-                payload['rawParams'] = raw_params
-            objects.append({
-                'projectKey': project_key,
-                'usageType': 'RECIPE',
-                'objectType': f"RECIPE_{recipe_type}",
-                'objectId': str(recipe_name),
-                'objectName': str(recipe_name),
-                'payload': payload,
-                'source': 'project_object_scan',
-            })
-            recipe_objects += 1
-        except Exception:
-            continue
-    metrics['recipeObjects'] = recipe_objects
-    _notify_progress(
-        progress_cb,
-        'project_scan_recipes_listed',
-        f"recipes listed={metrics['recipesListed']} objects={recipe_objects}",
-        'info',
-        project_key,
-        elapsed_ms=(time.time() - recipe_step_started) * 1000.0,
-    )
-
-    webapp_step_started = time.time()
-    webapp_objects = 0
-    webapps: List[Any] = []
-    try:
-        webapps = _bench_call('list_project_webapps', project_obj.list_webapps) or []
-    except Exception as exc:
-        _notify_progress(progress_cb, 'project_scan_webapps_error', f"failed to list webapps: {exc}", 'warn', project_key)
-    metrics['webappsListed'] = len(webapps)
-
-    # Bulk-fetch webapp details via REST listing endpoint to avoid per-webapp API calls.
-    webapp_details_by_id: Dict[str, Dict[str, Any]] = {}
-    try:
-        bulk_webapps = _client_perform_json(_thread_client(), 'GET', f'/projects/{project_key}/webapps/')
-        if isinstance(bulk_webapps, list):
-            for wd in bulk_webapps:
-                if isinstance(wd, dict) and wd.get('id'):
-                    webapp_details_by_id[str(wd['id'])] = wd
-    except Exception:
-        pass
-
-    for webapp in webapps:
-        if _deadline_reached('project_scan_webapps_timeout'):
-            break
-        webapp_id = webapp.get('id')
-        if not webapp_id:
-            continue
-
-        # Use pre-fetched data when available; fall back to per-object calls otherwise.
-        bulk_detail = webapp_details_by_id.get(str(webapp_id))
-        if isinstance(bulk_detail, dict) and bulk_detail:
-            objects.append({
-                'projectKey': project_key,
-                'usageType': 'WEBAPP_BACKEND',
-                'objectType': 'WEBAPP_BACKEND',
-                'objectId': str(webapp_id),
-                'objectName': str(webapp_id),
-                'payload': bulk_detail,
-                'source': 'project_object_scan',
-            })
-            webapp_objects += 1
-            continue
-
-        try:
-            webapp_obj = _bench_call('get_webapp', project_obj.get_webapp, webapp_id)
-            settings_raw = _bench_call('get_webapp_settings_raw', lambda: webapp_obj.get_settings().get_raw())
-            objects.append({
-                'projectKey': project_key,
-                'usageType': 'WEBAPP_BACKEND',
-                'objectType': 'WEBAPP_BACKEND',
-                'objectId': str(webapp_id),
-                'objectName': str(webapp_id),
-                'payload': settings_raw if isinstance(settings_raw, dict) else {},
-                'source': 'project_object_scan',
-            })
-            webapp_objects += 1
-        except Exception:
-            continue
-    metrics['webappObjects'] = webapp_objects
-    _notify_progress(
-        progress_cb,
-        'project_scan_webapps_listed',
-        f"webapps listed={metrics['webappsListed']} objects={webapp_objects}",
-        'info',
-        project_key,
-        elapsed_ms=(time.time() - webapp_step_started) * 1000.0,
-    )
-
-    notebook_step_started = time.time()
-    notebook_objects = 0
-    notebooks: List[Any] = []
-    try:
-        notebooks = _bench_call('list_project_notebooks', project_obj.list_jupyter_notebooks) or []
-    except Exception as exc:
-        _notify_progress(progress_cb, 'project_scan_notebooks_error', f"failed to list notebooks: {exc}", 'warn', project_key)
-    metrics['notebooksListed'] = len(notebooks)
-    for notebook in notebooks:
-        if _deadline_reached('project_scan_notebooks_timeout'):
-            break
-        notebook_name = getattr(notebook, 'notebook_name', None) or getattr(notebook, 'name', None)
-        notebook_name = str(notebook_name or '').strip()
-        if not notebook_name:
-            continue
-        payload: Dict[str, Any] = {}
-        try:
-            content = _bench_call('get_notebook_content_raw', lambda: notebook.get_content().get_raw())
-            if isinstance(content, dict):
-                metadata = content.get('metadata')
-                if isinstance(metadata, dict):
-                    payload['metadata'] = metadata
-        except Exception:
-            pass
-        try:
-            settings = _bench_call('get_notebook_settings', notebook.get_settings)
-            if hasattr(settings, 'get_raw'):
-                settings_raw = _bench_call('get_notebook_settings_raw', settings.get_raw)
-                if isinstance(settings_raw, dict):
-                    payload['settings'] = settings_raw
-        except Exception:
-            pass
-        objects.append({
-            'projectKey': project_key,
-            'usageType': 'NOTEBOOK',
-            'objectType': 'NOTEBOOK',
-            'objectId': notebook_name,
-            'objectName': notebook_name,
-            'payload': payload,
-            'source': 'project_object_scan',
-        })
-        notebook_objects += 1
-    metrics['notebookObjects'] = notebook_objects
-    _notify_progress(
-        progress_cb,
-        'project_scan_notebooks_listed',
-        f"notebooks listed={metrics['notebooksListed']} objects={notebook_objects}",
-        'info',
-        project_key,
-        elapsed_ms=(time.time() - notebook_step_started) * 1000.0,
-    )
-
-    scenario_step_started = time.time()
-    scenario_objects = 0
-    scenarios: List[Any] = []
-    try:
-        scenarios = _bench_call('list_project_scenarios', project_obj.list_scenarios) or []
-    except Exception as exc:
-        _notify_progress(progress_cb, 'project_scan_scenarios_error', f"failed to list scenarios: {exc}", 'warn', project_key)
-    metrics['scenariosListed'] = len(scenarios)
-
-    # Bulk-fetch scenario details via REST listing endpoint to avoid per-scenario API calls.
-    scenario_details_by_id: Dict[str, Dict[str, Any]] = {}
-    try:
-        bulk_scenarios = _client_perform_json(_thread_client(), 'GET', f'/projects/{project_key}/scenarios/')
-        if isinstance(bulk_scenarios, list):
-            for sd in bulk_scenarios:
-                if isinstance(sd, dict) and sd.get('id'):
-                    scenario_details_by_id[str(sd['id'])] = sd
-    except Exception:
-        pass
-
-    for scenario_info in scenarios:
-        if _deadline_reached('project_scan_scenarios_timeout'):
-            break
-        scenario_id = scenario_info.get('id')
-        if not scenario_id:
-            continue
-
-        scenario_type = str(scenario_info.get('type') or '').strip().lower()
-        bulk_detail = scenario_details_by_id.get(str(scenario_id))
-
-        # Try bulk data first for custom_python scenarios.
-        if scenario_type == 'custom_python' and isinstance(bulk_detail, dict) and bulk_detail:
-            objects.append({
-                'projectKey': project_key,
-                'usageType': 'SCENARIO',
-                'objectType': 'SCENARIO',
-                'objectId': str(scenario_id),
-                'objectName': str(scenario_id),
-                'payload': bulk_detail,
-                'source': 'project_object_scan',
-            })
-            scenario_objects += 1
-            continue
-
-        # Try bulk data first for step_based scenarios.
-        if scenario_type == 'step_based' and isinstance(bulk_detail, dict):
-            bulk_params = bulk_detail.get('params') if isinstance(bulk_detail.get('params'), dict) else None
-            bulk_steps = bulk_params.get('steps') if isinstance(bulk_params, dict) else None
-            if isinstance(bulk_steps, list):
-                for idx, step in enumerate(bulk_steps):
-                    if not isinstance(step, dict):
-                        continue
-                    step_type = str(step.get('type') or '').strip().lower()
-                    params = step.get('params') if isinstance(step.get('params'), dict) else {}
-                    has_env_selection = isinstance(params.get('envSelection'), dict)
-                    if step_type != 'custom_python' and not has_env_selection:
-                        continue
-                    objects.append({
-                        'projectKey': project_key,
-                        'usageType': 'SCENARIO_STEP',
-                        'objectType': f"SCENARIO_STEP_{(step_type or 'unknown').upper()}",
-                        'objectId': f"{scenario_id}:step_{idx}",
-                        'objectName': f"{scenario_id}:step_{idx}",
-                        'payload': step,
-                        'source': 'project_object_scan',
-                    })
-                    scenario_objects += 1
-                continue
-
-        # Fallback: per-scenario API calls when bulk data is unavailable.
-        try:
-            scenario = _bench_call('get_scenario', project_obj.get_scenario, scenario_id)
-        except Exception:
-            continue
-
-        if scenario_type == 'custom_python':
-            try:
-                scenario_settings = _bench_call('get_scenario_settings', scenario.get_settings)
-                scenario_raw = _bench_call('get_scenario_settings_raw', scenario_settings.get_raw) if hasattr(scenario_settings, 'get_raw') else None
-                if isinstance(scenario_raw, dict):
-                    objects.append({
-                        'projectKey': project_key,
-                        'usageType': 'SCENARIO',
-                        'objectType': 'SCENARIO',
-                        'objectId': str(scenario_id),
-                        'objectName': str(scenario_id),
-                        'payload': scenario_raw,
-                        'source': 'project_object_scan',
-                    })
-                    scenario_objects += 1
-            except Exception:
-                pass
-        elif scenario_type == 'step_based':
-            try:
-                settings = _bench_call('get_scenario_settings', scenario.get_settings)
-                raw_steps = getattr(settings, 'raw_steps', None)
-                if not isinstance(raw_steps, list):
-                    raw_steps = []
-                for idx, step in enumerate(raw_steps):
-                    if not isinstance(step, dict):
-                        continue
-                    step_type = str(step.get('type') or '').strip().lower()
-                    params = step.get('params') if isinstance(step.get('params'), dict) else {}
-                    has_env_selection = isinstance(params.get('envSelection'), dict)
-                    if step_type != 'custom_python' and not has_env_selection:
-                        continue
-                    objects.append({
-                        'projectKey': project_key,
-                        'usageType': 'SCENARIO_STEP',
-                        'objectType': f"SCENARIO_STEP_{(step_type or 'unknown').upper()}",
-                        'objectId': f"{scenario_id}:step_{idx}",
-                        'objectName': f"{scenario_id}:step_{idx}",
-                        'payload': step,
-                        'source': 'project_object_scan',
-                    })
-                    scenario_objects += 1
-            except Exception:
-                pass
-    metrics['scenarioObjects'] = scenario_objects
-    _notify_progress(
-        progress_cb,
-        'project_scan_scenarios_listed',
-        f"scenarios listed={metrics['scenariosListed']} objects={scenario_objects}",
-        'info',
-        project_key,
-        elapsed_ms=(time.time() - scenario_step_started) * 1000.0,
-    )
-
-    # Code Studios count (guarded for older DSS versions)
-    code_studios_count = 0
-    if hasattr(project_obj, 'list_code_studios'):
-        try:
-            code_studios = _bench_call('list_code_studios', project_obj.list_code_studios) or []
-            code_studios_count = len(code_studios)
-        except Exception as exc:
-            _notify_progress(progress_cb, 'project_scan_code_studios_error', f"failed to list code studios: {exc}", 'warn', project_key)
-    metrics['codeStudiosListed'] = code_studios_count
-
-    metrics['objectsFound'] = len(objects)
-    total_elapsed_ms = (time.time() - started) * 1000.0
-    _notify_progress(
-        progress_cb,
-        'project_objects_scan_ok',
-        f"project object scan complete objects={metrics['objectsFound']}",
-        'info',
-        project_key,
-        elapsed_ms=total_elapsed_ms,
-    )
-
-    return {
-        'objects': objects,
-        'metrics': metrics,
-    }
-
-
-def _payload_has_inherit_env_mode(payload: Any) -> bool:
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if isinstance(key, str) and key.lower() == 'envmode':
-                if isinstance(value, str) and value.strip().upper() == 'INHERIT':
-                    return True
-            if _payload_has_inherit_env_mode(value):
-                return True
-        return False
-    if isinstance(payload, list):
-        for item in payload:
-            if _payload_has_inherit_env_mode(item):
-                return True
-    return False
-
-
-def _extract_env_references_from_payload(
-    payload: Any,
-    env_name_to_keys: Dict[str, List[str]],
-) -> Dict[str, List[str]]:
-    found_keys: set = set()
-    found_names: set = set()
-
-    def maybe_register_name(text: str, hinted_name: bool) -> None:
-        value = text.strip()
-        if not value:
-            return
-        if '\n' in value or len(value) > 180:
-            return
-
-        lowered = value.lower()
-        direct = env_name_to_keys.get(lowered)
-        if direct:
-            found_keys.update(direct)
-            return
-
-        # Notebook kernels often encode env names as py-dku-venv-<env_name>.
-        if lowered.startswith('py-dku-venv-'):
-            candidate = value[len('py-dku-venv-'):]
-            if candidate:
-                mapped = env_name_to_keys.get(candidate.lower())
-                if mapped:
-                    found_keys.update(mapped)
-                else:
-                    found_names.add(candidate)
-                return
-
-        # Display names like "Python (env my_env)".
-        display_match = re.search(r'env\s+([A-Za-z0-9_.-]+)\)?$', value, flags=re.IGNORECASE)
-        if display_match:
-            candidate = display_match.group(1)
-            mapped = env_name_to_keys.get(candidate.lower())
-            if mapped:
-                found_keys.update(mapped)
-            else:
-                found_names.add(candidate)
-            return
-
-        tokens = [token for token in re.split(r'[^a-zA-Z0-9_.-]+', value) if token]
-        for token in tokens:
-            mapped = env_name_to_keys.get(token.lower())
-            if mapped:
-                found_keys.update(mapped)
-
-        if hinted_name:
-            found_names.add(value)
-
-    def walk(node: Any, key_hint: str = '') -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                key_lower = str(key).lower()
-                if isinstance(value, str):
-                    hinted = (
-                        key_lower.endswith('envname')
-                        or key_lower == 'envname'
-                        or key_lower.endswith('codeenv')
-                        or (key_hint.endswith('kernelspec') and key_lower in ('name', 'kernel_name'))
-                    )
-                    maybe_register_name(value, hinted_name=hinted)
-                walk(value, key_lower)
-            return
-        if isinstance(node, list):
-            for item in node:
-                walk(item, key_hint)
-            return
-        if isinstance(node, str):
-            maybe_register_name(node, hinted_name=False)
-
-    walk(payload)
-    return {
-        'keys': sorted(found_keys),
-        'names': sorted(found_names),
-    }
-
-
 def _collect_project_code_env_usage(
     client: Any,
     project_info: Dict[str, Dict[str, str]],
@@ -4215,102 +3721,45 @@ def _collect_project_code_env_usage(
     deadline_ts: Optional[float] = None,
     progress_cb: Optional[Callable[..., None]] = None,
 ) -> Dict[str, Any]:
+    """Collect code env usage by querying the Dataiku API for each env's usages."""
+    _notify_progress(
+        progress_cb,
+        'collect_project_code_env_usage_start',
+        f"start projects={len(project_info)}",
+    )
+
+    envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
+    workers = min(_parallel_workers(16), len(envs))
+
+    env_payloads: List[Dict[str, Any]] = []
+    if workers <= 1:
+        for env in envs:
+            payload = _check_env_usages(env, project_info, size_by_env)
+            if payload:
+                env_payloads.append(payload)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_check_env_usages, env, project_info, size_by_env): env for env in envs}
+            for future in as_completed(list(futures.keys())):
+                try:
+                    payload = future.result()
+                except Exception as exc:
+                    app.logger.warning("[code-env-usage] env check failed: %s", exc)
+                    continue
+                if payload:
+                    env_payloads.append(payload)
+
     envs_by_project: Dict[str, set] = {k: set() for k in project_info.keys()}
     usage_breakdown_by_project: Dict[str, Dict[str, int]] = {k: {} for k in project_info.keys()}
     usage_details_by_project: Dict[str, List[Dict[str, Any]]] = {k: [] for k in project_info.keys()}
     env_meta_by_key: Dict[str, Dict[str, Any]] = {}
-    env_name_to_keys: Dict[str, List[str]] = {}
-    deadline_warned = False
 
-    def _deadline_reached() -> bool:
-        nonlocal deadline_warned
-        if deadline_ts is None:
-            return False
-        now = time.time()
-        if now < deadline_ts:
-            if not deadline_warned and (deadline_ts - now) <= 10.0:
-                deadline_warned = True
-                _notify_progress(progress_cb, 'deadline_pressure', 'deadline is under 10 seconds during code env usage collection', 'warn')
-            return False
-        return True
-
-    def _remaining_seconds() -> Optional[float]:
-        if deadline_ts is None:
-            return None
-        return max(0.0, deadline_ts - time.time())
-
-    _notify_progress(
-        progress_cb,
-        'collect_project_code_env_usage_start',
-        f"start projects={len(project_info)} includeProjectScan={include_project_object_scan} includeCodeEnvUsageApi={include_code_env_usage_api}",
-    )
-    envs = [env for env in (_bench_call('list_code_envs', client.list_code_envs) or []) if isinstance(env, dict)]
-    env_payloads: List[Dict[str, Any]] = []
-    catalog_rows: List[Dict[str, Any]] = []
-
-    if include_code_env_usage_api:
-        env_workers = min(_parallel_workers(8), len(envs))
-        _notify_progress(progress_cb, 'code_env_usage_api_pool_start', f"code env usage API scan started envs={len(envs)} workers={env_workers}")
-        if env_workers <= 1:
-            for env in envs:
-                if _deadline_reached():
-                    _notify_progress(progress_cb, 'code_env_usage_api_timeout', 'deadline reached during serial code env usage API scan', 'warn')
-                    break
-                payload = _load_code_env_usage_payload(env, project_info, size_by_env)
-                if payload:
-                    env_payloads.append(payload)
-        else:
-            with ThreadPoolExecutor(max_workers=env_workers) as pool:
-                future_to_env: Dict[Any, Dict[str, Any]] = {}
-                for env in envs:
-                    if _deadline_reached():
-                        _notify_progress(progress_cb, 'code_env_usage_api_timeout', 'deadline reached while submitting env usage jobs', 'warn')
-                        break
-                    future = pool.submit(_load_code_env_usage_payload, env, project_info, size_by_env)
-                    future_to_env[future] = env
-
-                timed_out = False
-                if future_to_env:
-                    try:
-                        for future in as_completed(list(future_to_env.keys()), timeout=_remaining_seconds()):
-                            if _deadline_reached():
-                                timed_out = True
-                                _notify_progress(progress_cb, 'code_env_usage_api_timeout', 'deadline reached while collecting env usage futures', 'warn')
-                                break
-                            try:
-                                payload = future.result()
-                            except Exception as exc:
-                                _notify_progress(progress_cb, 'code_env_usage_api_error', f"env usage future failed: {exc}", 'warn')
-                                payload = None
-                            if payload:
-                                env_payloads.append(payload)
-                    except FuturesTimeoutError:
-                        timed_out = True
-                        _notify_progress(progress_cb, 'code_env_usage_api_timeout', 'deadline reached while waiting for env usage futures', 'warn')
-
-                if timed_out or _deadline_reached():
-                    for future in future_to_env.keys():
-                        if future.done():
-                            continue
-                        future.cancel()
-                    _notify_progress(progress_cb, 'code_env_usage_api_cancelled', 'cancelled pending env usage futures on deadline', 'warn')
-        _notify_progress(progress_cb, 'code_env_usage_api_pool_done', f"code env usage API scan done payloads={len(env_payloads)}")
-    else:
-        for env in envs:
-            if _deadline_reached():
-                _notify_progress(progress_cb, 'code_env_catalog_timeout', 'deadline reached during code env catalog pass', 'warn')
-                break
-            payload = _load_code_env_catalog_entry(env, size_by_env)
-            if payload:
-                catalog_rows.append(payload)
-        _notify_progress(progress_cb, 'code_env_catalog_done', f"code env catalog pass done rows={len(catalog_rows)}")
-
-    source_rows = env_payloads if include_code_env_usage_api else catalog_rows
-    for payload in source_rows:
+    for payload in env_payloads:
         env_key = str(payload.get('envKey') or '')
         env_name = str(payload.get('name') or '')
         if not env_key or not env_name:
             continue
+
         env_meta_by_key[env_key] = {
             'key': env_key,
             'name': env_name,
@@ -4318,254 +3767,28 @@ def _collect_project_code_env_usage(
             'owner': str(payload.get('owner') or 'Unknown'),
             'sizeBytes': _coerce_int(payload.get('sizeBytes'), 0),
             'pythonVersion': str(payload.get('pythonVersion') or ''),
-            'deploymentMode': str(payload.get('deploymentMode') or ''),
+            'deploymentMode': '',
             'usageSummary': {},
             'usageDetails': [],
             'projectKeys': set(),
         }
-        env_name_to_keys.setdefault(env_name.lower(), []).append(env_key)
 
-    def ensure_env_meta_for_name(env_name: str, language: str = 'python') -> str:
-        clean_name = str(env_name or '').strip()
-        if not clean_name:
-            return ''
-        env_key = f"{language}:{clean_name}"
-        if env_key not in env_meta_by_key:
-            env_meta_by_key[env_key] = {
-                'key': env_key,
-                'name': clean_name,
-                'language': language,
-                'owner': 'Unknown',
-                'sizeBytes': _coerce_int(size_by_env.get(env_key), 0),
-                'usageSummary': {},
-                'usageDetails': [],
-                'projectKeys': set(),
-            }
-            env_name_to_keys.setdefault(clean_name.lower(), []).append(env_key)
-        return env_key
-
-    def add_usage(
-        project_key: str,
-        env_key: str,
-        usage_type: str,
-        object_type: str,
-        object_id: str,
-        object_name: str,
-        source: str,
-    ) -> None:
-        if project_key not in envs_by_project:
-            return
-        env_meta = env_meta_by_key.get(env_key)
-        if not env_meta:
-            return
-
-        usage_type = str(usage_type or 'UNKNOWN').upper()
-        object_type = str(object_type or usage_type or 'UNKNOWN').upper()
-        object_id = str(object_id or '')
-        object_name = str(object_name or object_id or object_type)
-        env_name = str(env_meta.get('name') or '')
-        env_lang = str(env_meta.get('language') or '')
-        env_owner = str(env_meta.get('owner') or 'Unknown')
-
-        usage = {
-            'projectKey': project_key,
-            'projectName': project_info.get(project_key, {}).get('name', project_key),
-            'usageType': usage_type,
-            'objectType': object_type,
-            'objectId': object_id,
-            'objectName': object_name,
-            'codeEnvKey': env_key,
-            'codeEnvName': env_name,
-            'codeEnvLanguage': env_lang,
-            'codeEnvOwner': env_owner,
-            'source': source,
-        }
-
-        envs_by_project[project_key].add(env_key)
-        usage_counts = usage_breakdown_by_project[project_key]
-        usage_counts[usage_type] = usage_counts.get(usage_type, 0) + 1
-        usage_details_by_project[project_key].append(usage)
-
-        env_usage_counts = env_meta['usageSummary']
-        env_usage_counts[usage_type] = env_usage_counts.get(usage_type, 0) + 1
-        env_meta['usageDetails'].append(usage)
-        env_meta['projectKeys'].add(project_key)
-
-    # First pass: DSS code-env usage API (covers objects like Visual ML when available).
-    for payload in env_payloads:
-        if _deadline_reached():
-            break
-        env_key = str(payload.get('envKey') or '')
-        if not env_key:
-            continue
-        usages = payload.get('usages')
-        if not isinstance(usages, list):
-            continue
-        for normalized in usages:
-            project_key = str(normalized.get('projectKey') or '')
-            if not project_key or project_key not in project_info:
+        for usage in payload.get('usages') or []:
+            project_key = str(usage.get('projectKey') or '')
+            if not project_key or project_key not in envs_by_project:
                 continue
-            add_usage(
-                project_key=project_key,
-                env_key=env_key,
-                usage_type=str(normalized.get('usageType') or 'UNKNOWN'),
-                object_type=str(normalized.get('objectType') or normalized.get('usageType') or 'UNKNOWN'),
-                object_id=str(normalized.get('objectId') or ''),
-                object_name=str(normalized.get('objectName') or normalized.get('objectId') or ''),
-                source='code_env_usage_api',
-            )
+            usage_type = str(usage.get('usageType') or 'UNKNOWN').upper()
 
-    # Second pass: direct per-project object scan (exhaustive but expensive).
-    code_studio_count_by_project: Dict[str, int] = {}
-    if include_project_object_scan:
-        def _scan_project_objects(project_key: str) -> Dict[str, Any]:
-            local_client = _thread_client()
-            _notify_progress(progress_cb, 'project_scan_start', 'project scan started', 'info', project_key)
-            try:
-                project_obj = _bench_call('get_project', local_client.get_project, project_key)
-            except Exception as exc:
-                _notify_progress(progress_cb, 'project_scan_error', f"failed to get project handle: {exc}", 'warn', project_key)
-                return {'projectKey': project_key, 'objects': [], 'metrics': {}}
-            scan_payload = _collect_project_python_objects(
-                project_obj,
-                project_key,
-                progress_cb=progress_cb,
-                deadline_ts=deadline_ts,
-            )
-            objects = scan_payload.get('objects') if isinstance(scan_payload, dict) else []
-            metrics = scan_payload.get('metrics') if isinstance(scan_payload, dict) else {}
-            if not isinstance(objects, list):
-                objects = []
-            if not isinstance(metrics, dict):
-                metrics = {}
-            return {'projectKey': project_key, 'objects': objects, 'metrics': metrics}
+            envs_by_project[project_key].add(env_key)
 
-        project_keys = list(project_info.keys())
-        scan_results: List[Dict[str, Any]] = []
-        scan_workers = min(_parallel_workers(8), len(project_keys))
-        _notify_progress(
-            progress_cb,
-            'project_scan_pool_start',
-            f"project object scan pool started projects={len(project_keys)} workers={scan_workers}",
-        )
-        if scan_workers <= 1:
-            for project_key in project_keys:
-                if _deadline_reached():
-                    _notify_progress(progress_cb, 'project_scan_timeout', 'deadline reached during serial project scanning', 'warn')
-                    break
-                scan_results.append(_scan_project_objects(project_key))
-        else:
-            with ThreadPoolExecutor(max_workers=scan_workers) as pool:
-                future_to_project: Dict[Any, str] = {}
-                for project_key in project_keys:
-                    if _deadline_reached():
-                        _notify_progress(progress_cb, 'project_scan_timeout', 'deadline reached while submitting project scan jobs', 'warn')
-                        break
-                    future = pool.submit(_scan_project_objects, project_key)
-                    future_to_project[future] = project_key
+            counts = usage_breakdown_by_project[project_key]
+            counts[usage_type] = counts.get(usage_type, 0) + 1
+            usage_details_by_project[project_key].append(usage)
 
-                timed_out = False
-                if future_to_project:
-                    try:
-                        for future in as_completed(list(future_to_project.keys()), timeout=_remaining_seconds()):
-                            if _deadline_reached():
-                                timed_out = True
-                                _notify_progress(progress_cb, 'project_scan_timeout', 'deadline reached while collecting project scan futures', 'warn')
-                                break
-                            try:
-                                scan_results.append(future.result())
-                            except Exception as exc:
-                                _notify_progress(progress_cb, 'project_scan_error', f"project scan future failed: {exc}", 'warn')
-                                continue
-                    except FuturesTimeoutError:
-                        timed_out = True
-                        _notify_progress(progress_cb, 'project_scan_timeout', 'deadline reached while waiting for project scan futures', 'warn')
-
-                if timed_out or _deadline_reached():
-                    for future, project_key in future_to_project.items():
-                        if future.done():
-                            continue
-                        future.cancel()
-                        _notify_progress(progress_cb, 'project_scan_timeout', 'project scan future cancelled on deadline', 'warn', project_key)
-
-        for scan_result in scan_results:
-            if _deadline_reached():
-                _notify_progress(progress_cb, 'project_scan_timeout', 'deadline reached while merging project scan results', 'warn')
-                break
-            project_key = str(scan_result.get('projectKey') or '')
-            if not project_key:
-                continue
-            objects = scan_result.get('objects')
-            if not isinstance(objects, list):
-                objects = []
-            metrics = scan_result.get('metrics')
-            if not isinstance(metrics, dict):
-                metrics = {}
-
-            code_studio_count_by_project[project_key] = _coerce_int(metrics.get('codeStudiosListed'), 0)
-
-            app.logger.debug("[project-scan] %s python objects=%s", project_key, len(objects))
-            _notify_progress(
-                progress_cb,
-                'project_objects_scan_summary',
-                (
-                    "scan summary "
-                    f"recipes={metrics.get('recipesListed', 0)} "
-                    f"webapps={metrics.get('webappsListed', 0)} "
-                    f"notebooks={metrics.get('notebooksListed', 0)} "
-                    f"scenarios={metrics.get('scenariosListed', 0)} "
-                    f"codeStudios={metrics.get('codeStudiosListed', 0)} "
-                    f"objects={metrics.get('objectsFound', len(objects))}"
-                ),
-                'info',
-                project_key,
-            )
-            resolved_env_refs = 0
-            for obj in objects:
-                payload = obj.get('payload')
-                env_refs = _extract_env_references_from_payload(payload, env_name_to_keys)
-                env_keys = list(env_refs.get('keys') or [])
-                for unresolved_name in env_refs.get('names') or []:
-                    dynamic_key = ensure_env_meta_for_name(unresolved_name, 'python')
-                    if dynamic_key:
-                        env_keys.append(dynamic_key)
-                env_keys = sorted(set(env_keys))
-                if not env_keys and _payload_has_inherit_env_mode(payload):
-                    default_env_name = str(project_info.get(project_key, {}).get('defaultPythonEnv') or '').strip()
-                    if default_env_name:
-                        mapped_keys = env_name_to_keys.get(default_env_name.lower(), [])
-                        if mapped_keys:
-                            env_keys = sorted(set(mapped_keys))
-                        else:
-                            fallback_key = ensure_env_meta_for_name(default_env_name, 'python')
-                            env_keys = [fallback_key] if fallback_key else []
-                resolved_env_refs += len(env_keys)
-                for env_key in env_keys:
-                    add_usage(
-                        project_key=project_key,
-                        env_key=env_key,
-                        usage_type=str(obj.get('usageType') or 'UNKNOWN'),
-                        object_type=str(obj.get('objectType') or obj.get('usageType') or 'UNKNOWN'),
-                        object_id=str(obj.get('objectId') or ''),
-                        object_name=str(obj.get('objectName') or obj.get('objectId') or ''),
-                        source=str(obj.get('source') or 'project_object_scan'),
-                    )
-            app.logger.debug(
-                "[project-scan] %s resolved_code_envs=%s",
-                project_key,
-                len(envs_by_project.get(project_key) or []),
-            )
-            _notify_progress(
-                progress_cb,
-                'project_env_refs_resolved',
-                f"resolved env refs={resolved_env_refs} code envs={len(envs_by_project.get(project_key) or [])}",
-                'info',
-                project_key,
-            )
-        _notify_progress(progress_cb, 'project_scan_pool_done', f"project object scan pool done results={len(scan_results)}")
-
-    for project_key, usages in usage_details_by_project.items():
-        usage_details_by_project[project_key] = _dedupe_usage_entries(usages)
+            env_meta = env_meta_by_key[env_key]
+            env_meta['usageSummary'][usage_type] = env_meta['usageSummary'].get(usage_type, 0) + 1
+            env_meta['usageDetails'].append(usage)
+            env_meta['projectKeys'].add(project_key)
 
     for env_key, env_meta in env_meta_by_key.items():
         deduped = _dedupe_usage_entries(env_meta.get('usageDetails') or [])
@@ -4574,6 +3797,9 @@ def _collect_project_code_env_usage(
         env_meta['projectKeys'] = sorted(set(env_meta.get('projectKeys') or []))
         env_meta['projectCount'] = len(env_meta['projectKeys'])
         env_meta['usageSummary'] = dict(env_meta.get('usageSummary') or {})
+
+    for project_key, usages in usage_details_by_project.items():
+        usage_details_by_project[project_key] = _dedupe_usage_entries(usages)
 
     _notify_progress(
         progress_cb,
@@ -4585,7 +3811,7 @@ def _collect_project_code_env_usage(
         'usageBreakdownByProject': usage_breakdown_by_project,
         'usageDetailsByProject': usage_details_by_project,
         'envMetaByKey': env_meta_by_key,
-        'codeStudioCountByProject': code_studio_count_by_project,
+        'codeStudioCountByProject': {},
     }
 
 

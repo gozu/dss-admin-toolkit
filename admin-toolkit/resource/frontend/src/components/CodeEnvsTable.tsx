@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { useTableFilter } from '../hooks/useTableFilter';
 import { getRelativeSizeColor } from '../utils/formatters';
-import { TetrisGame } from './TetrisGame';
+import { TetiGame } from './TetiGame';
 
 type ViewMode = 'summary' | 'details';
 
@@ -151,7 +151,7 @@ export function CodeEnvsTable() {
             className="transition-opacity duration-500 ease-out"
             style={{ opacity: fadingOut ? 0 : 1 }}
           >
-            <TetrisGame cellSize={28} progressPct={loading?.progressPct || 0} />
+            <TetiGame progressPct={loading?.progressPct || 0} />
           </div>
         ) : (
           <div className="px-4 py-3">
