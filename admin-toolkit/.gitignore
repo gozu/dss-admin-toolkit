@@ -42,6 +42,7 @@ resource/frontend/test-results/
 
 # Claude Code config
 CLAUDE.md
+.claude/
 
 # Scratch / planning docs
 am.md
