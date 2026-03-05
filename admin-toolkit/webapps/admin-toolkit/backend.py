@@ -3570,7 +3570,7 @@ def _check_env_usages(
     for raw_usage in usages:
         usage = _usage_to_dict(raw_usage)
         project_key = _extract_usage_project_key(usage)
-        if not project_key or project_key not in project_info:
+        if not project_key:
             continue
         normalized = _normalize_usage_entry(usage, project_info)
         normalized_usages.append({
@@ -3775,16 +3775,18 @@ def _collect_project_code_env_usage(
 
         for usage in payload.get('usages') or []:
             project_key = str(usage.get('projectKey') or '')
-            if not project_key or project_key not in envs_by_project:
+            if not project_key:
                 continue
             usage_type = str(usage.get('usageType') or 'UNKNOWN').upper()
 
-            envs_by_project[project_key].add(env_key)
+            # Track usage in per-project maps only for known projects
+            if project_key in envs_by_project:
+                envs_by_project[project_key].add(env_key)
+                counts = usage_breakdown_by_project[project_key]
+                counts[usage_type] = counts.get(usage_type, 0) + 1
+                usage_details_by_project[project_key].append(usage)
 
-            counts = usage_breakdown_by_project[project_key]
-            counts[usage_type] = counts.get(usage_type, 0) + 1
-            usage_details_by_project[project_key].append(usage)
-
+            # Always track in env metadata (determines unused status)
             env_meta = env_meta_by_key[env_key]
             env_meta['usageSummary'][usage_type] = env_meta['usageSummary'].get(usage_type, 0) + 1
             env_meta['usageDetails'].append(usage)
