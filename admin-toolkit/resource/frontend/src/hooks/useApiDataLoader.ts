@@ -615,15 +615,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   ),
                 );
                 const phase = (progressSummary.phase || 'running').toString();
-                const selectedProjects = Number(progressSummary.selectedProjects || 0);
-                const projectUsageDone = Number(progressSummary.projectUsageDone || 0);
                 const envDetailsTotal = Number(progressSummary.envDetailsTotal || 0);
                 const envDetailsDone = Number(progressSummary.envDetailsDone || 0);
                 const phaseText = phase.replace(/_/g, ' ');
-                const doneProjects =
-                  selectedProjects > 0
-                    ? Math.min(selectedProjects, Math.max(0, projectUsageDone))
-                    : 0;
                 const doneEnvs =
                   envDetailsTotal > 0 ? Math.min(envDetailsTotal, Math.max(0, envDetailsDone)) : 0;
                 const detail =
