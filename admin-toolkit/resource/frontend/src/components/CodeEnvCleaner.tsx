@@ -18,8 +18,7 @@ type SortDir = 'asc' | 'desc';
 interface EnvRow {
   env: CodeEnv;
   envKey: string;
-  projectCount: number;
-  projectKeys: string[];
+  usageCount: number;
 }
 
 function sortRows(rows: EnvRow[], field: SortField, dir: SortDir): EnvRow[] {
@@ -31,15 +30,15 @@ function sortRows(rows: EnvRow[], field: SortField, dir: SortDir): EnvRow[] {
       case 'owner':
         return m * (a.env.owner || '').localeCompare(b.env.owner || '');
       case 'usages':
-        return m * (a.projectCount - b.projectCount);
+        return m * (a.usageCount - b.usageCount);
     }
   });
 }
 
 function defaultSort(rows: EnvRow[]): EnvRow[] {
   return [...rows].sort((a, b) => {
-    if (a.projectCount === 0 && b.projectCount !== 0) return -1;
-    if (a.projectCount !== 0 && b.projectCount === 0) return 1;
+    if (a.usageCount === 0 && b.usageCount !== 0) return -1;
+    if (a.usageCount !== 0 && b.usageCount === 0) return 1;
     return a.env.name.localeCompare(b.env.name);
   });
 }
@@ -51,32 +50,15 @@ export function CodeEnvCleaner() {
   const { parsedData } = state;
 
   const codeEnvs = parsedData.codeEnvs || [];
-  const projectRows = parsedData.projectFootprint || [];
 
-  // Compute which envs are used by cross-referencing project footprint codeEnvKeys
-  const rows = useMemo(() => {
-    const envProjectMap = new Map<string, Set<string>>();
-    for (const row of projectRows) {
-      const rowAny = row as unknown as { codeEnvKeys?: string[] };
-      const projectKey = String(row.projectKey || '');
-      for (const ek of rowAny.codeEnvKeys || []) {
-        if (!ek) continue;
-        if (!envProjectMap.has(String(ek))) envProjectMap.set(String(ek), new Set());
-        envProjectMap.get(String(ek))!.add(projectKey);
-      }
-    }
-
-    return codeEnvs.map((env): EnvRow => {
-      const envKey = `${env.language}:${env.name}`;
-      const projects = envProjectMap.get(envKey);
-      return {
-        env,
-        envKey,
-        projectCount: projects?.size || 0,
-        projectKeys: projects ? Array.from(projects).sort() : [],
-      };
-    });
-  }, [codeEnvs, projectRows]);
+  const rows = useMemo(() =>
+    codeEnvs.map((env): EnvRow => ({
+      env,
+      envKey: `${env.language}:${env.name}`,
+      usageCount: env.usageCount || 0,
+    })),
+    [codeEnvs],
+  );
 
   // Managed folder state
   const [folders, setFolders] = useState<ManagedFolder[]>([]);
@@ -106,9 +88,6 @@ export function CodeEnvCleaner() {
   const [deletedKeys, setDeletedKeys] = useState<Set<string>>(new Set());
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
-  // Usage detail modal
-  const usageModal = useModal();
-  const [usageRow, setUsageRow] = useState<EnvRow | null>(null);
 
   // Delete confirmation modal (single)
   const deleteModal = useModal();
@@ -134,8 +113,8 @@ export function CodeEnvCleaner() {
     return sortRows(visibleRows, sortField, sortDir);
   }, [visibleRows, sortField, sortDir]);
 
-  const unusedCount = useMemo(() => visibleRows.filter((r) => r.projectCount === 0).length, [visibleRows]);
-  const inUseCount = useMemo(() => visibleRows.filter((r) => r.projectCount > 0).length, [visibleRows]);
+  const unusedCount = useMemo(() => visibleRows.filter((r) => r.usageCount === 0).length, [visibleRows]);
+  const inUseCount = useMemo(() => visibleRows.filter((r) => r.usageCount > 0).length, [visibleRows]);
 
   const toggleSort = useCallback(
     (field: SortField) => {
@@ -153,14 +132,6 @@ export function CodeEnvCleaner() {
     if (sortField !== field) return '';
     return sortDir === 'asc' ? ' \u25B2' : ' \u25BC';
   };
-
-  const openUsageDetail = useCallback(
-    (row: EnvRow) => {
-      setUsageRow(row);
-      usageModal.open();
-    },
-    [usageModal],
-  );
 
   const openDeleteConfirm = useCallback(
     (row: EnvRow) => {
@@ -181,7 +152,7 @@ export function CodeEnvCleaner() {
     });
   }, []);
 
-  const unusedRows = useMemo(() => visibleRows.filter((r) => r.projectCount === 0), [visibleRows]);
+  const unusedRows = useMemo(() => visibleRows.filter((r) => r.usageCount === 0), [visibleRows]);
 
   const toggleSelectAll = useCallback(() => {
     setSelectedKeys((prev) => {
@@ -271,13 +242,22 @@ export function CodeEnvCleaner() {
     }
   }, []);
 
+  const analysisLoading = parsedData.analysisLoading;
+
   if (codeEnvs.length === 0) {
     return (
       <div className="space-y-4">
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Code Env Cleaner</h3>
-          <p className="text-sm text-[var(--text-muted)] mt-1">
-            No code environment data available. Load a diagnostic or wait for the analysis to complete.
+          <p className="text-sm text-[var(--text-muted)] mt-1 flex items-center gap-2">
+            {analysisLoading?.active ? (
+              <>
+                <span className="inline-block h-4 w-4 rounded-full border-2 border-[var(--neon-cyan)] border-t-transparent animate-spin" />
+                <span>{analysisLoading.message || 'Analyzing code environments...'}</span>
+              </>
+            ) : (
+              'Waiting for code environment analysis...'
+            )}
           </p>
         </section>
       </div>
@@ -394,7 +374,7 @@ export function CodeEnvCleaner() {
               </thead>
               <tbody>
                 {sortedRows.map((row) => {
-                  const isUnused = row.projectCount === 0;
+                  const isUnused = row.usageCount === 0;
                   const langLabel =
                     row.env.language === 'python'
                       ? row.env.version
@@ -431,12 +411,9 @@ export function CodeEnvCleaner() {
                             Unused
                           </span>
                         ) : (
-                          <button
-                            onClick={() => openUsageDetail(row)}
-                            className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-[var(--neon-green)]/20 text-[var(--neon-green)] hover:bg-[var(--neon-green)]/30 transition-colors cursor-pointer"
-                          >
-                            {row.projectCount} project{row.projectCount !== 1 ? 's' : ''}
-                          </button>
+                          <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-[var(--neon-green)]/20 text-[var(--neon-green)]">
+                            {row.usageCount} usage{row.usageCount !== 1 ? 's' : ''}
+                          </span>
                         )}
                       </td>
                       <td>
@@ -459,45 +436,6 @@ export function CodeEnvCleaner() {
           </div>
         </section>
       </div>
-
-      {/* Usage Detail Modal — shows which projects reference this env */}
-      <Modal
-        isOpen={usageModal.isOpen}
-        onClose={usageModal.close}
-        title={`Projects using: ${usageRow?.env.name || ''}`}
-      >
-        {usageRow && (
-          <div className="overflow-auto">
-            <table className="table-dark w-full">
-              <thead>
-                <tr>
-                  <th>Project</th>
-                  <th>Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usageRow.projectKeys.map((pk) => (
-                  <tr key={pk} className="hover:bg-[var(--bg-glass)]">
-                    <td className="font-mono text-xs">{pk}</td>
-                    <td>
-                      {dssBaseUrl && (
-                        <a
-                          href={`${dssBaseUrl}/projects/${pk}/`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[var(--neon-cyan)] hover:underline text-xs"
-                        >
-                          Open
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Modal>
 
       {/* Bulk Delete Confirmation Modal */}
       <Modal

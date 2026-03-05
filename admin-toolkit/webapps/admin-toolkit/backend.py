@@ -3730,21 +3730,45 @@ def _collect_project_code_env_usage(
 
     envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
     workers = min(_parallel_workers(16), len(envs))
+    total = len(envs)
+    _notify_progress(
+        progress_cb,
+        'code_env_usage_scan_start',
+        f"checking {total} code envs with {workers} threads",
+    )
 
     env_payloads: List[Dict[str, Any]] = []
+    checked = [0]
+    checked_lock = threading.Lock()
+
+    def _check_and_report(env: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        payload = _check_env_usages(env, project_info, size_by_env)
+        env_name = env.get('envName') or env.get('name') or '?'
+        with checked_lock:
+            checked[0] += 1
+            idx = checked[0]
+        if payload is None:
+            _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — skipped (plugin/internal)")
+        else:
+            usage_count = len(payload.get('usages') or [])
+            status = f"{usage_count} usage(s)" if usage_count > 0 else "UNUSED"
+            _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — {status}")
+        return payload
+
     if workers <= 1:
         for env in envs:
-            payload = _check_env_usages(env, project_info, size_by_env)
+            payload = _check_and_report(env)
             if payload:
                 env_payloads.append(payload)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_check_env_usages, env, project_info, size_by_env): env for env in envs}
+            futures = {pool.submit(_check_and_report, env): env for env in envs}
             for future in as_completed(list(futures.keys())):
                 try:
                     payload = future.result()
                 except Exception as exc:
                     app.logger.warning("[code-env-usage] env check failed: %s", exc)
+                    _notify_progress(progress_cb, 'code_env_usage_check_error', f"env check failed: {exc}", 'warn')
                     continue
                 if payload:
                     env_payloads.append(payload)
@@ -3803,10 +3827,12 @@ def _collect_project_code_env_usage(
     for project_key, usages in usage_details_by_project.items():
         usage_details_by_project[project_key] = _dedupe_usage_entries(usages)
 
+    unused_count = sum(1 for m in env_meta_by_key.values() if not m.get('usageDetails'))
+    in_use_count = len(env_meta_by_key) - unused_count
     _notify_progress(
         progress_cb,
         'collect_project_code_env_usage_done',
-        f"usage collection done projects={len(envs_by_project)} envMeta={len(env_meta_by_key)}",
+        f"done — {len(env_meta_by_key)} checked, {in_use_count} in use, {unused_count} unused",
     )
     return {
         'envsByProject': envs_by_project,
