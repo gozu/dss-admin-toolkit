@@ -20,6 +20,8 @@ export function CodeEnvsTable() {
   const isLoading = Boolean(loading?.active);
   const pythonVersionCounts = parsedData.pythonVersionCounts || {};
   const rVersionCounts = parsedData.rVersionCounts || {};
+  const totalEnvCount = parsedData.totalEnvCount;
+  const skippedEnvCount = parsedData.skippedEnvCount;
 
   const [viewMode, setViewMode] = useState<ViewMode>('details');
   const [showTetris, setShowTetris] = useState(false);
@@ -114,6 +116,11 @@ export function CodeEnvsTable() {
                 ? `${filteredCodeEnvs.length} of ${codeEnvs.length} Code Envs`
                 : `${codeEnvs.length} Code Envs`
               : 'Code Envs'}
+            {skippedEnvCount != null && skippedEnvCount > 0 && totalEnvCount != null && (
+              <span className="ml-2 text-sm font-normal text-[var(--text-muted)]">
+                ({codeEnvs.length} of {totalEnvCount} — {skippedEnvCount} plugin-managed excluded)
+              </span>
+            )}
           </h4>
           <div className="flex items-center gap-2">
             {pythonCount > 0 && (

@@ -465,6 +465,8 @@ export interface ParsedData {
   analysisLoading?: LoadingProgressState;
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
+  totalEnvCount?: number;
+  skippedEnvCount?: number;
   clusters?: Cluster[];
   mailChannels?: MailChannel[];
 

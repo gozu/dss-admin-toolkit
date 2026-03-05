@@ -50,6 +50,8 @@ export function CodeEnvCleaner() {
   const { parsedData } = state;
 
   const codeEnvs = parsedData.codeEnvs || [];
+  const totalEnvCount = parsedData.totalEnvCount;
+  const skippedEnvCount = parsedData.skippedEnvCount;
 
   const rows = useMemo(() =>
     codeEnvs.map((env): EnvRow => ({
@@ -269,9 +271,16 @@ export function CodeEnvCleaner() {
       <div className="space-y-4">
         {/* Header */}
         <section className="glass-card p-4">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Code Env Cleaner</h3>
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+            Code Env Cleaner
+            {skippedEnvCount != null && skippedEnvCount > 0 && totalEnvCount != null && (
+              <span className="ml-2 text-sm font-normal text-[var(--text-muted)]">
+                ({codeEnvs.length} of {totalEnvCount} — {skippedEnvCount} plugin-managed excluded)
+              </span>
+            )}
+          </h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Code environments with zero project references. Delete unused envs to free up resources. A
+            Code environments with zero usages. Delete unused envs to free up resources. A
             backup is uploaded to the selected managed folder before deletion.
           </p>
           <div className="mt-3 flex items-center gap-2">

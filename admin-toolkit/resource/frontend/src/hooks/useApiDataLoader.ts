@@ -44,6 +44,8 @@ interface CodeEnvsResponse {
   codeEnvs?: ParsedData['codeEnvs'];
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
+  totalEnvCount?: number;
+  skippedEnvCount?: number;
   summary?: {
     benchmark?: {
       enabled?: boolean;
@@ -680,6 +682,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               codeEnvs: codeEnvsRes.value.codeEnvs || [],
               pythonVersionCounts: codeEnvsRes.value.pythonVersionCounts || {},
               rVersionCounts: codeEnvsRes.value.rVersionCounts || {},
+              totalEnvCount: codeEnvsRes.value.totalEnvCount,
+              skippedEnvCount: codeEnvsRes.value.skippedEnvCount,
             };
             dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
             setCodeEnvsLoading({

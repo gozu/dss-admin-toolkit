@@ -35,7 +35,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     # Concurrency
     'parallel_workers_default': 8,
     'parallel_workers_max': 32,
-    'code_env_detail_workers': 32,
+    'code_env_detail_workers': 16,
     # Timeouts
     'code_env_timeout_ms': 600000,
     'project_footprint_timeout_ms': 600000,
@@ -4591,6 +4591,8 @@ def api_code_envs():
 
             # Filter out plugin-managed and DSS-internal code envs by default
             _SKIP_DEPLOYMENT_MODES = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
+            total_env_count = len(envs)
+            skipped_env_count = 0
             if not deadline_reached('filter_selected_envs'):
                 step_started = time.time()
                 before_count = len(envs)
@@ -4598,8 +4600,8 @@ def api_code_envs():
                     env for env in envs
                     if str(env.get('deploymentMode') or '').upper() not in _SKIP_DEPLOYMENT_MODES
                 ]
-                skipped = before_count - len(envs)
-                add_event('filter_selected_envs', f"filtered out {skipped} plugin-managed/internal envs, keeping {len(envs)}/{before_count}")
+                skipped_env_count = before_count - len(envs)
+                add_event('filter_selected_envs', f"filtered out {skipped_env_count} plugin-managed/internal envs, keeping {len(envs)}/{before_count}")
                 record_step('filter_selected_envs', step_started, calls=len(envs))
             app.logger.info("[code-envs] listed=%s", len(envs))
 
@@ -4746,6 +4748,8 @@ def api_code_envs():
                 'codeEnvs': code_envs,
                 'pythonVersionCounts': python_counts,
                 'rVersionCounts': r_counts,
+                'totalEnvCount': total_env_count,
+                'skippedEnvCount': skipped_env_count,
                 'summary': summary,
             }
         except Exception as exc:
