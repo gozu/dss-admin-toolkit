@@ -4619,7 +4619,7 @@ def api_code_envs():
                         env_key = env_key_from_listing(env)
                         env_started = time.time()
                         add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-                        detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=False)
+                        detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True)
                         if detail:
                             env_details.append(detail)
                             row = detail.get('row')
@@ -4640,7 +4640,7 @@ def api_code_envs():
                             env_key = env_key_from_listing(env)
                             add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
                             env_started_at[env_key] = time.time()
-                            future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, False)
+                            future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True)
                             future_to_env[future] = env
 
                         processed = 0

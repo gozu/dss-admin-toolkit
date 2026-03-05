@@ -627,11 +627,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 const doneEnvs =
                   envDetailsTotal > 0 ? Math.min(envDetailsTotal, Math.max(0, envDetailsDone)) : 0;
                 const detail =
-                  selectedProjects > 0
-                    ? `${doneProjects}/${selectedProjects} projects`
-                    : envDetailsTotal > 0
-                      ? `${doneEnvs}/${envDetailsTotal} envs`
-                      : '';
+                  envDetailsTotal > 0
+                    ? `${doneEnvs}/${envDetailsTotal} envs`
+                    : '';
                 setCodeEnvsLoading({
                   active: true,
                   phase,
