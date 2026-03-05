@@ -4,6 +4,8 @@ A Dataiku DSS plugin for instance administration — health scoring, outreach ca
 
 Connects to the running DSS instance via the Python API. All data is fetched in real time through a Flask backend with 38+ endpoints. No file uploads or diagnostic bundles needed.
 
+> **Admin-only tool.** The webapp should be configured to require authentication and restricted to admin groups. Do not expose it to regular users.
+
 ## Tech Stack
 
 React 19 / TypeScript 5.9 / Tailwind 4.1 / Vite / Chart.js — served from a Flask backend via the DSS webapp framework.
@@ -12,7 +14,6 @@ React 19 / TypeScript 5.9 / Tailwind 4.1 / Vite / Chart.js — served from a Fla
 
 ### Prerequisites
 
-- Node.js (for frontend builds)
 - Access to a Dataiku DSS instance (admin API key)
 
 ### Configuration
