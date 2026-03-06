@@ -3,8 +3,7 @@
 .dss-api-key
 
 # Build outputs
-dist/
-resource/dist/
+/dist/
 
 # Dependencies
 resource/frontend/node_modules/
@@ -35,6 +34,7 @@ release_info.json
 # Keep public assets tracked (override above)
 !resource/frontend/public/*.png
 !resource/frontend/public/*.svg
+!resource/dist/**
 
 # Screenshots and test artifacts
 resource/frontend/screenshots/
