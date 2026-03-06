@@ -3,7 +3,7 @@ import { Modal } from './Modal';
 import { useModal } from '../hooks/useModal';
 import { useDiag } from '../context/DiagContext';
 import { fetchJson, getBackendUrl } from '../utils/api';
-import type { CodeEnv } from '../types';
+import type { CodeEnv, ProvisionalCodeEnv } from '../types';
 
 interface ManagedFolder {
   id: string;
@@ -16,31 +16,40 @@ type SortField = 'name' | 'owner' | 'usages';
 type SortDir = 'asc' | 'desc';
 
 interface EnvRow {
-  env: CodeEnv;
+  env?: CodeEnv;
+  provisional?: ProvisionalCodeEnv;
   envKey: string;
+  name: string;
+  owner: string;
   usageCount: number;
+  isProvisional: boolean;
 }
+
+type RealEnvRow = EnvRow & { env: CodeEnv; isProvisional: false };
 
 function sortRows(rows: EnvRow[], field: SortField, dir: SortDir): EnvRow[] {
   const m = dir === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
+    const aUnused = a.usageCount === 0;
+    const bUnused = b.usageCount === 0;
+    if (aUnused !== bUnused) return aUnused ? -1 : 1;
+
     switch (field) {
       case 'name':
-        return m * a.env.name.localeCompare(b.env.name);
+        return m * a.name.localeCompare(b.name);
       case 'owner':
-        return m * (a.env.owner || '').localeCompare(b.env.owner || '');
+        return m * (a.owner || '').localeCompare(b.owner || '');
       case 'usages':
-        return m * (a.usageCount - b.usageCount);
+        if (a.usageCount !== b.usageCount) {
+          return m * (a.usageCount - b.usageCount);
+        }
+        return a.name.localeCompare(b.name);
     }
   });
 }
 
 function defaultSort(rows: EnvRow[]): EnvRow[] {
-  return [...rows].sort((a, b) => {
-    if (a.usageCount === 0 && b.usageCount !== 0) return -1;
-    if (a.usageCount !== 0 && b.usageCount === 0) return 1;
-    return a.env.name.localeCompare(b.env.name);
-  });
+  return sortRows(rows, 'name', 'asc');
 }
 
 // ── Component ──
@@ -50,17 +59,32 @@ export function CodeEnvCleaner() {
   const { parsedData } = state;
 
   const codeEnvs = parsedData.codeEnvs || [];
+  const provisionalCodeEnvs = parsedData.provisionalCodeEnvs || [];
   const totalEnvCount = parsedData.totalEnvCount;
   const skippedEnvCount = parsedData.skippedEnvCount;
 
-  const rows = useMemo(() =>
-    codeEnvs.map((env): EnvRow => ({
+  const rows = useMemo(() => {
+    const realRows = codeEnvs.map((env): EnvRow => ({
       env,
       envKey: `${env.language}:${env.name}`,
+      name: env.name,
+      owner: env.owner || 'Unknown',
       usageCount: env.usageCount || 0,
-    })),
-    [codeEnvs],
-  );
+      isProvisional: false,
+    }));
+    const realNames = new Set(realRows.map((row) => row.name));
+    const provisionalRows = provisionalCodeEnvs
+      .filter((row) => !realNames.has(row.name))
+      .map((row): EnvRow => ({
+        provisional: row,
+        envKey: `provisional:${row.name}`,
+        name: row.name,
+        owner: 'Pending details',
+        usageCount: row.usageCount,
+        isProvisional: true,
+      }));
+    return [...realRows, ...provisionalRows];
+  }, [codeEnvs, provisionalCodeEnvs]);
 
   // Managed folder state
   const [folders, setFolders] = useState<ManagedFolder[]>([]);
@@ -93,7 +117,7 @@ export function CodeEnvCleaner() {
 
   // Delete confirmation modal (single)
   const deleteModal = useModal();
-  const [deleteTarget, setDeleteTarget] = useState<EnvRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RealEnvRow | null>(null);
   const [deleteInput, setDeleteInput] = useState('');
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -117,6 +141,37 @@ export function CodeEnvCleaner() {
 
   const unusedCount = useMemo(() => visibleRows.filter((r) => r.usageCount === 0).length, [visibleRows]);
   const inUseCount = useMemo(() => visibleRows.filter((r) => r.usageCount > 0).length, [visibleRows]);
+  const expectedTotalCount = useMemo(() => {
+    if (
+      typeof parsedData.codeEnvsExpectedCount === 'number' &&
+      Number.isFinite(parsedData.codeEnvsExpectedCount) &&
+      parsedData.codeEnvsExpectedCount > 0
+    ) {
+      return parsedData.codeEnvsExpectedCount;
+    }
+    if (
+      typeof totalEnvCount === 'number' &&
+      Number.isFinite(totalEnvCount) &&
+      totalEnvCount > 0
+    ) {
+      if (
+        typeof skippedEnvCount === 'number' &&
+        Number.isFinite(skippedEnvCount) &&
+        skippedEnvCount >= 0
+      ) {
+        return Math.max(0, totalEnvCount - skippedEnvCount);
+      }
+      return totalEnvCount;
+    }
+    const scanTotal = provisionalCodeEnvs.reduce((maxSeen, row) => {
+      if (typeof row.scanTotal === 'number' && Number.isFinite(row.scanTotal) && row.scanTotal > maxSeen) {
+        return row.scanTotal;
+      }
+      return maxSeen;
+    }, 0);
+    return scanTotal > 0 ? scanTotal : null;
+  }, [parsedData.codeEnvsExpectedCount, totalEnvCount, skippedEnvCount, provisionalCodeEnvs]);
+  const totalDisplay = expectedTotalCount ? `${visibleRows.length}/${expectedTotalCount}` : `${visibleRows.length}`;
 
   const toggleSort = useCallback(
     (field: SortField) => {
@@ -136,7 +191,7 @@ export function CodeEnvCleaner() {
   };
 
   const openDeleteConfirm = useCallback(
-    (row: EnvRow) => {
+    (row: RealEnvRow) => {
       setDeleteTarget(row);
       setDeleteInput('');
       setDeleteError(null);
@@ -154,19 +209,24 @@ export function CodeEnvCleaner() {
     });
   }, []);
 
-  const unusedRows = useMemo(() => visibleRows.filter((r) => r.usageCount === 0), [visibleRows]);
+  const selectableUnusedRows = useMemo(
+    () => visibleRows.filter((r): r is RealEnvRow => !r.isProvisional && r.usageCount === 0 && !!r.env),
+    [visibleRows],
+  );
 
   const toggleSelectAll = useCallback(() => {
     setSelectedKeys((prev) => {
-      const allUnusedKeys = unusedRows.map((r) => r.envKey);
+      const allUnusedKeys = selectableUnusedRows.map((r) => r.envKey);
       const allSelected = allUnusedKeys.every((k) => prev.has(k));
       if (allSelected) return new Set();
       return new Set(allUnusedKeys);
     });
-  }, [unusedRows]);
+  }, [selectableUnusedRows]);
 
-  const selectedRows = useMemo(
-    () => visibleRows.filter((r) => selectedKeys.has(r.envKey)),
+  const selectedRows = useMemo(() =>
+    visibleRows.filter(
+      (r): r is RealEnvRow => selectedKeys.has(r.envKey) && !r.isProvisional && !!r.env,
+    ),
     [visibleRows, selectedKeys],
   );
 
@@ -245,26 +305,8 @@ export function CodeEnvCleaner() {
   }, []);
 
   const analysisLoading = parsedData.analysisLoading;
-
-  if (codeEnvs.length === 0) {
-    return (
-      <div className="space-y-4">
-        <section className="glass-card p-4">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Code Env Cleaner</h3>
-          <p className="text-sm text-[var(--text-muted)] mt-1 flex items-center gap-2">
-            {analysisLoading?.active ? (
-              <>
-                <span className="inline-block h-4 w-4 rounded-full border-2 border-[var(--neon-cyan)] border-t-transparent animate-spin" />
-                <span>{analysisLoading.message || 'Analyzing code environments...'}</span>
-              </>
-            ) : (
-              'Waiting for code environment analysis...'
-            )}
-          </p>
-        </section>
-      </div>
-    );
-  }
+  const progressPct = Math.max(0, Math.min(100, Math.round(analysisLoading?.progressPct || 0)));
+  const showProgress = Boolean(analysisLoading?.active);
 
   return (
     <>
@@ -283,10 +325,33 @@ export function CodeEnvCleaner() {
             Code environments with zero usages. Delete unused envs to free up resources. A
             backup is uploaded to the selected managed folder before deletion.
           </p>
-          {analysisLoading?.active && (
-            <p className="text-sm text-[var(--text-muted)] mt-1 flex items-center gap-2">
-              <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-[var(--neon-cyan)] border-t-transparent animate-spin" />
-              <span>{analysisLoading.message || 'Analyzing code environments...'}</span>
+          {showProgress && (
+            <div className="mt-3">
+              <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
+                <span>{analysisLoading?.message || 'Analyzing code environments...'}</span>
+                <span className="font-mono">{progressPct}%</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-[var(--bg-glass)] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[var(--neon-cyan)] to-[var(--neon-green)] transition-all duration-300 ease-out"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              {analysisLoading?.phase && (
+                <div className="mt-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
+                  {analysisLoading.phase.replace(/_/g, ' ')}
+                </div>
+              )}
+            </div>
+          )}
+          {!showProgress && visibleRows.length === 0 && (
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              Waiting for code environment analysis rows...
+            </p>
+          )}
+          {provisionalCodeEnvs.length > 0 && (
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              Showing {provisionalCodeEnvs.length} provisional row{provisionalCodeEnvs.length !== 1 ? 's' : ''} from usage scan.
             </p>
           )}
           <div className="mt-3 flex items-center gap-2">
@@ -317,8 +382,10 @@ export function CodeEnvCleaner() {
         <section className="glass-card p-4">
           <div className="grid grid-cols-4 gap-4">
             <div className="text-center">
-              <div className="text-2xl font-mono text-[var(--text-primary)]">{visibleRows.length}</div>
-              <div className="text-xs text-[var(--text-muted)]">Total</div>
+              <div className="text-2xl font-mono text-[var(--text-primary)]">{totalDisplay}</div>
+              <div className="text-xs text-[var(--text-muted)]">
+                {expectedTotalCount ? 'Loaded / Total' : 'Total'}
+              </div>
             </div>
             <div className="text-center">
               <div className="text-2xl font-mono text-amber-400">{unusedCount}</div>
@@ -368,7 +435,7 @@ export function CodeEnvCleaner() {
                   <th className="w-10">
                     <input
                       type="checkbox"
-                      checked={unusedRows.length > 0 && unusedRows.every((r) => selectedKeys.has(r.envKey))}
+                      checked={selectableUnusedRows.length > 0 && selectableUnusedRows.every((r) => selectedKeys.has(r.envKey))}
                       onChange={toggleSelectAll}
                       className="accent-[var(--neon-cyan)]"
                       title="Select all unused envs"
@@ -388,20 +455,29 @@ export function CodeEnvCleaner() {
                 </tr>
               </thead>
               <tbody>
+                {sortedRows.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-6 text-center text-sm text-[var(--text-muted)]">
+                      {showProgress
+                        ? 'Scanning usages. Rows will appear as usage checks and env details stream in.'
+                        : 'No code environments available yet.'}
+                    </td>
+                  </tr>
+                )}
                 {sortedRows.map((row) => {
                   const isUnused = row.usageCount === 0;
-                  const hasDetails = !!row.env.version || !!row.env.owner;
-                  const langLabel = hasDetails
-                    ? row.env.language === 'python'
+                  const langLabel =
+                    row.env?.language === 'python'
                       ? row.env.version
                         ? `Python ${row.env.version}`
                         : 'Python'
-                      : 'R'
-                    : '—';
+                      : row.env?.language === 'r'
+                        ? 'R'
+                        : 'Pending details';
                   return (
                     <tr key={row.envKey} className="hover:bg-[var(--bg-glass)]">
                       <td>
-                        {isUnused ? (
+                        {!row.isProvisional && isUnused ? (
                           <input
                             type="checkbox"
                             checked={selectedKeys.has(row.envKey)}
@@ -411,19 +487,38 @@ export function CodeEnvCleaner() {
                         ) : null}
                       </td>
                       <td>
-                        <a
-                          href={`${dssBaseUrl}/admin/code-envs/design/${row.env.language}/${row.env.name}/`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[var(--neon-cyan)] hover:underline"
-                        >
-                          {row.env.name}
-                        </a>
+                        {row.env ? (
+                          <a
+                            href={`${dssBaseUrl}/admin/code-envs/design/${row.env.language}/${row.env.name}/`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[var(--neon-cyan)] hover:underline"
+                          >
+                            {row.name}
+                          </a>
+                        ) : (
+                          <span className="text-[var(--text-primary)]">
+                            {row.name}
+                            <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] bg-[var(--neon-cyan)]/20 text-[var(--neon-cyan)]">
+                              provisional
+                            </span>
+                          </span>
+                        )}
                       </td>
                       <td className="text-[var(--text-secondary)]">{langLabel}</td>
-                      <td className="text-[var(--text-secondary)]">{hasDetails ? (row.env.owner || 'Unknown') : '—'}</td>
+                      <td className="text-[var(--text-secondary)]">{row.owner}</td>
                       <td>
-                        {isUnused ? (
+                        {row.isProvisional ? (
+                          row.usageCount === 0 ? (
+                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-400/20 text-amber-400">
+                              Unused
+                            </span>
+                          ) : (
+                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-[var(--neon-green)]/20 text-[var(--neon-green)]">
+                              {row.provisional?.statusLabel || `${row.usageCount} usage${row.usageCount !== 1 ? 's' : ''}`}
+                            </span>
+                          )
+                        ) : isUnused ? (
                           <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-400/20 text-amber-400">
                             Unused
                           </span>
@@ -434,9 +529,9 @@ export function CodeEnvCleaner() {
                         )}
                       </td>
                       <td>
-                        {isUnused && hasDetails && (
+                        {!row.isProvisional && isUnused && row.env && (
                           <button
-                            onClick={() => openDeleteConfirm(row)}
+                            onClick={() => openDeleteConfirm(row as RealEnvRow)}
                             disabled={!folderId}
                             title={!folderId ? 'Select a backup destination first' : undefined}
                             className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

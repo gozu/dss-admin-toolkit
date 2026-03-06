@@ -15,6 +15,42 @@ export interface DebugLogEntry {
 // Extracted files map
 export type ExtractedFiles = Record<string, string>;
 
+// Cluster types
+export interface NodeGroup {
+  name: string;
+  instanceType: string;
+  desiredCapacity: number;
+  minSize: number;
+  maxSize: number;
+  volumeSize?: number;
+  volumeType?: string;
+  spot?: boolean;
+  labels?: Record<string, string>;
+  taints?: Array<{ key: string; value: string; effect: string }>;
+}
+
+export interface Cluster {
+  name: string;
+  region?: string;
+  version?: string;
+  networkType?: string;
+  vpcCidr?: string;
+  subnets?: Record<string, Record<string, { id: string }>>;
+  subnetIds?: string[];
+  securityGroups?: string[];
+  vpcId?: string;
+  status?: 'ON' | 'OFF' | 'UNKNOWN';
+  uptime?: string;
+  server?: string;
+  nodeGroups: NodeGroup[];
+  lastStartTime?: Date;
+  lastStopTime?: Date;
+  currentContext?: string;
+  clusterName?: string;
+  authCommand?: string;
+  authApiVersion?: string;
+}
+
 // Project types
 export interface Permission {
   type: 'Group' | 'User';
@@ -128,6 +164,16 @@ export interface CodeEnv {
   projectCount?: number;
   projectKeys?: string[];
   usageDetails?: CodeEnvUsageRef[];
+}
+
+// Provisional rows built from streaming usage-check events before full env details land.
+export interface ProvisionalCodeEnv {
+  name: string;
+  usageCount: number;
+  statusLabel: string;
+  scanIndex?: number;
+  scanTotal?: number;
+  updatedAt: string;
 }
 
 export interface MailChannel {
@@ -425,12 +471,15 @@ export interface ParsedData {
   pluginDetails?: PluginInfo[];
   pluginsCount?: number;
   codeEnvs?: CodeEnv[];
+  codeEnvsExpectedCount?: number;
+  provisionalCodeEnvs?: ProvisionalCodeEnv[];
   codeEnvsLoading?: LoadingProgressState;
   analysisLoading?: LoadingProgressState;
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
   totalEnvCount?: number;
   skippedEnvCount?: number;
+  clusters?: Cluster[];
   mailChannels?: MailChannel[];
 
   // License
@@ -500,6 +549,8 @@ export type DiagAction =
       payload: Omit<DebugLogEntry, 'id' | 'timestamp'> & { timestamp?: string };
     }
   | { type: 'CLEAR_DEBUG_LOGS' }
+  | { type: 'UPSERT_PROVISIONAL_CODE_ENVS'; payload: ProvisionalCodeEnv[] }
+  | { type: 'CLEAR_PROVISIONAL_CODE_ENVS' }
   | { type: 'APPEND_PARTIAL_CODE_ENVS'; payload: CodeEnv[] }
   | { type: 'APPEND_PARTIAL_PROJECT_FOOTPRINT'; payload: ProjectFootprintRow[] }
   | { type: 'SET_API_DIR_TREE'; payload: Partial<ApiDirTreeState> }

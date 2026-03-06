@@ -82,8 +82,20 @@ function diagReducer(
       return { ...state, error: action.payload, isLoading: false };
     case 'SET_EXTRACTED_FILES':
       return { ...state, extractedFiles: action.payload };
-    case 'SET_PARSED_DATA':
-      return { ...state, parsedData: { ...state.parsedData, ...action.payload } };
+    case 'SET_PARSED_DATA': {
+      const parsedData = { ...state.parsedData, ...action.payload };
+      if (
+        Array.isArray(parsedData.provisionalCodeEnvs) &&
+        Array.isArray(parsedData.codeEnvs) &&
+        parsedData.codeEnvs.length > 0
+      ) {
+        const realNames = new Set(parsedData.codeEnvs.map((env) => env.name));
+        parsedData.provisionalCodeEnvs = parsedData.provisionalCodeEnvs.filter(
+          (row) => !realNames.has(row.name),
+        );
+      }
+      return { ...state, parsedData };
+    }
     case 'SET_ACTIVE_FILTER':
       return { ...state, activeFilter: action.payload };
     case 'SET_LAYOUT_MODE':
@@ -112,16 +124,65 @@ function diagReducer(
     }
     case 'CLEAR_DEBUG_LOGS':
       return { ...state, debugLogs: [] };
+    case 'UPSERT_PROVISIONAL_CODE_ENVS': {
+      const existing = state.parsedData.provisionalCodeEnvs || [];
+      const rowsByName = new Map(existing.map((row) => [row.name, row]));
+      action.payload.forEach((row) => {
+        const previous = rowsByName.get(row.name);
+        rowsByName.set(row.name, {
+          ...(previous || {}),
+          ...row,
+          updatedAt: row.updatedAt || previous?.updatedAt || new Date().toISOString(),
+        });
+      });
+      const realNames = new Set((state.parsedData.codeEnvs || []).map((env) => env.name));
+      const mergedRows = Array.from(rowsByName.values())
+        .filter((row) => !realNames.has(row.name))
+        .sort((a, b) => {
+          const ai =
+            typeof a.scanIndex === 'number' && Number.isFinite(a.scanIndex)
+              ? a.scanIndex
+              : Number.MAX_SAFE_INTEGER;
+          const bi =
+            typeof b.scanIndex === 'number' && Number.isFinite(b.scanIndex)
+              ? b.scanIndex
+              : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          return a.name.localeCompare(b.name);
+        });
+      return {
+        ...state,
+        parsedData: {
+          ...state.parsedData,
+          provisionalCodeEnvs: mergedRows,
+        },
+      };
+    }
+    case 'CLEAR_PROVISIONAL_CODE_ENVS':
+      return {
+        ...state,
+        parsedData: {
+          ...state.parsedData,
+          provisionalCodeEnvs: [],
+        },
+      };
     case 'APPEND_PARTIAL_CODE_ENVS': {
       const existing = state.parsedData.codeEnvs || [];
-      const existingKeys = new Set(existing.map((e) => e.name));
-      const newRows = action.payload.filter((e) => !existingKeys.has(e.name));
+      const keyOf = (env: { language?: string; name?: string }) =>
+        `${String(env.language || '').toLowerCase()}:${String(env.name || '')}`;
+      const existingKeys = new Set(existing.map((e) => keyOf(e)));
+      const newRows = action.payload.filter((e) => !existingKeys.has(keyOf(e)));
       if (newRows.length === 0) return state;
+      const newRowNames = new Set(newRows.map((row) => row.name));
+      const remainingProvisional = (state.parsedData.provisionalCodeEnvs || []).filter(
+        (row) => !newRowNames.has(row.name),
+      );
       return {
         ...state,
         parsedData: {
           ...state.parsedData,
           codeEnvs: [...existing, ...newRows],
+          provisionalCodeEnvs: remainingProvisional,
         },
       };
     }
@@ -286,7 +347,6 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;
 }
 
-// eslint-disable-next-line react-refresh/only-export-components
 export function useDiag(): DiagContextValue {
   const context = useContext(DiagContext);
   if (context === undefined) {

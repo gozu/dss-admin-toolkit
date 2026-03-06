@@ -10,6 +10,7 @@ import type {
   Project,
   MailChannel,
   CodeEnv,
+  ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
   DirTreeData,
@@ -548,11 +549,19 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           codeEnvsInterpolationEnabledRef.current = true;
           codeEnvsLastProgressRef.current = null;
           codeEnvsInterpolator.reset(0);
+          dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+          currentParsedData = {
+            ...currentParsedData,
+            codeEnvsExpectedCount: undefined,
+          };
+          dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: undefined } });
           let codeEnvsProgressActive = true;
           let codeEnvsProgressRunId: string | undefined;
           let codeEnvsProgressCursor = 0;
           let codeEnvsProgressEventsSeen = 0;
           let codeEnvsProgressWarned = false;
+          let codeEnvsUsageScanTotal: number | null = null;
+          let codeEnvsSkippedDuringUsageScan = 0;
           const codeEnvsProgressPath = '/api/code-envs/progress';
           let codeEnvsProgressPathLogged = false;
           setCodeEnvsLoading({
@@ -571,7 +580,61 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             elapsedMs?: number;
           }) =>
             `${event.tMs ?? ''}|${event.step ?? ''}|${event.projectKey ?? ''}|${event.message ?? ''}|${event.elapsedMs ?? ''}`;
+          const setExpectedCodeEnvCount = (nextCount: number | null | undefined) => {
+            const normalized =
+              typeof nextCount === 'number' && Number.isFinite(nextCount) && nextCount >= 0
+                ? Math.floor(nextCount)
+                : undefined;
+            if (currentParsedData.codeEnvsExpectedCount === normalized) return;
+            currentParsedData = {
+              ...currentParsedData,
+              codeEnvsExpectedCount: normalized,
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: normalized } });
+          };
+          const parseUsageCheckMessage = (message: string) => {
+            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+(?:\u2014|-)\s+(.+)$/u);
+            if (!match) return null;
+            const scanIndex = Number.parseInt(match[1], 10);
+            const scanTotal = Number.parseInt(match[2], 10);
+            const name = match[3].trim();
+            const status = match[4].trim();
+            const isSkipped = /skipped/i.test(status);
+            const usageMatch = status.match(/(\d+)\s+usage\(s\)/i);
+            const usageCount = /unused/i.test(status)
+              ? 0
+              : usageMatch
+                ? Number.parseInt(usageMatch[1], 10)
+                : NaN;
+            return {
+              scanIndex: Number.isFinite(scanIndex) ? scanIndex : undefined,
+              scanTotal: Number.isFinite(scanTotal) ? scanTotal : undefined,
+              name,
+              status,
+              isSkipped,
+              usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : null,
+            };
+          };
+          const toProvisionalRow = (parsed: {
+            scanIndex?: number;
+            scanTotal?: number;
+            name: string;
+            status: string;
+            isSkipped: boolean;
+            usageCount: number | null;
+          }): ProvisionalCodeEnv | null => {
+            if (!parsed.name || parsed.isSkipped || parsed.usageCount == null) return null;
+            return {
+              name: parsed.name,
+              usageCount: parsed.usageCount,
+              statusLabel: parsed.status,
+              scanIndex: parsed.scanIndex,
+              scanTotal: parsed.scanTotal,
+              updatedAt: new Date().toISOString(),
+            };
+          };
           const replayCodeEnvProgressEvents = (events: Array<BenchEventLike>) => {
+            const provisionalRows: ProvisionalCodeEnv[] = [];
             events.forEach((event) => {
               if (!shouldLogProgressEvent(event)) return;
               const key = progressEventKey(event);
@@ -581,26 +644,41 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               const eventLevel =
                 event.level === 'warn' || event.level === 'error' ? event.level : 'info';
               log(benchEventLine('ce', event), eventLevel);
+              if (String(event.step || '') === 'code_env_usage_scan_start') {
+                const startMatch = String(event.message || '').match(/checking\s+(\d+)\s+code envs/i);
+                const scannedTotal = startMatch ? Number.parseInt(startMatch[1], 10) : NaN;
+                if (Number.isFinite(scannedTotal) && scannedTotal > 0) {
+                  codeEnvsUsageScanTotal = scannedTotal;
+                }
+              }
+              if (String(event.step || '') === 'code_env_usage_check') {
+                const parsed = parseUsageCheckMessage(String(event.message || '').trim());
+                if (parsed) {
+                  if (typeof parsed.scanTotal === 'number' && parsed.scanTotal > 0) {
+                    codeEnvsUsageScanTotal = parsed.scanTotal;
+                  }
+                  if (parsed.isSkipped) {
+                    codeEnvsSkippedDuringUsageScan += 1;
+                  }
+                  const provisional = toProvisionalRow(parsed);
+                  if (provisional) provisionalRows.push(provisional);
+                }
+              }
             });
+            if (codeEnvsUsageScanTotal != null) {
+              const expectedFromScan = Math.max(
+                0,
+                codeEnvsUsageScanTotal - codeEnvsSkippedDuringUsageScan,
+              );
+              setExpectedCodeEnvCount(expectedFromScan);
+            }
+            if (provisionalRows.length > 0) {
+              dispatch({ type: 'UPSERT_PROVISIONAL_CODE_ENVS', payload: provisionalRows });
+            }
           };
 
           let codeEnvsRowsSince = 0;
           const codeEnvsPartialBuffer: CodeEnv[] = [];
-          // Lightweight rows built from progress events (before full details arrive)
-          const codeEnvsEventRows = new Map<string, CodeEnv>();
-          const parseUsageCheckEvent = (msg: string): CodeEnv | null => {
-            // "[7/234] INTERNAL_document_extraction_v1 — UNUSED"
-            // "[8/234] MEDIAMMIXMODELS — 17 usage(s)"
-            // "[1/234] INTERNAL_databricks_utils_v1 — skipped (plugin/internal)"
-            const m = msg.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+—\s+(.+)$/);
-            if (!m) return null;
-            const envName = m[3];
-            const status = m[4];
-            if (status.startsWith('skipped')) return null;
-            const usageMatch = status.match(/^(\d+)\s+usage/);
-            const usageCount = status === 'UNUSED' ? 0 : usageMatch ? parseInt(usageMatch[1], 10) : undefined;
-            return { name: envName, version: '', language: 'python', usageCount } as CodeEnv;
-          };
           const pollCodeEnvProgress = async () => {
             while (!cancelled && codeEnvsProgressActive) {
               try {
@@ -634,6 +712,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 const phase = (progressSummary.phase || 'running').toString();
                 const envDetailsTotal = Number(progressSummary.envDetailsTotal || 0);
                 const envDetailsDone = Number(progressSummary.envDetailsDone || 0);
+                if (envDetailsTotal > 0) {
+                  setExpectedCodeEnvCount(envDetailsTotal);
+                }
                 const phaseText = phase.replace(/_/g, ' ');
                 const doneEnvs =
                   envDetailsTotal > 0 ? Math.min(envDetailsTotal, Math.max(0, envDetailsDone)) : 0;
@@ -655,38 +736,23 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 if (payload.runId && payload.runId !== codeEnvsProgressRunId) {
                   codeEnvsProgressRunId = payload.runId;
                   codeEnvsProgressCursor = 0;
+                  codeEnvsRowsSince = 0;
+                  codeEnvsPartialBuffer.length = 0;
+                  codeEnvsUsageScanTotal = null;
+                  codeEnvsSkippedDuringUsageScan = 0;
+                  setExpectedCodeEnvCount(undefined);
+                  dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : codeEnvsProgressCursor;
-                let eventRowsChanged = false;
                 if (Array.isArray(payload.events) && payload.events.length > 0) {
                   replayCodeEnvProgressEvents(payload.events);
-                  // Build lightweight rows from usage-check events
-                  for (const event of payload.events) {
-                    if (event.step === 'code_env_usage_check' && event.message) {
-                      const row = parseUsageCheckEvent(event.message);
-                      if (row && !codeEnvsEventRows.has(row.name)) {
-                        codeEnvsEventRows.set(row.name, row);
-                        eventRowsChanged = true;
-                      }
-                    }
-                  }
                 }
                 codeEnvsProgressCursor = nextCursor;
                 if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
-                  codeEnvsPartialBuffer.push(...(payload.partialRows as unknown as CodeEnv[]));
-                  // Full-detail rows replace event-based ones
-                  for (const row of payload.partialRows as unknown as CodeEnv[]) {
-                    codeEnvsEventRows.set(row.name, row);
-                  }
-                  eventRowsChanged = true;
-                }
-                if (eventRowsChanged) {
-                  currentParsedData = {
-                    ...currentParsedData,
-                    codeEnvs: [...codeEnvsEventRows.values()],
-                  };
-                  dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+                  const rows = payload.partialRows as unknown as CodeEnv[];
+                  codeEnvsPartialBuffer.push(...rows);
+                  dispatch({ type: 'APPEND_PARTIAL_CODE_ENVS', payload: rows });
                 }
                 if (typeof payload.partialRowsNext === 'number') {
                   codeEnvsRowsSince = payload.partialRowsNext;
@@ -718,12 +784,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             currentParsedData = {
               ...currentParsedData,
               codeEnvs: codeEnvsRes.value.codeEnvs || [],
+              codeEnvsExpectedCount: (codeEnvsRes.value.codeEnvs || []).length,
               pythonVersionCounts: codeEnvsRes.value.pythonVersionCounts || {},
               rVersionCounts: codeEnvsRes.value.rVersionCounts || {},
               totalEnvCount: codeEnvsRes.value.totalEnvCount,
               skippedEnvCount: codeEnvsRes.value.skippedEnvCount,
             };
             dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+            dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
             setCodeEnvsLoading({
               active: false,
               progressPct: 100,
@@ -791,8 +859,10 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               currentParsedData = {
                 ...currentParsedData,
                 codeEnvs: codeEnvsPartialBuffer,
+                codeEnvsExpectedCount: codeEnvsPartialBuffer.length,
               };
               dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+              dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
               setCodeEnvsLoading({
                 active: false,
                 progressPct: 100,
@@ -801,6 +871,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               });
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
+              dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
               setCodeEnvsLoading({
                 active: false,
                 progressPct: 0,
