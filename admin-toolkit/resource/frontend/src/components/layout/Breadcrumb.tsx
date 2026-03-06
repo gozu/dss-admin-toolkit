@@ -21,6 +21,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   logs: { label: 'Logs', firstPage: 'logs' },
   outreach: { label: 'Tools', firstPage: 'outreach' },
   'code-env-cleaner': { label: 'Tools', firstPage: 'outreach' },
+  'project-cleaner': { label: 'Tools', firstPage: 'outreach' },
   plugins: { label: 'Tools', firstPage: 'outreach' },
   tracking: { label: 'Tools', firstPage: 'outreach' },
   settings: { label: 'Settings', firstPage: 'settings' },
@@ -40,9 +41,10 @@ const PAGE_LABELS: Record<PageId, string> = {
   'platform-config': 'Platform',
   logs: 'Errors',
   outreach: 'Outreach',
-  'code-env-cleaner': 'Cleaner',
-  plugins: 'Plugins',
-  tracking: 'Tracking',
+  'code-env-cleaner': 'CodEnv Cleaner',
+  'project-cleaner': 'Project Cleaner',
+  plugins: 'Plugin Sync',
+  tracking: 'Compliance',
   settings: 'Settings',
 };
 

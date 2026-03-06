@@ -166,6 +166,17 @@ export interface CodeEnv {
   usageDetails?: CodeEnvUsageRef[];
 }
 
+// Provisional rows built from streaming usage-check events before full env details land.
+export interface ProvisionalCodeEnv {
+  name: string;
+  usageCount: number;
+  statusLabel: string;
+  isSkipped?: boolean;
+  scanIndex?: number;
+  scanTotal?: number;
+  updatedAt: string;
+}
+
 export interface MailChannel {
   id: string;
   label: string;
@@ -461,10 +472,14 @@ export interface ParsedData {
   pluginDetails?: PluginInfo[];
   pluginsCount?: number;
   codeEnvs?: CodeEnv[];
+  codeEnvsExpectedCount?: number;
+  provisionalCodeEnvs?: ProvisionalCodeEnv[];
   codeEnvsLoading?: LoadingProgressState;
   analysisLoading?: LoadingProgressState;
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
+  totalEnvCount?: number;
+  skippedEnvCount?: number;
   clusters?: Cluster[];
   mailChannels?: MailChannel[];
 
@@ -487,6 +502,18 @@ export interface ParsedData {
 }
 
 // Context state
+export type FootprintScope = 'dss' | 'project';
+
+export interface ApiDirTreeState {
+  isLoading: boolean;
+  isExpanding: boolean;
+  error: string | null;
+  tree: DirTreeData | null;
+  expandedNodes: Map<string, DirEntry>;
+  scope: FootprintScope;
+  projectKey: string;
+}
+
 export interface DiagState {
   extractedFiles: ExtractedFiles;
   parsedData: ParsedData;
@@ -501,6 +528,7 @@ export interface DiagState {
   originalFile: File | null; // Original zip file for deferred extraction
   dataSource: DataSource;
   debugLogs: DebugLogEntry[];
+  apiDirTree: ApiDirTreeState;
 }
 
 // Context actions
@@ -522,8 +550,12 @@ export type DiagAction =
       payload: Omit<DebugLogEntry, 'id' | 'timestamp'> & { timestamp?: string };
     }
   | { type: 'CLEAR_DEBUG_LOGS' }
+  | { type: 'UPSERT_PROVISIONAL_CODE_ENVS'; payload: ProvisionalCodeEnv[] }
+  | { type: 'CLEAR_PROVISIONAL_CODE_ENVS' }
   | { type: 'APPEND_PARTIAL_CODE_ENVS'; payload: CodeEnv[] }
   | { type: 'APPEND_PARTIAL_PROJECT_FOOTPRINT'; payload: ProjectFootprintRow[] }
+  | { type: 'SET_API_DIR_TREE'; payload: Partial<ApiDirTreeState> }
+  | { type: 'SET_API_DIR_TREE_EXPANDED_NODE'; payload: { path: string; node: DirEntry } }
   | { type: 'RESET' };
 
 // Health Score types
@@ -619,7 +651,7 @@ export interface DirTreeLoaderState {
 // COMPARISON TYPES
 // =============================================================================
 
-export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'plugins';
+export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'project-cleaner' | 'plugins';
 
 export interface PluginCompareRow {
   id: string;
@@ -644,6 +676,7 @@ export type PageId =
   | 'logs'
   | 'outreach'
   | 'code-env-cleaner'
+  | 'project-cleaner'
   | 'plugins'
   | 'tracking'
   | 'settings';

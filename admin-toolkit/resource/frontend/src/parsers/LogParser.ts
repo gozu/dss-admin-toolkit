@@ -26,11 +26,21 @@ export class LogParser extends BaseTextParser<LogParserResult> {
       };
     }
 
-    // Configuration parameters similar to the Python script
-    const LINES_BEFORE = 10;
-    const LINES_AFTER = 100;
-    const TIME_THRESHOLD_SECONDS = 5;
-    const MAX_ERRORS = 5;
+    // Configuration parameters — read from localStorage thresholds if available
+    let LINES_BEFORE = 10;
+    let LINES_AFTER = 100;
+    let TIME_THRESHOLD_SECONDS = 5;
+    let MAX_ERRORS = 5;
+    try {
+      const raw = window.localStorage.getItem('diagparser.thresholds');
+      if (raw) {
+        const t = JSON.parse(raw);
+        if (typeof t.logLinesBefore === 'number') LINES_BEFORE = t.logLinesBefore;
+        if (typeof t.logLinesAfter === 'number') LINES_AFTER = t.logLinesAfter;
+        if (typeof t.logTimeThresholdSec === 'number') TIME_THRESHOLD_SECONDS = t.logTimeThresholdSec;
+        if (typeof t.logMaxErrors === 'number') MAX_ERRORS = t.logMaxErrors;
+      }
+    } catch { /* use defaults */ }
     const LOG_LEVELS = ['\\[ERROR\\]', '\\[FATAL\\]', '\\[SEVERE\\]'];
 
     // Create regex to match log levels

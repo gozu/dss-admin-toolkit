@@ -36,7 +36,16 @@ export function DebugPanel() {
   }, [toggle]);
 
   const textDump = useMemo(
-    () => debugLogs.map((e) => `${formatTime(e.timestamp)} ${e.message}`).join('\n'),
+    () => debugLogs.map((e) => {
+      if (e.message.startsWith('TIMING_TABLE:')) {
+        const rows = e.message.slice('TIMING_TABLE:'.length).split(';;').map((r) => {
+          const [label, dur] = r.split('|');
+          return `  ${label.padEnd(28)} ${dur}`;
+        });
+        return `${formatTime(e.timestamp)} Endpoint Timing Summary\n${rows.join('\n')}`;
+      }
+      return `${formatTime(e.timestamp)} ${e.message}`;
+    }).join('\n'),
     [debugLogs]
   );
 
@@ -99,6 +108,41 @@ export function DebugPanel() {
                     : entry.level === 'warn'
                       ? 'text-amber-300'
                       : 'text-[var(--text-secondary)]';
+
+                if (entry.message.startsWith('TIMING_TABLE:')) {
+                  const rows = entry.message.slice('TIMING_TABLE:'.length).split(';;').map((r) => {
+                    const [label, dur] = r.split('|');
+                    const isFail = dur.endsWith(' FAIL');
+                    const isSkip = dur.endsWith(' SKIP');
+                    return { label, duration: dur.replace(/ (FAIL|SKIP)$/, ''), isFail, isSkip };
+                  });
+                  return (
+                    <div key={entry.id} className="mt-2">
+                      <div className="text-[var(--text-muted)] mb-1">
+                        {formatTime(entry.timestamp)} Endpoint Timing Summary
+                      </div>
+                      <table className="w-full text-xs font-mono border-collapse">
+                        <thead>
+                          <tr className="text-[var(--text-muted)]">
+                            <th className="text-left pr-4 pb-0.5 border-b border-[var(--border-glass)]">Endpoint</th>
+                            <th className="text-right pr-4 pb-0.5 border-b border-[var(--border-glass)]">Duration</th>
+                            <th className="text-left pb-0.5 border-b border-[var(--border-glass)]">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr key={r.label} className={r.isFail ? 'text-red-300' : r.isSkip ? 'text-[var(--text-muted)]' : 'text-[var(--text-secondary)]'}>
+                              <td className="pr-4 py-px">{r.label}</td>
+                              <td className="text-right pr-4 py-px">{r.duration}</td>
+                              <td className="py-px">{r.isFail ? 'FAIL' : r.isSkip ? 'SKIP' : 'OK'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={entry.id} className={colorClass}>
                     <span className="text-[var(--text-muted)]">{formatTime(entry.timestamp)}</span>

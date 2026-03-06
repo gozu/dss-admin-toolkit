@@ -21,15 +21,16 @@ export function ProjectsPage() {
 
   const hasProjects = (parsedData.projects?.length || 0) > 0;
   const hasFootprint = (parsedData.projectFootprint?.length || 0) > 0;
+  const footprintLoading = Boolean(parsedData.projectFootprintLoading?.active);
 
   return (
     <div className="page-fill">
       <div className="flex flex-col gap-6 flex-1 min-h-0">
         {hasProjects && <ProjectsTable onViewPermissions={handleViewPermissions} />}
 
-        {hasFootprint && <ProjectFootprintTable />}
+        {(hasFootprint || footprintLoading) && <ProjectFootprintTable />}
 
-        {!hasProjects && !hasFootprint && (
+        {!hasProjects && !hasFootprint && !footprintLoading && (
           <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center">
             <p className="text-[var(--text-secondary)]">No project data available.</p>
           </div>

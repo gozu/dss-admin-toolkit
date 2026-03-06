@@ -1,6 +1,6 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
-
 import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
 
@@ -111,6 +111,13 @@ const icons: Record<string, ReactNode> = {
       <line x1="14" y1="11" x2="14" y2="17" />
     </svg>
   ),
+  'project-cleaner': (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 8v13H3V8" />
+      <path d="M1 3h22v5H1z" />
+      <path d="M10 12h4" />
+    </svg>
+  ),
   plugins: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
@@ -169,11 +176,22 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'CONFIGURATION',
+    title: 'DSS CONFIG',
     items: [
       { id: 'runtime-config', label: 'Runtime' },
       { id: 'security-config', label: 'Security' },
       { id: 'platform-config', label: 'Platform' },
+    ],
+  },
+  {
+    title: 'TOOLS',
+    items: [
+      { id: 'outreach', label: 'Outreach' },
+      { id: 'code-env-cleaner', label: 'CodEnv Cleaner' },
+      { id: 'project-cleaner', label: 'Project Cleaner' },
+      { id: 'plugins', label: 'Plugin Sync' },
+      { id: 'tracking', label: 'Compliance' },
+      { id: 'settings', label: 'Settings' },
     ],
   },
   {
@@ -182,17 +200,6 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-const TOOLS_SECTION: NavSection = {
-  title: 'TOOLS',
-  items: [
-    { id: 'outreach', label: 'Outreach' },
-    { id: 'code-env-cleaner', label: 'Cleaner' },
-    { id: 'plugins', label: 'Plugins' },
-    { id: 'tracking', label: 'Tracking' },
-    { id: 'settings', label: 'Settings' },
-  ],
-};
-
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -200,10 +207,26 @@ const TOOLS_SECTION: NavSection = {
 interface SidebarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onRefreshCache?: () => Promise<void>;
 }
 
-export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
-  const { state, setActivePage } = useDiag();
+export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
+  const { state, setActivePage, addDebugLog } = useDiag();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshDone, setRefreshDone] = useState(false);
+
+  const handleRefresh = async () => {
+    if (refreshing || !onRefreshCache) return;
+    setRefreshing(true);
+    setRefreshDone(false);
+    try {
+      await onRefreshCache();
+      setRefreshDone(true);
+      setTimeout(() => setRefreshDone(false), 1500);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const { activePage, parsedData } = state;
   // Badge counts
   const issuesBadge = parsedData.disabledFeatures
@@ -225,7 +248,10 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
       <button
         key={item.id}
         type="button"
-        onClick={() => setActivePage(item.id)}
+        onClick={() => {
+          addDebugLog(`Navigate: ${activePage} → ${item.id} (clicked "${item.label}")`, 'navigation');
+          setActivePage(item.id);
+        }}
         title={collapsed ? item.label : undefined}
         className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-colors ${
           isActive
@@ -275,20 +301,46 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
     <aside
       className="flex flex-col h-full bg-[var(--bg-sidebar)] border-r border-[var(--border-default)] overflow-hidden"
     >
-      {/* Logo + collapse toggle */}
-      <div className={`flex items-center px-4 py-4 ${collapsed ? 'justify-center px-2' : 'justify-between'}`}>
-        <span
-          className={`font-semibold text-[var(--text-primary)] ${
-            collapsed ? 'text-xs' : 'text-base'
-          }`}
+      {/* Refresh cache + collapse toggle */}
+      <div className={`flex items-center px-4 py-4 ${collapsed ? 'flex-col gap-1.5 px-2' : 'justify-between'}`}>
+        <button
+          type="button"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title={refreshDone ? 'Cache cleared' : 'Refresh cache'}
+          className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 ${collapsed ? 'justify-center' : ''}`}
         >
-          {collapsed ? 'D' : 'Diagnostics'}
-        </span>
+          {refreshDone ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neon-green)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={refreshing ? 'animate-spin' : ''}
+            >
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+              <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
+            </svg>
+          )}
+          {!collapsed && (
+            <span className="text-sm font-medium">{refreshDone ? 'Done' : 'Refresh'}</span>
+          )}
+        </button>
         <button
           type="button"
           onClick={onToggleCollapse}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${collapsed ? 'mt-1.5' : ''}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors`}
         >
           <svg
             width="14"
@@ -323,11 +375,6 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0">
         {NAV_SECTIONS.map((section, idx) => renderSection(section, idx))}
-
-        {/* Separator before tools */}
-        <div className="mx-1 my-3 border-t border-[var(--border-default)]" />
-
-        {renderSection(TOOLS_SECTION, 0)}
       </nav>
 
       {/* Contact author */}

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
+import { exportAllTablesToZip } from '../../utils/exportTables';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -11,9 +12,10 @@ const SIDEBAR_COLLAPSED = 56;
 interface AppShellProps {
   children: ReactNode;
   onOpenPalette?: () => void;
+  onRefreshCache?: () => Promise<void>;
 }
 
-export function AppShell({ children, onOpenPalette }: AppShellProps) {
+export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < COLLAPSE_BREAKPOINT,
   );
@@ -53,7 +55,7 @@ export function AppShell({ children, onOpenPalette }: AppShellProps) {
         animate={{ width: sidebarWidth }}
         transition={{ type: 'spring', stiffness: 400, damping: 35 }}
       >
-        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((prev) => !prev)} />
+        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((prev) => !prev)} onRefreshCache={onRefreshCache} />
       </motion.div>
 
       {/* Top bar */}
@@ -82,9 +84,26 @@ export function AppShell({ children, onOpenPalette }: AppShellProps) {
           <span className="px-1.5 py-0.5 text-[10px] font-mono font-medium rounded bg-[var(--neon-cyan)]/10 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/30">
             ALPHA
           </span>
+          <span className="hidden lg:inline ml-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-amber-500/15 text-amber-400 border border-amber-500/40">
+            ⚠ Experimental — use outside sandbox at your own risk
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Export all tables as CSV zip */}
+          <button
+            type="button"
+            onClick={exportAllTablesToZip}
+            title="Export all tables to CSV (zip)"
+            className="flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </button>
+
           {/* Cmd+K search button */}
           <button
             type="button"
@@ -179,8 +198,31 @@ export function AppShell({ children, onOpenPalette }: AppShellProps) {
       </header>
 
       {/* Main content area — scrollable */}
-      <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col">
+      <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col relative">
         {children}
+
+        {/* Floating bug report button */}
+        <a
+          href="mailto:alex.kaos@dataiku.com?subject=Admin%20Toolkit%20feedback"
+          className="fixed bottom-6 right-3 z-50 flex items-center justify-center w-9 h-9 rounded-full bg-[var(--neon-cyan)]/15 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/40 hover:bg-[var(--neon-cyan)]/25 hover:border-[var(--neon-cyan)]/60 transition-colors shadow-lg backdrop-blur-sm"
+          title="Report a bug"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 2l1.88 1.88" />
+            <path d="M14.12 3.88L16 2" />
+            <path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" />
+            <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" />
+            <path d="M12 20v-9" />
+            <path d="M6.53 9C4.6 8.8 3 7.1 3 5" />
+            <path d="M6 13H2" />
+            <path d="M3 21c0-2.1 1.7-3.9 3.8-4" />
+            <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" />
+            <path d="M22 13h-4" />
+            <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" />
+          </svg>
+        </a>
+
+
       </main>
     </div>
   );

@@ -20,6 +20,8 @@ export function CodeEnvsTable() {
   const isLoading = Boolean(loading?.active);
   const pythonVersionCounts = parsedData.pythonVersionCounts || {};
   const rVersionCounts = parsedData.rVersionCounts || {};
+  const totalEnvCount = parsedData.totalEnvCount;
+  const skippedEnvCount = parsedData.skippedEnvCount;
 
   const [viewMode, setViewMode] = useState<ViewMode>('details');
   const [showTetris, setShowTetris] = useState(false);
@@ -114,6 +116,11 @@ export function CodeEnvsTable() {
                 ? `${filteredCodeEnvs.length} of ${codeEnvs.length} Code Envs`
                 : `${codeEnvs.length} Code Envs`
               : 'Code Envs'}
+            {skippedEnvCount != null && skippedEnvCount > 0 && totalEnvCount != null && (
+              <span className="ml-2 text-sm font-normal text-[var(--text-muted)]">
+                ({codeEnvs.length} of {totalEnvCount} — {skippedEnvCount} plugin-managed excluded)
+              </span>
+            )}
           </h4>
           <div className="flex items-center gap-2">
             {pythonCount > 0 && (
@@ -169,21 +176,12 @@ export function CodeEnvsTable() {
                 }}
               />
             </div>
-            {codeEnvs.length === 0 && (
-              <div className="mt-2 text-[11px] text-[var(--text-muted)] text-center">
-                Press{' '}
-                <kbd className="px-1 py-0.5 font-mono bg-[var(--bg-elevated)] border border-[var(--border-glass)] rounded text-[var(--text-secondary)]">
-                  T
-                </kbd>{' '}
-                to play Tetris while you wait
-              </div>
-            )}
           </div>
         ))}
 
       {!showTetris && !(isLoading && codeEnvs.length === 0) && (
         <>
-          <div className="max-h-[70vh] overflow-y-auto">
+          <div>
             {codeEnvs.length === 0 ? (
               <div className="p-4 text-sm text-[var(--text-secondary)]">
                 Waiting for code environment data...

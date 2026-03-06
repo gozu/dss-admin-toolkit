@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DirEntry, DirTreeData } from '../types';
+import { useCallback, useEffect, useRef } from 'react';
+import type { DirEntry, DirTreeData, FootprintScope } from '../types';
 import { fetchJson } from '../utils/api';
 import { useDiag } from '../context/DiagContext';
 
-const DEFAULT_MAX_DEPTH = 3;
+function _readDirTreeDepth(): number {
+  try {
+    const raw = window.localStorage.getItem('diagparser.thresholds');
+    if (raw) {
+      const t = JSON.parse(raw);
+      if (typeof t.dirTreeDefaultDepth === 'number') return t.dirTreeDefaultDepth;
+    }
+  } catch { /* use default */ }
+  return 3;
+}
+const DEFAULT_MAX_DEPTH = _readDirTreeDepth();
 const EXPAND_DEPTH = 5;
 
-export type FootprintScope = 'dss' | 'project';
+export type { FootprintScope };
 
 interface DirTreeDebugError {
   kind?: string;
@@ -61,16 +71,6 @@ interface DirTreeLoadOptions {
   projectKey?: string;
 }
 
-interface ApiDirTreeState {
-  isLoading: boolean;
-  isExpanding: boolean;
-  error: string | null;
-  tree: DirTreeData | null;
-  expandedNodes: Map<string, DirEntry>;
-  scope: FootprintScope;
-  projectKey: string;
-}
-
 function buildScopeQuery(scope: FootprintScope, projectKey: string): string {
   const params = new URLSearchParams();
   params.set('scope', scope);
@@ -93,17 +93,11 @@ function formatBytes(bytes: number | undefined): string {
 }
 
 export function useApiDirTree() {
-  const { dispatch } = useDiag();
+  const { state: diagState, dispatch } = useDiag();
+  const state = diagState.apiDirTree;
   const loadAbortRef = useRef<AbortController | null>(null);
-  const [state, setState] = useState<ApiDirTreeState>({
-    isLoading: false,
-    isExpanding: false,
-    error: null,
-    tree: null,
-    expandedNodes: new Map(),
-    scope: 'dss',
-    projectKey: '',
-  });
+  const expandAbortRef = useRef<AbortController | null>(null);
+  const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const abortLoad = useCallback(() => {
     const controller = loadAbortRef.current;
@@ -114,7 +108,7 @@ export function useApiDirTree() {
       type: 'ADD_DEBUG_LOG',
       payload: { scope: 'dir-tree', level: 'warn', message: 'Aborted root directory scan request' },
     });
-    setState(prev => ({ ...prev, isLoading: false, error: null }));
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: null } });
   }, [dispatch]);
 
   useEffect(() => {
@@ -122,6 +116,14 @@ export function useApiDirTree() {
       if (loadAbortRef.current) {
         loadAbortRef.current.abort();
         loadAbortRef.current = null;
+      }
+      if (expandAbortRef.current) {
+        expandAbortRef.current.abort();
+        expandAbortRef.current = null;
+      }
+      if (expandTimerRef.current) {
+        clearTimeout(expandTimerRef.current);
+        expandTimerRef.current = null;
       }
     };
   }, []);
@@ -140,13 +142,7 @@ export function useApiDirTree() {
     loadAbortRef.current = controller;
 
     dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `GET ${url}` } });
-    setState(prev => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      scope,
-      projectKey,
-    }));
+    dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: true, error: null, scope, projectKey } });
 
     try {
       const data = await fetchJson<DirTreeResponse>(url, { signal: controller.signal });
@@ -270,13 +266,10 @@ export function useApiDirTree() {
           message: `Loaded dir tree (${scope}) root with ${data.root?.children?.length || 0} children`,
         }
       });
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        tree: data,
-        expandedNodes: new Map(),
-        error: null,
-      }));
+      dispatch({
+        type: 'SET_API_DIR_TREE',
+        payload: { isLoading: false, tree: data, expandedNodes: new Map(), error: null },
+      });
     } catch (err) {
       if (loadAbortRef.current === controller) {
         loadAbortRef.current = null;
@@ -286,53 +279,83 @@ export function useApiDirTree() {
           type: 'ADD_DEBUG_LOG',
           payload: { scope: 'dir-tree', level: 'info', message: `Root load canceled (${scope})` },
         });
-        setState(prev => ({ ...prev, isLoading: false, error: null }));
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: null } });
         return;
       }
       const message = err instanceof Error ? err.message : 'Unknown error';
       dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Root load failed: ${message}` } });
-      setState(prev => ({ ...prev, isLoading: false, error: message }));
+      dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: message } });
     }
   }, [dispatch]);
 
-  const expandDirectory = useCallback(async (dirPath: string): Promise<DirEntry | null> => {
-    if (!dirPath) return null;
-    const scopeQuery = buildScopeQuery(state.scope, state.projectKey);
-    const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
+  const expandDirectory = useCallback((dirPath: string): Promise<DirEntry | null> => {
+    if (!dirPath) return Promise.resolve(null);
 
-    dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
-    setState(prev => ({ ...prev, isExpanding: true, error: null }));
-    try {
-      const data = await fetchJson<DirTreeExpandResponse>(url);
-      if (data.debug) {
-        const dbg = data.debug;
-        dispatch({
-          type: 'ADD_DEBUG_LOG',
-          payload: {
-            scope: 'dir-tree',
-            level: 'info',
-            message: `Expand debug ${dirPath}: total=${formatBytes(dbg.totalSize)} files=${(dbg.totalFiles ?? 0).toLocaleString()} scanned=${dbg.entriesScanned ?? 0} symlinks=${dbg.symlinksSeen ?? 0}`,
-          },
-        });
-      }
-      const node = data.node || null;
-      if (node) {
-        dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
-        setState(prev => {
-          const next = new Map(prev.expandedNodes);
-          next.set(dirPath, node);
-          return { ...prev, expandedNodes: next, isExpanding: false };
-        });
-      } else {
-        setState(prev => ({ ...prev, isExpanding: false }));
-      }
-      return node;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
-      setState(prev => ({ ...prev, isExpanding: false, error: message }));
-      return null;
+    // Abort any in-flight expand request
+    if (expandAbortRef.current) {
+      expandAbortRef.current.abort();
+      expandAbortRef.current = null;
     }
+    // Clear any pending debounce timer
+    if (expandTimerRef.current) {
+      clearTimeout(expandTimerRef.current);
+      expandTimerRef.current = null;
+    }
+
+    return new Promise((resolve) => {
+      expandTimerRef.current = setTimeout(async () => {
+        expandTimerRef.current = null;
+        const scopeQuery = buildScopeQuery(state.scope, state.projectKey);
+        const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
+        const controller = new AbortController();
+        expandAbortRef.current = controller;
+
+        dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: true, error: null } });
+        try {
+          const data = await fetchJson<DirTreeExpandResponse>(url, { signal: controller.signal });
+          if (expandAbortRef.current === controller) {
+            expandAbortRef.current = null;
+          }
+          if (data.debug) {
+            const dbg = data.debug;
+            dispatch({
+              type: 'ADD_DEBUG_LOG',
+              payload: {
+                scope: 'dir-tree',
+                level: 'info',
+                message: `Expand debug ${dirPath}: total=${formatBytes(dbg.totalSize)} files=${(dbg.totalFiles ?? 0).toLocaleString()} scanned=${dbg.entriesScanned ?? 0} symlinks=${dbg.symlinksSeen ?? 0}`,
+              },
+            });
+          }
+          const node = data.node || null;
+          if (node) {
+            dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
+            dispatch({ type: 'SET_API_DIR_TREE_EXPANDED_NODE', payload: { path: dirPath, node } });
+          } else {
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false } });
+          }
+          resolve(node);
+        } catch (err) {
+          if (expandAbortRef.current === controller) {
+            expandAbortRef.current = null;
+          }
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            dispatch({
+              type: 'ADD_DEBUG_LOG',
+              payload: { scope: 'dir-tree', level: 'info', message: `Expand canceled ${dirPath}` },
+            });
+            dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: null } });
+            resolve(null);
+            return;
+          }
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
+          dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: message } });
+          resolve(null);
+        }
+      }, 150);
+    });
   }, [dispatch, state.scope, state.projectKey]);
 
   return {

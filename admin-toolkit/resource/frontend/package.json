@@ -1,7 +1,7 @@
 {
   "name": "diag-parser",
   "private": true,
-  "version": "3.8.9",
+  "version": "0.4.064",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "test": "playwright test",
+    "test:live:profile": "playwright test tests/live-webapp-timelapse.spec.ts",
+    "test:live:timelapse": "playwright test tests/live-webapp-timelapse.spec.ts",
     "test:smoke": "node live-card-smoke.mjs",
     "format": "prettier --write 'src/**/*.{ts,tsx,css}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css}'",

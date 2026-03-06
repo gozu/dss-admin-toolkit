@@ -1,9 +1,9 @@
 {
-    "id": "diag-parser-live",
-    "version": "3.8.9",
+    "id": "admin-toolkit",
+    "version": "0.4.064",
     "meta": {
-        "label": "Diagnostics",
-        "description": "Analyze Dataiku diagnostic files with visualizations and health scoring",
+        "label": "Admin Toolkit",
+        "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
         "author": "Alex Kaos",
         "icon": "icon-bar-chart"
     }

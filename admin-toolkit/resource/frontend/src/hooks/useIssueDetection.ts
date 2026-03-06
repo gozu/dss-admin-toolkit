@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { ParsedData } from '../types';
+import { useThresholds } from './useThresholds';
 
 export type IssueSeverity = 'critical' | 'warning' | 'info';
 
@@ -46,6 +47,7 @@ function parsePercentage(value: string | undefined): number {
  * Hook to detect issues in parsed diagnostic data
  */
 export function useIssueDetection(parsedData: ParsedData) {
+  const { thresholds } = useThresholds();
   return useMemo(() => {
     const issues: DetectedIssue[] = [];
 
@@ -60,7 +62,7 @@ export function useIssueDetection(parsedData: ParsedData) {
         // Skip invalid entries (bad parsing can cause >100% values)
         if (usage > 100 || usage <= 0) continue;
 
-        if (usage >= 80) {
+        if (usage >= thresholds.filesystemCriticalPct) {
           issues.push({
             id: `fs-critical-${mountPoint}`,
             severity: 'critical',
@@ -69,7 +71,7 @@ export function useIssueDetection(parsedData: ParsedData) {
             category: 'filesystem',
             scrollTarget: 'filesystem-table',
           });
-        } else if (usage >= 70) {
+        } else if (usage >= thresholds.filesystemWarningPct) {
           issues.push({
             id: `fs-warning-${mountPoint}`,
             severity: 'warning',
@@ -89,12 +91,12 @@ export function useIssueDetection(parsedData: ParsedData) {
       const maxOpenFiles = parsedData.systemLimits['Max open files'];
       if (maxOpenFiles) {
         const limit = parseInt(String(maxOpenFiles), 10);
-        if (limit < 65535) {
+        if (limit < thresholds.openFilesMinimum) {
           issues.push({
             id: 'open-files-low',
             severity: 'critical',
             title: 'Open files limit too low',
-            description: `Max open files is ${limit}, should be >= 65535`,
+            description: `Max open files is ${limit}, should be >= ${thresholds.openFilesMinimum}`,
             category: 'system',
             scrollTarget: 'systemLimits-table',
           });
@@ -110,7 +112,7 @@ export function useIssueDetection(parsedData: ParsedData) {
 
       // Backend heap check (should be >= 2GB)
       const backendMB = parseMemoryToMB(settings['BACKEND']);
-      if (backendMB > 0 && backendMB < 2048) {
+      if (backendMB > 0 && backendMB < thresholds.javaHeapMinimumMB) {
         issues.push({
           id: 'backend-heap-low',
           severity: 'warning',
@@ -123,7 +125,7 @@ export function useIssueDetection(parsedData: ParsedData) {
 
       // JEK heap check (should be >= 2GB)
       const jekMB = parseMemoryToMB(settings['JEK']);
-      if (jekMB > 0 && jekMB < 2048) {
+      if (jekMB > 0 && jekMB < thresholds.javaHeapMinimumMB) {
         issues.push({
           id: 'jek-heap-low',
           severity: 'warning',
@@ -136,7 +138,7 @@ export function useIssueDetection(parsedData: ParsedData) {
 
       // FEK heap check (should be >= 2GB)
       const fekMB = parseMemoryToMB(settings['FEK']);
-      if (fekMB > 0 && fekMB < 2048) {
+      if (fekMB > 0 && fekMB < thresholds.javaHeapMinimumMB) {
         issues.push({
           id: 'fek-heap-low',
           severity: 'warning',
@@ -174,7 +176,14 @@ export function useIssueDetection(parsedData: ParsedData) {
         const major = parseInt(versionMatch[1], 10);
         const minor = parseInt(versionMatch[2], 10);
 
-        if (major < 3 || (major === 3 && minor < 8)) {
+        const pyCritParsed = thresholds.pythonCriticalBelow.match(/(\d+)\.(\d+)/);
+        const pyCritMajor = pyCritParsed ? parseInt(pyCritParsed[1], 10) : 3;
+        const pyCritMinor = pyCritParsed ? parseInt(pyCritParsed[2], 10) : 8;
+        const pyWarnParsed = thresholds.pythonWarningBelow.match(/(\d+)\.(\d+)/);
+        const pyWarnMajor = pyWarnParsed ? parseInt(pyWarnParsed[1], 10) : 3;
+        const pyWarnMinor = pyWarnParsed ? parseInt(pyWarnParsed[2], 10) : 10;
+
+        if (major < pyCritMajor || (major === pyCritMajor && minor < pyCritMinor)) {
           issues.push({
             id: 'python-eol',
             severity: 'critical',
@@ -183,7 +192,7 @@ export function useIssueDetection(parsedData: ParsedData) {
             category: 'python',
             scrollTarget: 'code-envs-table',
           });
-        } else if (major === 3 && minor < 10) {
+        } else if (major < pyWarnMajor || (major === pyWarnMajor && minor < pyWarnMinor)) {
           issues.push({
             id: 'python-old',
             severity: 'warning',
@@ -205,7 +214,7 @@ export function useIssueDetection(parsedData: ParsedData) {
         const versionMatch = sparkVersion.match(/^(\d+)/);
         if (versionMatch) {
           const majorVersion = parseInt(versionMatch[1], 10);
-          if (majorVersion < 3) {
+          if (majorVersion < thresholds.sparkVersionMinimum) {
             issues.push({
               id: 'spark-old',
               severity: 'warning',
@@ -222,7 +231,7 @@ export function useIssueDetection(parsedData: ParsedData) {
     // ============================================
     // PROJECT COUNT
     // ============================================
-    if (parsedData.projects && parsedData.projects.length > 500) {
+    if (parsedData.projects && parsedData.projects.length > thresholds.projectCountWarning) {
       issues.push({
         id: 'large-project-count',
         severity: 'warning',
@@ -238,7 +247,7 @@ export function useIssueDetection(parsedData: ParsedData) {
     // ============================================
     if (parsedData.disabledFeatures) {
       const aiFeatures = Object.keys(parsedData.disabledFeatures).filter(
-        key => key.startsWith('AI:') || key === 'Code Assistant' || key === 'Ask Dataiku'
+        key => key.startsWith('AI:') || key === 'AI Assistants' || key === 'Code Assistant' || key === 'Ask Dataiku'
       );
 
       if (aiFeatures.length > 0) {
@@ -258,13 +267,13 @@ export function useIssueDetection(parsedData: ParsedData) {
     // ============================================
     if (parsedData.disabledFeatures) {
       const nonAiDisabled = Object.keys(parsedData.disabledFeatures).filter(
-        key => !key.startsWith('AI:') && key !== 'Code Assistant' && key !== 'Ask Dataiku'
+        key => !key.startsWith('AI:') && key !== 'AI Assistants' && key !== 'Code Assistant' && key !== 'Ask Dataiku'
       );
 
       if (nonAiDisabled.length > 0) {
         issues.push({
           id: 'disabled-features',
-          severity: nonAiDisabled.length > 5 ? 'warning' : 'info',
+          severity: nonAiDisabled.length > thresholds.disabledFeaturesSeverityCutoff ? 'warning' : 'info',
           title: `${nonAiDisabled.length} feature${nonAiDisabled.length > 1 ? 's' : ''} disabled`,
           description: nonAiDisabled.slice(0, 3).join(', ') + (nonAiDisabled.length > 3 ? '...' : ''),
           category: 'features',
@@ -306,5 +315,5 @@ export function useIssueDetection(parsedData: ParsedData) {
       infoCount: issues.filter(i => i.severity === 'info').length,
       totalCount: issues.length,
     };
-  }, [parsedData]);
+  }, [parsedData, thresholds]);
 }

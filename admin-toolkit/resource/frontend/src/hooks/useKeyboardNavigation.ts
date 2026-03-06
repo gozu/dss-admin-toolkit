@@ -22,6 +22,7 @@ const PAGE_ORDER: PageId[] = [
   'logs',
   'outreach',
   'code-env-cleaner',
+  'project-cleaner',
   'settings',
 ];
 

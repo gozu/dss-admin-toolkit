@@ -2,7 +2,7 @@ import { BaseTextParser } from './BaseParser';
 import type { MemoryInfo, SystemLimits, FilesystemInfo } from '../types';
 
 interface DiagTextResult {
-  cpuCores: string | null;
+  cpuCores: string;
   osInfo: string;
   memoryInfo: MemoryInfo;
   systemLimits: SystemLimits;
@@ -20,11 +20,22 @@ export class DiagTextParser extends BaseTextParser<DiagTextResult> {
   }
 
   private _parseSystemInfo(content: string): {
-    cpuCores: string | null;
+    cpuCores: string;
     osInfo: string;
   } {
+    // Parse CPU info from /proc/cpuinfo
+    const processors = content.match(/processor\s*:\s*\d+/g);
+    const physicalIds = content.match(/physical id\s*:\s*(\d+)/g);
     const cpuCoresMatch = content.match(/cpu cores\s*:\s*(\d+)/);
-    const cpuCores = cpuCoresMatch ? cpuCoresMatch[1] : null;
+
+    let cpuCores: string = '??';
+    if (processors && cpuCoresMatch) {
+      const threads = processors.length;
+      const coresPerSocket = parseInt(cpuCoresMatch[1]);
+      const sockets = physicalIds ? new Set(physicalIds.map(m => m.match(/(\d+)$/)?.[1])).size : 1;
+      const totalCores = sockets * coresPerSocket;
+      cpuCores = threads > totalCores ? `${totalCores} Cores / ${threads} Threads` : `${totalCores}`;
+    }
     let osInfo = '';
 
     const rhMatch = content.match(

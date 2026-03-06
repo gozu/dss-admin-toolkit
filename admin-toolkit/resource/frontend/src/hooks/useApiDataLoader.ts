@@ -10,6 +10,7 @@ import type {
   Project,
   MailChannel,
   CodeEnv,
+  ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
 } from '../types';
@@ -43,6 +44,8 @@ interface CodeEnvsResponse {
   codeEnvs?: ParsedData['codeEnvs'];
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
+  totalEnvCount?: number;
+  skippedEnvCount?: number;
   summary?: {
     benchmark?: {
       enabled?: boolean;
@@ -145,8 +148,9 @@ interface LogErrorsResponse {
   logStats?: ParsedData['logStats'];
 }
 
-export function useApiDataLoader(enabled: boolean) {
+export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
   const { dispatch } = useDiag();
+  const LIVE_PROGRESS_TIMEOUT_MS = 120000;
   const codeEnvsInterpolationEnabledRef = useRef(false);
   const projectFootprintInterpolationEnabledRef = useRef(false);
   const codeEnvsProgressSetterRef = useRef<((displayValue: number) => void) | null>(null);
@@ -177,6 +181,22 @@ export function useApiDataLoader(enabled: boolean) {
     const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const fmtMs = (start: number) => `${Math.round(nowMs() - start)}ms`;
     const getErrorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+    const isAbortError = (err: unknown) => {
+      if (err instanceof DOMException && err.name === 'AbortError') return true;
+      if (err instanceof Error && err.name === 'AbortError') return true;
+      const message = getErrorMessage(err);
+      return /aborted|aborterror/i.test(message);
+    };
+    const abortPendingRequest = (controller: unknown) => {
+      if (
+        controller &&
+        typeof controller === 'object' &&
+        'abort' in controller &&
+        typeof controller.abort === 'function'
+      ) {
+        controller.abort();
+      }
+    };
     type BenchEventLike = {
       tMs?: number;
       level?: 'info' | 'warn' | 'error';
@@ -259,6 +279,11 @@ export function useApiDataLoader(enabled: boolean) {
         );
       });
 
+    const endpointTimings: Array<{ label: string; durationMs: number; status: 'ok' | 'fail' | 'skip' }> = [];
+    const recordTiming = (label: string, durationMs: number, status: 'ok' | 'fail' | 'skip' = 'ok') => {
+      endpointTimings.push({ label, durationMs: Math.round(durationMs), status });
+    };
+
     const run = async () => {
       log(`Diag Parser version v${__APP_VERSION__}`);
       log('Starting live data load');
@@ -277,12 +302,14 @@ export function useApiDataLoader(enabled: boolean) {
         log('GET /api/overview');
         const overview = await fetchJson<OverviewResponse>('/api/overview');
         log(`GET /api/overview OK (${fmtMs(overviewStart)})`);
+        recordTiming('/api/overview', nowMs() - overviewStart);
         let rawSettings: Record<string, unknown> = {};
         try {
           const settingsStart = nowMs();
           log('GET /api/settings/raw');
           rawSettings = await fetchJson<Record<string, unknown>>('/api/settings/raw');
           log(`GET /api/settings/raw OK (${fmtMs(settingsStart)})`);
+          recordTiming('/api/settings/raw', nowMs() - settingsStart);
         } catch {
           log('GET /api/settings/raw failed, continuing with defaults', 'warn');
           rawSettings = {};
@@ -364,12 +391,19 @@ export function useApiDataLoader(enabled: boolean) {
 
         // Phase 2: load secondary data in parallel
         log('Phase 2 starting');
+        const timedFetch = <T>(label: string, promise: Promise<T>): Promise<T> => {
+          const s = nowMs();
+          return promise.then(
+            (v) => { recordTiming(label, nowMs() - s); return v; },
+            (e) => { recordTiming(label, nowMs() - s, 'fail'); throw e; },
+          );
+        };
         const phase2 = await Promise.allSettled([
-          fetchJson<ConnectionsResponse>('/api/connections'),
-          fetchJson<UsersResponse>('/api/users'),
-          fetchJson<PluginsResponse>('/api/plugins'),
-          fetchText('/api/java-memory'),
-          fetchJson<MailChannelsResponse>('/api/mail-channels'),
+          timedFetch('/api/connections', fetchJson<ConnectionsResponse>('/api/connections')),
+          timedFetch('/api/users', fetchJson<UsersResponse>('/api/users')),
+          timedFetch('/api/plugins', fetchJson<PluginsResponse>('/api/plugins')),
+          timedFetch('/api/java-memory', fetchText('/api/java-memory')),
+          timedFetch('/api/mail-channels', fetchJson<MailChannelsResponse>('/api/mail-channels')),
         ]);
 
         if (cancelled) return;
@@ -479,15 +513,29 @@ export function useApiDataLoader(enabled: boolean) {
         dispatch({ type: 'SET_LOADING', payload: false });
         log('Core data ready, released loading state');
 
+        // Fetch backend settings for configurable timeouts
+        let beSettings: Record<string, number> = {};
+        try {
+          beSettings = await fetchJson<Record<string, number>>('/api/settings');
+          log('Backend settings loaded');
+        } catch { log('Backend settings fetch failed, using defaults', 'warn'); }
+
         // Phase 3: heavier endpoints
         log('Phase 3 starting');
         const timed = <T>(path: string, timeoutMs: number): Promise<T> => {
           const started = nowMs();
           log(`GET ${path}`);
-          return withTimeout(fetchJson<T>(path), path, timeoutMs).then((value) => {
-            log(`GET ${path} OK (${fmtMs(started)})`);
-            return value;
-          });
+          return withTimeout(fetchJson<T>(path), path, timeoutMs).then(
+            (value) => {
+              log(`GET ${path} OK (${fmtMs(started)})`);
+              recordTiming(path, nowMs() - started);
+              return value;
+            },
+            (err) => {
+              recordTiming(path, nowMs() - started, 'fail');
+              throw err;
+            },
+          );
         };
         const settle = async <T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> => {
           try {
@@ -517,11 +565,21 @@ export function useApiDataLoader(enabled: boolean) {
           codeEnvsInterpolationEnabledRef.current = true;
           codeEnvsLastProgressRef.current = null;
           codeEnvsInterpolator.reset(0);
+          dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+          currentParsedData = {
+            ...currentParsedData,
+            codeEnvsExpectedCount: undefined,
+          };
+          dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: undefined } });
           let codeEnvsProgressActive = true;
-          let codeEnvsProgressRunId: string | undefined;
+          // Use a sentinel so the first poll returns only the current run id (status=replaced),
+          // avoiding replay of stale events from previous runs.
+          let codeEnvsProgressRunId: string | undefined = '__pending__';
           let codeEnvsProgressCursor = 0;
           let codeEnvsProgressEventsSeen = 0;
           let codeEnvsProgressWarned = false;
+          let codeEnvsProgressAbortController: AbortController | null = null;
+          let codeEnvsUsageScanTotal: number | null = null;
           const codeEnvsProgressPath = '/api/code-envs/progress';
           let codeEnvsProgressPathLogged = false;
           setCodeEnvsLoading({
@@ -540,20 +598,115 @@ export function useApiDataLoader(enabled: boolean) {
             elapsedMs?: number;
           }) =>
             `${event.tMs ?? ''}|${event.step ?? ''}|${event.projectKey ?? ''}|${event.message ?? ''}|${event.elapsedMs ?? ''}`;
+          const setExpectedCodeEnvCount = (nextCount: number | null | undefined) => {
+            const normalized =
+              typeof nextCount === 'number' && Number.isFinite(nextCount) && nextCount >= 0
+                ? Math.floor(nextCount)
+                : undefined;
+            if (currentParsedData.codeEnvsExpectedCount === normalized) return;
+            currentParsedData = {
+              ...currentParsedData,
+              codeEnvsExpectedCount: normalized,
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: normalized } });
+          };
+          const parseUsageCheckMessage = (message: string) => {
+            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+[\u2014\u2013-]\s+(.+)$/u);
+            if (!match) return null;
+            const scanIndex = Number.parseInt(match[1], 10);
+            const scanTotal = Number.parseInt(match[2], 10);
+            const name = match[3].trim();
+            const status = match[4].trim();
+            const isSkipped = /skipped/i.test(status);
+            const usageMatch = status.match(/(\d+)\s+usage\(s\)/i);
+            const usageCount = /unused/i.test(status)
+              ? 0
+              : usageMatch
+                ? Number.parseInt(usageMatch[1], 10)
+                : NaN;
+            return {
+              scanIndex: Number.isFinite(scanIndex) ? scanIndex : undefined,
+              scanTotal: Number.isFinite(scanTotal) ? scanTotal : undefined,
+              name,
+              status,
+              isSkipped,
+              usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : null,
+            };
+          };
+          const toProvisionalRow = (parsed: {
+            scanIndex?: number;
+            scanTotal?: number;
+            name: string;
+            status: string;
+            isSkipped: boolean;
+            usageCount: number | null;
+          }): ProvisionalCodeEnv | null => {
+            if (!parsed.name) return null;
+            if (parsed.isSkipped) {
+              return {
+                name: parsed.name,
+                usageCount: -1,
+                statusLabel: parsed.status,
+                isSkipped: true,
+                scanIndex: parsed.scanIndex,
+                scanTotal: parsed.scanTotal,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+            if (parsed.usageCount == null) return null;
+            return {
+              name: parsed.name,
+              usageCount: parsed.usageCount,
+              statusLabel: parsed.status,
+              scanIndex: parsed.scanIndex,
+              scanTotal: parsed.scanTotal,
+              updatedAt: new Date().toISOString(),
+            };
+          };
           const replayCodeEnvProgressEvents = (events: Array<BenchEventLike>) => {
+            const provisionalRows: ProvisionalCodeEnv[] = [];
             events.forEach((event) => {
-              if (!shouldLogProgressEvent(event)) return;
               const key = progressEventKey(event);
               if (seenCodeEnvEventKeys.has(key)) return;
               seenCodeEnvEventKeys.add(key);
-              codeEnvsProgressEventsSeen += 1;
-              const eventLevel =
-                event.level === 'warn' || event.level === 'error' ? event.level : 'info';
-              log(benchEventLine('ce', event), eventLevel);
+              const normalizedStep = String(event.step || '')
+                .trim()
+                .toLowerCase();
+              if (normalizedStep === 'code_env_usage_scan_start') {
+                const startMatch = String(event.message || '').match(/checking\s+(\d+)\s+code envs/i);
+                const scannedTotal = startMatch ? Number.parseInt(startMatch[1], 10) : NaN;
+                if (Number.isFinite(scannedTotal) && scannedTotal > 0) {
+                  codeEnvsUsageScanTotal = scannedTotal;
+                }
+              }
+              if (normalizedStep === 'code_env_usage_check') {
+                const parsed = parseUsageCheckMessage(String(event.message || '').trim());
+                if (parsed) {
+                  if (typeof parsed.scanTotal === 'number' && parsed.scanTotal > 0) {
+                    codeEnvsUsageScanTotal = parsed.scanTotal;
+                  }
+                  const provisional = toProvisionalRow(parsed);
+                  if (provisional) provisionalRows.push(provisional);
+                }
+              }
+              if (shouldLogProgressEvent(event)) {
+                codeEnvsProgressEventsSeen += 1;
+                const eventLevel =
+                  event.level === 'warn' || event.level === 'error' ? event.level : 'info';
+                log(benchEventLine('ce', event), eventLevel);
+              }
             });
+            if (codeEnvsUsageScanTotal != null) {
+              const expectedFromScan = Math.max(0, codeEnvsUsageScanTotal);
+              setExpectedCodeEnvCount(expectedFromScan);
+            }
+            if (provisionalRows.length > 0) {
+              dispatch({ type: 'UPSERT_PROVISIONAL_CODE_ENVS', payload: provisionalRows });
+            }
           };
 
           let codeEnvsRowsSince = 0;
+          const codeEnvsPartialBuffer: CodeEnv[] = [];
           const pollCodeEnvProgress = async () => {
             while (!cancelled && codeEnvsProgressActive) {
               try {
@@ -563,6 +716,7 @@ export function useApiDataLoader(enabled: boolean) {
                 if (codeEnvsProgressRunId) {
                   query.set('runId', codeEnvsProgressRunId);
                 }
+                codeEnvsProgressAbortController = new AbortController();
                 if (!codeEnvsProgressPathLogged) {
                   log(`bench;ce;progress;path=${codeEnvsProgressPath}`);
                   codeEnvsProgressPathLogged = true;
@@ -570,9 +724,10 @@ export function useApiDataLoader(enabled: boolean) {
                 const payload = await withTimeout(
                   fetchJson<CodeEnvsProgressResponse>(
                     `${codeEnvsProgressPath}?${query.toString()}`,
+                    { signal: codeEnvsProgressAbortController.signal },
                   ),
                   codeEnvsProgressPath,
-                  5000,
+                  LIVE_PROGRESS_TIMEOUT_MS,
                 );
                 const progressSummary = payload.summary || {};
                 const progressPct = Math.max(
@@ -585,23 +740,18 @@ export function useApiDataLoader(enabled: boolean) {
                   ),
                 );
                 const phase = (progressSummary.phase || 'running').toString();
-                const selectedProjects = Number(progressSummary.selectedProjects || 0);
-                const projectUsageDone = Number(progressSummary.projectUsageDone || 0);
                 const envDetailsTotal = Number(progressSummary.envDetailsTotal || 0);
                 const envDetailsDone = Number(progressSummary.envDetailsDone || 0);
+                if (envDetailsTotal > 0) {
+                  setExpectedCodeEnvCount(envDetailsTotal);
+                }
                 const phaseText = phase.replace(/_/g, ' ');
-                const doneProjects =
-                  selectedProjects > 0
-                    ? Math.min(selectedProjects, Math.max(0, projectUsageDone))
-                    : 0;
                 const doneEnvs =
                   envDetailsTotal > 0 ? Math.min(envDetailsTotal, Math.max(0, envDetailsDone)) : 0;
                 const detail =
-                  selectedProjects > 0
-                    ? `${doneProjects}/${selectedProjects} projects`
-                    : envDetailsTotal > 0
-                      ? `${doneEnvs}/${envDetailsTotal} envs`
-                      : '';
+                  envDetailsTotal > 0
+                    ? `${doneEnvs}/${envDetailsTotal} envs`
+                    : '';
                 setCodeEnvsLoading({
                   active: true,
                   phase,
@@ -616,6 +766,14 @@ export function useApiDataLoader(enabled: boolean) {
                 if (payload.runId && payload.runId !== codeEnvsProgressRunId) {
                   codeEnvsProgressRunId = payload.runId;
                   codeEnvsProgressCursor = 0;
+                  codeEnvsRowsSince = 0;
+                  codeEnvsPartialBuffer.length = 0;
+                  codeEnvsUsageScanTotal = null;
+                  seenCodeEnvEventKeys.clear();
+                  codeEnvsProgressEventsSeen = 0;
+                  setExpectedCodeEnvCount(undefined);
+                  dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+                  continue;
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : codeEnvsProgressCursor;
@@ -625,6 +783,7 @@ export function useApiDataLoader(enabled: boolean) {
                 codeEnvsProgressCursor = nextCursor;
                 if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
                   const rows = payload.partialRows as unknown as CodeEnv[];
+                  codeEnvsPartialBuffer.push(...rows);
                   dispatch({ type: 'APPEND_PARTIAL_CODE_ENVS', payload: rows });
                 }
                 if (typeof payload.partialRowsNext === 'number') {
@@ -634,6 +793,9 @@ export function useApiDataLoader(enabled: boolean) {
                   log(`bench;ce;progress-error;${cleanToken(payload.error)}`, 'error');
                 }
               } catch (err) {
+                if ((!codeEnvsProgressActive || cancelled) && isAbortError(err)) {
+                  break;
+                }
                 if (!codeEnvsProgressWarned) {
                   codeEnvsProgressWarned = true;
                   log(
@@ -641,6 +803,8 @@ export function useApiDataLoader(enabled: boolean) {
                     'warn',
                   );
                 }
+              } finally {
+                codeEnvsProgressAbortController = null;
               }
               if (!codeEnvsProgressActive) break;
               await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -648,8 +812,9 @@ export function useApiDataLoader(enabled: boolean) {
           };
 
           const codeEnvsProgressPromise = pollCodeEnvProgress();
-          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', 130000));
+          const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', beSettings.fe_timeout_code_envs ?? 620000));
           codeEnvsProgressActive = false;
+          abortPendingRequest(codeEnvsProgressAbortController);
           await codeEnvsProgressPromise;
           codeEnvsDone = true;
           if (cancelled) return;
@@ -657,10 +822,14 @@ export function useApiDataLoader(enabled: boolean) {
             currentParsedData = {
               ...currentParsedData,
               codeEnvs: codeEnvsRes.value.codeEnvs || [],
+              codeEnvsExpectedCount: (codeEnvsRes.value.codeEnvs || []).length,
               pythonVersionCounts: codeEnvsRes.value.pythonVersionCounts || {},
               rVersionCounts: codeEnvsRes.value.rVersionCounts || {},
+              totalEnvCount: codeEnvsRes.value.totalEnvCount,
+              skippedEnvCount: codeEnvsRes.value.skippedEnvCount,
             };
             dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+            dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
             setCodeEnvsLoading({
               active: false,
               progressPct: 100,
@@ -724,12 +893,30 @@ export function useApiDataLoader(enabled: boolean) {
             }
           } else {
             codeEnvsInterpolationEnabledRef.current = false;
-            setCodeEnvsLoading({
-              active: false,
-              progressPct: 0,
-              phase: 'error',
-              message: 'Code env analysis failed',
-            });
+            if (codeEnvsPartialBuffer.length > 0) {
+              currentParsedData = {
+                ...currentParsedData,
+                codeEnvs: codeEnvsPartialBuffer,
+                codeEnvsExpectedCount: codeEnvsPartialBuffer.length,
+              };
+              dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+              dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+              setCodeEnvsLoading({
+                active: false,
+                progressPct: 100,
+                phase: 'done',
+                message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
+              });
+              log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
+            } else {
+              dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+              setCodeEnvsLoading({
+                active: false,
+                progressPct: 0,
+                phase: 'error',
+                message: 'Code env analysis failed',
+              });
+            }
             log(`Failed /api/code-envs: ${settledError(codeEnvsRes)}`, 'warn');
           }
         };
@@ -739,11 +926,14 @@ export function useApiDataLoader(enabled: boolean) {
           projectFootprintLastProgressRef.current = null;
           projectFootprintInterpolator.reset(0);
           let projectFootprintProgressActive = true;
-          let projectFootprintProgressRunId: string | undefined;
+          let projectFootprintProgressAbortController: AbortController | null = null;
+          // Use a sentinel so the first poll only syncs run id (status=replaced) instead of replaying stale events.
+          let projectFootprintProgressRunId: string | undefined = '__pending__';
           let projectFootprintProgressCursor = 0;
           let projectFootprintProgressWarned = false;
           const projectFootprintProgressPath = '/api/project-footprint/progress';
           const seenProjectProgressEventKeys = new Set<string>();
+          let projectUsageScanTotal: number | null = null;
           setProjectFootprintLoading({
             active: true,
             progressPct: 0,
@@ -759,16 +949,110 @@ export function useApiDataLoader(enabled: boolean) {
             elapsedMs?: number;
           }) =>
             `${event.tMs ?? ''}|${event.step ?? ''}|${event.projectKey ?? ''}|${event.message ?? ''}|${event.elapsedMs ?? ''}`;
+          const setExpectedCodeEnvCountFromProject = (nextCount: number | null | undefined) => {
+            const normalized =
+              typeof nextCount === 'number' && Number.isFinite(nextCount) && nextCount >= 0
+                ? Math.floor(nextCount)
+                : undefined;
+            if (currentParsedData.codeEnvsExpectedCount === normalized) return;
+            currentParsedData = {
+              ...currentParsedData,
+              codeEnvsExpectedCount: normalized,
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: normalized } });
+          };
+          const parseProjectUsageCheckMessage = (message: string) => {
+            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+[\u2014\u2013-]\s+(.+)$/u);
+            if (!match) return null;
+            const scanIndex = Number.parseInt(match[1], 10);
+            const scanTotal = Number.parseInt(match[2], 10);
+            const name = match[3].trim();
+            const status = match[4].trim();
+            const isSkipped = /skipped/i.test(status);
+            const usageMatch = status.match(/(\d+)\s+usage\(s\)/i);
+            const usageCount = /unused/i.test(status)
+              ? 0
+              : usageMatch
+                ? Number.parseInt(usageMatch[1], 10)
+                : NaN;
+            return {
+              scanIndex: Number.isFinite(scanIndex) ? scanIndex : undefined,
+              scanTotal: Number.isFinite(scanTotal) ? scanTotal : undefined,
+              name,
+              status,
+              isSkipped,
+              usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : null,
+            };
+          };
+          const toProjectProvisionalRow = (parsed: {
+            scanIndex?: number;
+            scanTotal?: number;
+            name: string;
+            status: string;
+            isSkipped: boolean;
+            usageCount: number | null;
+          }): ProvisionalCodeEnv | null => {
+            if (!parsed.name) return null;
+            if (parsed.isSkipped) {
+              return {
+                name: parsed.name,
+                usageCount: -1,
+                statusLabel: parsed.status,
+                isSkipped: true,
+                scanIndex: parsed.scanIndex,
+                scanTotal: parsed.scanTotal,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+            if (parsed.usageCount == null) return null;
+            return {
+              name: parsed.name,
+              usageCount: parsed.usageCount,
+              statusLabel: parsed.status,
+              scanIndex: parsed.scanIndex,
+              scanTotal: parsed.scanTotal,
+              updatedAt: new Date().toISOString(),
+            };
+          };
           const replayProjectProgressEvents = (events: Array<BenchEventLike>) => {
+            const provisionalRows: ProvisionalCodeEnv[] = [];
             events.forEach((event) => {
-              if (!shouldLogProgressEvent(event)) return;
               const key = projectProgressEventKey(event);
               if (seenProjectProgressEventKeys.has(key)) return;
               seenProjectProgressEventKeys.add(key);
-              const eventLevel =
-                event.level === 'warn' || event.level === 'error' ? event.level : 'info';
-              log(benchEventLine('pjft', event), eventLevel);
+              const normalizedStep = String(event.step || '')
+                .trim()
+                .toLowerCase();
+              if (normalizedStep === 'code_env_usage_scan_start') {
+                const startMatch = String(event.message || '').match(/checking\s+(\d+)\s+code envs/i);
+                const scannedTotal = startMatch ? Number.parseInt(startMatch[1], 10) : NaN;
+                if (Number.isFinite(scannedTotal) && scannedTotal > 0) {
+                  projectUsageScanTotal = scannedTotal;
+                }
+              }
+              if (normalizedStep === 'code_env_usage_check') {
+                const parsed = parseProjectUsageCheckMessage(String(event.message || '').trim());
+                if (parsed) {
+                  if (typeof parsed.scanTotal === 'number' && parsed.scanTotal > 0) {
+                    projectUsageScanTotal = parsed.scanTotal;
+                  }
+                  const provisional = toProjectProvisionalRow(parsed);
+                  if (provisional) provisionalRows.push(provisional);
+                }
+              }
+              if (shouldLogProgressEvent(event)) {
+                const eventLevel =
+                  event.level === 'warn' || event.level === 'error' ? event.level : 'info';
+                log(benchEventLine('pjft', event), eventLevel);
+              }
             });
+            if (projectUsageScanTotal != null) {
+              const expectedFromScan = Math.max(0, projectUsageScanTotal);
+              setExpectedCodeEnvCountFromProject(expectedFromScan);
+            }
+            if (provisionalRows.length > 0) {
+              dispatch({ type: 'UPSERT_PROVISIONAL_CODE_ENVS', payload: provisionalRows });
+            }
           };
 
           let projectFootprintRowsSince = 0;
@@ -781,16 +1065,22 @@ export function useApiDataLoader(enabled: boolean) {
                 if (projectFootprintProgressRunId) {
                   query.set('runId', projectFootprintProgressRunId);
                 }
+                projectFootprintProgressAbortController = new AbortController();
                 const payload = await withTimeout(
                   fetchJson<ProjectFootprintProgressResponse>(
                     `${projectFootprintProgressPath}?${query.toString()}`,
+                    { signal: projectFootprintProgressAbortController.signal },
                   ),
                   projectFootprintProgressPath,
-                  5000,
+                  LIVE_PROGRESS_TIMEOUT_MS,
                 );
                 if (payload.runId && payload.runId !== projectFootprintProgressRunId) {
                   projectFootprintProgressRunId = payload.runId;
                   projectFootprintProgressCursor = 0;
+                  projectFootprintRowsSince = 0;
+                  seenProjectProgressEventKeys.clear();
+                  projectUsageScanTotal = null;
+                  continue;
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : projectFootprintProgressCursor;
@@ -839,6 +1129,9 @@ export function useApiDataLoader(enabled: boolean) {
                   projectFootprintRowsSince = payload.partialRowsNext;
                 }
               } catch (err) {
+                if ((!projectFootprintProgressActive || cancelled) && isAbortError(err)) {
+                  break;
+                }
                 if (!projectFootprintProgressWarned) {
                   projectFootprintProgressWarned = true;
                   log(
@@ -846,6 +1139,8 @@ export function useApiDataLoader(enabled: boolean) {
                     'warn',
                   );
                 }
+              } finally {
+                projectFootprintProgressAbortController = null;
               }
               if (!projectFootprintProgressActive) break;
               await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -854,9 +1149,10 @@ export function useApiDataLoader(enabled: boolean) {
 
           const projectFootprintProgressPromise = pollProjectFootprintProgress();
           const projectFootprintRes = await settle(
-            timed<ProjectFootprintResponse>('/api/project-footprint', 130000),
+            timed<ProjectFootprintResponse>('/api/project-footprint', beSettings.fe_timeout_project_footprint ?? 620000),
           );
           projectFootprintProgressActive = false;
+          abortPendingRequest(projectFootprintProgressAbortController);
           await projectFootprintProgressPromise;
           projectFootprintDone = true;
           if (cancelled) return;
@@ -970,10 +1266,11 @@ export function useApiDataLoader(enabled: boolean) {
 
         const runProjects = async () => {
           const projectsRes: PromiseSettledResult<ProjectsResponse | null> = basicProjectsEnabled
-            ? await settle(timed<ProjectsResponse>('/api/projects', 45000))
+            ? await settle(timed<ProjectsResponse>('/api/projects', beSettings.fe_timeout_projects ?? 45000))
             : { status: 'fulfilled', value: null };
           if (cancelled) return;
           if (!basicProjectsEnabled) {
+            recordTiming('/api/projects', 0, 'skip');
             log('Skipped /api/projects in lean live mode');
             currentParsedData = {
               ...currentParsedData,
@@ -993,7 +1290,7 @@ export function useApiDataLoader(enabled: boolean) {
         };
 
         const runLogs = async () => {
-          const logsRes = await settle(timed<LogErrorsResponse>('/api/logs/errors', 30000));
+          const logsRes = await settle(timed<LogErrorsResponse>('/api/logs/errors', beSettings.fe_timeout_logs ?? 30000));
           if (cancelled) return;
           if (logsRes.status === 'fulfilled' && logsRes.value) {
             const displayedErrors = logsRes.value.logStats?.['Displayed Errors'] || 0;
@@ -1019,13 +1316,14 @@ export function useApiDataLoader(enabled: boolean) {
         };
 
         log(
-          'Phase 3 strategy: launch all endpoints in parallel; heavy endpoints are code-envs + project-footprint',
+          'Phase 3 strategy: launch code-envs + project-footprint in parallel; defer dir-tree until Directory page is opened',
         );
         const phase3Start = nowMs();
         const heavyStart = nowMs();
         const lowStart = nowMs();
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
+        log('Deferred /api/dir-tree until Directory page is opened');
         const lowGate = Promise.allSettled([runProjects(), runLogs()]);
 
         await heavyGate;
@@ -1067,6 +1365,15 @@ export function useApiDataLoader(enabled: boolean) {
             log(`Computed users-by-projects (${Object.keys(usersByProjects).length} users)`);
           }
         }
+        // Emit timing summary table
+        if (endpointTimings.length > 0) {
+          const rows = endpointTimings.map((t) => {
+            const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+            const flag = t.status === 'fail' ? ' FAIL' : t.status === 'skip' ? ' SKIP' : '';
+            return `${t.label}|${dur}${flag}`;
+          });
+          log(`TIMING_TABLE:${rows.join(';;')}`);
+        }
         log('Live data load completed');
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -1089,5 +1396,5 @@ export function useApiDataLoader(enabled: boolean) {
       codeEnvsProgressSetterRef.current = null;
       projectFootprintProgressSetterRef.current = null;
     };
-  }, [dispatch, enabled]);
+  }, [dispatch, enabled, reloadKey]);
 }

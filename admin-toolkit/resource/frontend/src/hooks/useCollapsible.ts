@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 
-const STORAGE_KEY_PREFIX = 'diag-parser-live-collapsed-';
+const STORAGE_KEY_PREFIX = 'admin-toolkit-collapsed-';
 
 interface UseCollapsibleOptions {
   id: string;
