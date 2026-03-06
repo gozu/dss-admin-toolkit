@@ -390,12 +390,14 @@ export function CodeEnvCleaner() {
               <tbody>
                 {sortedRows.map((row) => {
                   const isUnused = row.usageCount === 0;
-                  const langLabel =
-                    row.env.language === 'python'
+                  const hasDetails = !!row.env.version || !!row.env.owner;
+                  const langLabel = hasDetails
+                    ? row.env.language === 'python'
                       ? row.env.version
                         ? `Python ${row.env.version}`
                         : 'Python'
-                      : 'R';
+                      : 'R'
+                    : '—';
                   return (
                     <tr key={row.envKey} className="hover:bg-[var(--bg-glass)]">
                       <td>
@@ -419,7 +421,7 @@ export function CodeEnvCleaner() {
                         </a>
                       </td>
                       <td className="text-[var(--text-secondary)]">{langLabel}</td>
-                      <td className="text-[var(--text-secondary)]">{row.env.owner || 'Unknown'}</td>
+                      <td className="text-[var(--text-secondary)]">{hasDetails ? (row.env.owner || 'Unknown') : '—'}</td>
                       <td>
                         {isUnused ? (
                           <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-400/20 text-amber-400">
@@ -432,7 +434,7 @@ export function CodeEnvCleaner() {
                         )}
                       </td>
                       <td>
-                        {isUnused && (
+                        {isUnused && hasDetails && (
                           <button
                             onClick={() => openDeleteConfirm(row)}
                             disabled={!folderId}

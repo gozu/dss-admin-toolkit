@@ -586,6 +586,21 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
           let codeEnvsRowsSince = 0;
           const codeEnvsPartialBuffer: CodeEnv[] = [];
+          // Lightweight rows built from progress events (before full details arrive)
+          const codeEnvsEventRows = new Map<string, CodeEnv>();
+          const parseUsageCheckEvent = (msg: string): CodeEnv | null => {
+            // "[7/234] INTERNAL_document_extraction_v1 — UNUSED"
+            // "[8/234] MEDIAMMIXMODELS — 17 usage(s)"
+            // "[1/234] INTERNAL_databricks_utils_v1 — skipped (plugin/internal)"
+            const m = msg.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+—\s+(.+)$/);
+            if (!m) return null;
+            const envName = m[3];
+            const status = m[4];
+            if (status.startsWith('skipped')) return null;
+            const usageMatch = status.match(/^(\d+)\s+usage/);
+            const usageCount = status === 'UNUSED' ? 0 : usageMatch ? parseInt(usageMatch[1], 10) : undefined;
+            return { name: envName, version: '', language: 'python', usageCount } as CodeEnv;
+          };
           const pollCodeEnvProgress = async () => {
             while (!cancelled && codeEnvsProgressActive) {
               try {
@@ -643,16 +658,33 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : codeEnvsProgressCursor;
+                let eventRowsChanged = false;
                 if (Array.isArray(payload.events) && payload.events.length > 0) {
                   replayCodeEnvProgressEvents(payload.events);
+                  // Build lightweight rows from usage-check events
+                  for (const event of payload.events) {
+                    if (event.step === 'code_env_usage_check' && event.message) {
+                      const row = parseUsageCheckEvent(event.message);
+                      if (row && !codeEnvsEventRows.has(row.name)) {
+                        codeEnvsEventRows.set(row.name, row);
+                        eventRowsChanged = true;
+                      }
+                    }
+                  }
                 }
                 codeEnvsProgressCursor = nextCursor;
                 if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
                   codeEnvsPartialBuffer.push(...(payload.partialRows as unknown as CodeEnv[]));
-                  // Live-stream partial rows to table
+                  // Full-detail rows replace event-based ones
+                  for (const row of payload.partialRows as unknown as CodeEnv[]) {
+                    codeEnvsEventRows.set(row.name, row);
+                  }
+                  eventRowsChanged = true;
+                }
+                if (eventRowsChanged) {
                   currentParsedData = {
                     ...currentParsedData,
-                    codeEnvs: [...codeEnvsPartialBuffer],
+                    codeEnvs: [...codeEnvsEventRows.values()],
                   };
                   dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
                 }
