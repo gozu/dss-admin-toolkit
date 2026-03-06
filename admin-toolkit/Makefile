@@ -8,7 +8,7 @@
 #
 # PROD wrappers installed by your setup script:
 #   /data/dss-secure-actions/bin/dss_plugin_update_admin-toolkit
-#   /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1_nOQzJAF
+#   /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1
 # ============================================================================
 
 SHELL := /bin/bash
@@ -42,7 +42,8 @@ WEBAPP_ID ?= $(shell cat .dss-webapp-id 2>/dev/null || echo haoMNtw)
 # PROD deploy (locked down) wrappers
 SECURE_DIST_DIR ?= /data/dist
 SECURE_PLUGIN_WRAPPER ?= /data/dss-secure-actions/bin/dss_plugin_update_admin-toolkit
-SECURE_RESTART_WRAPPER ?= /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1_nOQzJAF
+SECURE_RESTART_WRAPPER ?= /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1
+SECURE_WEBAPP_ID ?= Gv9CLFn
 
 # ----------------------------
 # Safe commit paths for deploy
@@ -144,7 +145,7 @@ deploy-prod-secure: secure-copy-zip
 	@sudo "$(SECURE_PLUGIN_WRAPPER)" "$(archive_file_name)"
 	@if [ "$(RESTART_AFTER_DEPLOY)" = "1" ]; then \
 		echo "[START] Restarting PROD webapp backend (secure wrapper)..."; \
-		sudo "$(SECURE_RESTART_WRAPPER)"; \
+		sudo "$(SECURE_RESTART_WRAPPER)" "$(SECURE_WEBAPP_ID)"; \
 		echo "[SUCCESS] PROD webapp backend restart requested."; \
 	fi
 

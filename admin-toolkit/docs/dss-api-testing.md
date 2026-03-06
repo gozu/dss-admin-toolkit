@@ -76,7 +76,7 @@ Use `requests` directly if you need to hit webapp routes:
 import requests
 headers = {'Authorization': f'Bearer {API_KEY}'}
 # This returns HTML (DSS login page) — webapp auth doesn't work via API key alone
-r = requests.get('http://localhost:10000/plugins/diag-parser-live/webapps/diag-parser-live/api/overview', headers=headers)
+r = requests.get('http://localhost:10000/plugins/admin-toolkit/webapps/admin-toolkit/api/overview', headers=headers)
 ```
 
 **Note**: Webapp backend endpoints are best tested via the browser or by
