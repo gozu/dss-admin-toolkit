@@ -27,6 +27,9 @@ _CACHE_LOCK = threading.Lock()
 _THREAD_LOCAL = threading.local()
 _PROGRESS: Dict[str, Dict[str, Any]] = {}
 _PROGRESS_LOCK = threading.Lock()
+# Shared state for deduplicating concurrent _collect_project_code_env_usage calls
+_CODE_ENV_USAGE_COND = threading.Condition()
+_CODE_ENV_USAGE_SHARED: Dict[str, Any] = {'result': None, 'ts': 0.0, 'computing': False}
 _PROGRESS_EVENT_LIMIT = 10000
 _PROGRESS_RETENTION_SEC = 1800
 
@@ -3712,6 +3715,69 @@ def _load_code_env_full_details(
     }
 
 
+def _get_code_env_usage_shared(
+    client: Any,
+    project_info: Dict[str, Dict[str, str]],
+    size_by_env: Dict[str, int],
+    deadline_ts: Optional[float] = None,
+    progress_cb: Optional[Callable[..., None]] = None,
+    ttl: float = 120.0,
+) -> Dict[str, Any]:
+    """Compute code env usage once and share result across concurrent callers.
+
+    If another thread is already computing, this waits for that result instead
+    of launching a duplicate scan.
+    """
+    now = time.time()
+    state = _CODE_ENV_USAGE_SHARED
+
+    with _CODE_ENV_USAGE_COND:
+        # Return cached result if fresh
+        if state['result'] is not None and now - state['ts'] < ttl:
+            return state['result']
+
+        # Another thread is already computing — wait for it
+        if state['computing']:
+            while state['computing']:
+                _CODE_ENV_USAGE_COND.wait(timeout=60)
+            if state['result'] is not None:
+                return state['result']
+
+        # We will compute
+        state['computing'] = True
+
+    try:
+        result = _collect_project_code_env_usage(
+            client,
+            project_info,
+            size_by_env,
+            include_project_object_scan=True,
+            include_code_env_usage_api=False,
+            deadline_ts=deadline_ts,
+            progress_cb=progress_cb,
+        )
+    except Exception:
+        with _CODE_ENV_USAGE_COND:
+            state['computing'] = False
+            _CODE_ENV_USAGE_COND.notify_all()
+        raise
+
+    with _CODE_ENV_USAGE_COND:
+        state['result'] = result
+        state['ts'] = time.time()
+        state['computing'] = False
+        _CODE_ENV_USAGE_COND.notify_all()
+
+    return result
+
+
+def _invalidate_code_env_usage_shared():
+    """Clear the shared code env usage cache."""
+    with _CODE_ENV_USAGE_COND:
+        _CODE_ENV_USAGE_SHARED['result'] = None
+        _CODE_ENV_USAGE_SHARED['ts'] = 0.0
+
+
 def _collect_project_code_env_usage(
     client: Any,
     project_info: Dict[str, Dict[str, str]],
@@ -3729,7 +3795,7 @@ def _collect_project_code_env_usage(
     )
 
     envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
-    workers = min(_parallel_workers(16), len(envs))
+    workers = min(_parallel_workers(8), len(envs))
     total = len(envs)
     _notify_progress(
         progress_cb,
@@ -4532,12 +4598,10 @@ def api_code_envs():
             if project_info and not deadline_reached('collect_project_code_env_usage'):
                 step_started = time.time()
                 add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
-                usage_data = _collect_project_code_env_usage(
+                usage_data = _get_code_env_usage_shared(
                     client,
                     project_info,
                     size_by_env,
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
                     deadline_ts=deadline,
                     progress_cb=progress_event,
                 )
@@ -5043,12 +5107,10 @@ def api_project_footprint():
             if project_keys and not deadline_reached('collect_project_code_env_usage'):
                 step_start = time.time()
                 add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_keys)} projects")
-                usage_data = _collect_project_code_env_usage(
+                usage_data = _get_code_env_usage_shared(
                     client,
                     project_info,
                     {},
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
                     deadline_ts=deadline,
                     progress_cb=progress_event,
                 )
@@ -6662,6 +6724,7 @@ def api_tracking_refresh():
     # Invalidate outreach data cache to force fresh DSS API calls
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
+    _invalidate_code_env_usage_shared()
     # Load fresh outreach data (populates _CACHE['tools_outreach_data'])
     try:
         with app.test_request_context('/api/tools/outreach-data'):
@@ -7082,6 +7145,7 @@ def api_code_env_cleaner_delete(lang, name):
     _CACHE.pop('code_envs', None)
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
+    _invalidate_code_env_usage_shared()
 
     app.logger.info("[code-env-cleaner] backed up %s to managed folder %s and deleted %s/%s", zip_filename, folder_id, lang, name)
     return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": name}), 200
