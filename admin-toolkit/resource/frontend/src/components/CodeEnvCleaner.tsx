@@ -283,6 +283,12 @@ export function CodeEnvCleaner() {
             Code environments with zero usages. Delete unused envs to free up resources. A
             backup is uploaded to the selected managed folder before deletion.
           </p>
+          {analysisLoading?.active && (
+            <p className="text-sm text-[var(--text-muted)] mt-1 flex items-center gap-2">
+              <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-[var(--neon-cyan)] border-t-transparent animate-spin" />
+              <span>{analysisLoading.message || 'Analyzing code environments...'}</span>
+            </p>
+          )}
           <div className="mt-3 flex items-center gap-2">
             <label className="text-sm text-[var(--text-secondary)] whitespace-nowrap" htmlFor="ce-folder-select">
               Backup destination

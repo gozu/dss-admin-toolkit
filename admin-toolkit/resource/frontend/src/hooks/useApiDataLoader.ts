@@ -649,6 +649,12 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 codeEnvsProgressCursor = nextCursor;
                 if (Array.isArray(payload.partialRows) && payload.partialRows.length > 0) {
                   codeEnvsPartialBuffer.push(...(payload.partialRows as unknown as CodeEnv[]));
+                  // Live-stream partial rows to table
+                  currentParsedData = {
+                    ...currentParsedData,
+                    codeEnvs: [...codeEnvsPartialBuffer],
+                  };
+                  dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
                 }
                 if (typeof payload.partialRowsNext === 'number') {
                   codeEnvsRowsSince = payload.partialRowsNext;
