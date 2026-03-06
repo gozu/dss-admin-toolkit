@@ -37,6 +37,7 @@ export function PerformanceMetrics() {
     'outputLog': 'Output log',
     'projectFiles': 'Projects',
     'pluginsCodeEnvs': 'Plugins & envs',
+    'clusters': 'Clusters',
     'rootFiles': 'Root files',
   };
 

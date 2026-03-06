@@ -243,6 +243,8 @@ function ConnectionsComparisonChart({
   before?: ConnectionCounts;
   after?: ConnectionCounts;
 }) {
+  if (!before && !after) return null;
+
   // Sort keys by total count (before + after) descending
   const allKeys = Array.from(new Set([
     ...Object.keys(before || {}),
@@ -257,7 +259,6 @@ function ConnectionsComparisonChart({
   const hasChanges = allKeys.some(key => (before?.[key] || 0) !== (after?.[key] || 0));
   const [expanded, setExpanded] = useState(!hasChanges); // Expand when no changes
 
-  if (!before && !after) return null;
   if (allKeys.length === 0) return null;
 
   const visibleKeys = expanded ? allKeys : allKeys.slice(0, 10);
@@ -383,6 +384,12 @@ const ProjectsIconSvg = () => (
   </svg>
 );
 
+const ClustersIconSvg = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+  </svg>
+);
+
 const CodeEnvsIconSvg = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
@@ -409,6 +416,12 @@ function ScaleComparisonCard({ beforeData, afterData }: { beforeData: ParsedData
       before: beforeData.projects?.length ?? 0,
       after: afterData.projects?.length ?? 0,
       icon: <ProjectsIconSvg />,
+    },
+    {
+      label: 'Clusters',
+      before: beforeData.clusters?.length ?? 0,
+      after: afterData.clusters?.length ?? 0,
+      icon: <ClustersIconSvg />,
     },
     {
       label: 'Code Envs',

@@ -257,7 +257,7 @@ export class LogParser extends BaseTextParser<LogParserResult> {
           '<span class="hljs-number">$&</span>'
         );
         formattedLine = formattedLine.replace(
-          /\d+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/[a-z0-9./-]+:[a-z0-9./-]+/g,
+          /\d+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/[a-z0-9.\/-]+:[a-z0-9.\/-]+/g,
           '<span class="hljs-string">$&</span>'
         );
         formattedLine = formattedLine.replace(

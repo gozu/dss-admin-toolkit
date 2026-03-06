@@ -13,7 +13,6 @@ import type {
   ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
-  DirTreeData,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
 import { useProgressInterpolation } from './useProgressInterpolation';
@@ -151,6 +150,7 @@ interface LogErrorsResponse {
 
 export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
   const { dispatch } = useDiag();
+  const LIVE_PROGRESS_TIMEOUT_MS = 120000;
   const codeEnvsInterpolationEnabledRef = useRef(false);
   const projectFootprintInterpolationEnabledRef = useRef(false);
   const codeEnvsProgressSetterRef = useRef<((displayValue: number) => void) | null>(null);
@@ -181,6 +181,22 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
     const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const fmtMs = (start: number) => `${Math.round(nowMs() - start)}ms`;
     const getErrorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+    const isAbortError = (err: unknown) => {
+      if (err instanceof DOMException && err.name === 'AbortError') return true;
+      if (err instanceof Error && err.name === 'AbortError') return true;
+      const message = getErrorMessage(err);
+      return /aborted|aborterror/i.test(message);
+    };
+    const abortPendingRequest = (controller: unknown) => {
+      if (
+        controller &&
+        typeof controller === 'object' &&
+        'abort' in controller &&
+        typeof controller.abort === 'function'
+      ) {
+        controller.abort();
+      }
+    };
     type BenchEventLike = {
       tMs?: number;
       level?: 'info' | 'warn' | 'error';
@@ -556,12 +572,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           };
           dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: undefined } });
           let codeEnvsProgressActive = true;
-          let codeEnvsProgressRunId: string | undefined;
+          // Use a sentinel so the first poll returns only the current run id (status=replaced),
+          // avoiding replay of stale events from previous runs.
+          let codeEnvsProgressRunId: string | undefined = '__pending__';
           let codeEnvsProgressCursor = 0;
           let codeEnvsProgressEventsSeen = 0;
           let codeEnvsProgressWarned = false;
+          let codeEnvsProgressAbortController: AbortController | null = null;
           let codeEnvsUsageScanTotal: number | null = null;
-          let codeEnvsSkippedDuringUsageScan = 0;
           const codeEnvsProgressPath = '/api/code-envs/progress';
           let codeEnvsProgressPathLogged = false;
           setCodeEnvsLoading({
@@ -593,7 +611,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: normalized } });
           };
           const parseUsageCheckMessage = (message: string) => {
-            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+(?:\u2014|-)\s+(.+)$/u);
+            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+[\u2014\u2013-]\s+(.+)$/u);
             if (!match) return null;
             const scanIndex = Number.parseInt(match[1], 10);
             const scanTotal = Number.parseInt(match[2], 10);
@@ -623,7 +641,19 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             isSkipped: boolean;
             usageCount: number | null;
           }): ProvisionalCodeEnv | null => {
-            if (!parsed.name || parsed.isSkipped || parsed.usageCount == null) return null;
+            if (!parsed.name) return null;
+            if (parsed.isSkipped) {
+              return {
+                name: parsed.name,
+                usageCount: -1,
+                statusLabel: parsed.status,
+                isSkipped: true,
+                scanIndex: parsed.scanIndex,
+                scanTotal: parsed.scanTotal,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+            if (parsed.usageCount == null) return null;
             return {
               name: parsed.name,
               usageCount: parsed.usageCount,
@@ -636,40 +666,38 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           const replayCodeEnvProgressEvents = (events: Array<BenchEventLike>) => {
             const provisionalRows: ProvisionalCodeEnv[] = [];
             events.forEach((event) => {
-              if (!shouldLogProgressEvent(event)) return;
               const key = progressEventKey(event);
               if (seenCodeEnvEventKeys.has(key)) return;
               seenCodeEnvEventKeys.add(key);
-              codeEnvsProgressEventsSeen += 1;
-              const eventLevel =
-                event.level === 'warn' || event.level === 'error' ? event.level : 'info';
-              log(benchEventLine('ce', event), eventLevel);
-              if (String(event.step || '') === 'code_env_usage_scan_start') {
+              const normalizedStep = String(event.step || '')
+                .trim()
+                .toLowerCase();
+              if (normalizedStep === 'code_env_usage_scan_start') {
                 const startMatch = String(event.message || '').match(/checking\s+(\d+)\s+code envs/i);
                 const scannedTotal = startMatch ? Number.parseInt(startMatch[1], 10) : NaN;
                 if (Number.isFinite(scannedTotal) && scannedTotal > 0) {
                   codeEnvsUsageScanTotal = scannedTotal;
                 }
               }
-              if (String(event.step || '') === 'code_env_usage_check') {
+              if (normalizedStep === 'code_env_usage_check') {
                 const parsed = parseUsageCheckMessage(String(event.message || '').trim());
                 if (parsed) {
                   if (typeof parsed.scanTotal === 'number' && parsed.scanTotal > 0) {
                     codeEnvsUsageScanTotal = parsed.scanTotal;
                   }
-                  if (parsed.isSkipped) {
-                    codeEnvsSkippedDuringUsageScan += 1;
-                  }
                   const provisional = toProvisionalRow(parsed);
                   if (provisional) provisionalRows.push(provisional);
                 }
               }
+              if (shouldLogProgressEvent(event)) {
+                codeEnvsProgressEventsSeen += 1;
+                const eventLevel =
+                  event.level === 'warn' || event.level === 'error' ? event.level : 'info';
+                log(benchEventLine('ce', event), eventLevel);
+              }
             });
             if (codeEnvsUsageScanTotal != null) {
-              const expectedFromScan = Math.max(
-                0,
-                codeEnvsUsageScanTotal - codeEnvsSkippedDuringUsageScan,
-              );
+              const expectedFromScan = Math.max(0, codeEnvsUsageScanTotal);
               setExpectedCodeEnvCount(expectedFromScan);
             }
             if (provisionalRows.length > 0) {
@@ -688,6 +716,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 if (codeEnvsProgressRunId) {
                   query.set('runId', codeEnvsProgressRunId);
                 }
+                codeEnvsProgressAbortController = new AbortController();
                 if (!codeEnvsProgressPathLogged) {
                   log(`bench;ce;progress;path=${codeEnvsProgressPath}`);
                   codeEnvsProgressPathLogged = true;
@@ -695,9 +724,10 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 const payload = await withTimeout(
                   fetchJson<CodeEnvsProgressResponse>(
                     `${codeEnvsProgressPath}?${query.toString()}`,
+                    { signal: codeEnvsProgressAbortController.signal },
                   ),
                   codeEnvsProgressPath,
-                  5000,
+                  LIVE_PROGRESS_TIMEOUT_MS,
                 );
                 const progressSummary = payload.summary || {};
                 const progressPct = Math.max(
@@ -739,9 +769,11 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   codeEnvsRowsSince = 0;
                   codeEnvsPartialBuffer.length = 0;
                   codeEnvsUsageScanTotal = null;
-                  codeEnvsSkippedDuringUsageScan = 0;
+                  seenCodeEnvEventKeys.clear();
+                  codeEnvsProgressEventsSeen = 0;
                   setExpectedCodeEnvCount(undefined);
                   dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
+                  continue;
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : codeEnvsProgressCursor;
@@ -761,6 +793,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   log(`bench;ce;progress-error;${cleanToken(payload.error)}`, 'error');
                 }
               } catch (err) {
+                if ((!codeEnvsProgressActive || cancelled) && isAbortError(err)) {
+                  break;
+                }
                 if (!codeEnvsProgressWarned) {
                   codeEnvsProgressWarned = true;
                   log(
@@ -768,6 +803,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                     'warn',
                   );
                 }
+              } finally {
+                codeEnvsProgressAbortController = null;
               }
               if (!codeEnvsProgressActive) break;
               await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -777,6 +814,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           const codeEnvsProgressPromise = pollCodeEnvProgress();
           const codeEnvsRes = await settle(timed<CodeEnvsResponse>('/api/code-envs', beSettings.fe_timeout_code_envs ?? 620000));
           codeEnvsProgressActive = false;
+          abortPendingRequest(codeEnvsProgressAbortController);
           await codeEnvsProgressPromise;
           codeEnvsDone = true;
           if (cancelled) return;
@@ -888,11 +926,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           projectFootprintLastProgressRef.current = null;
           projectFootprintInterpolator.reset(0);
           let projectFootprintProgressActive = true;
-          let projectFootprintProgressRunId: string | undefined;
+          let projectFootprintProgressAbortController: AbortController | null = null;
+          // Use a sentinel so the first poll only syncs run id (status=replaced) instead of replaying stale events.
+          let projectFootprintProgressRunId: string | undefined = '__pending__';
           let projectFootprintProgressCursor = 0;
           let projectFootprintProgressWarned = false;
           const projectFootprintProgressPath = '/api/project-footprint/progress';
           const seenProjectProgressEventKeys = new Set<string>();
+          let projectUsageScanTotal: number | null = null;
           setProjectFootprintLoading({
             active: true,
             progressPct: 0,
@@ -908,16 +949,110 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             elapsedMs?: number;
           }) =>
             `${event.tMs ?? ''}|${event.step ?? ''}|${event.projectKey ?? ''}|${event.message ?? ''}|${event.elapsedMs ?? ''}`;
+          const setExpectedCodeEnvCountFromProject = (nextCount: number | null | undefined) => {
+            const normalized =
+              typeof nextCount === 'number' && Number.isFinite(nextCount) && nextCount >= 0
+                ? Math.floor(nextCount)
+                : undefined;
+            if (currentParsedData.codeEnvsExpectedCount === normalized) return;
+            currentParsedData = {
+              ...currentParsedData,
+              codeEnvsExpectedCount: normalized,
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsExpectedCount: normalized } });
+          };
+          const parseProjectUsageCheckMessage = (message: string) => {
+            const match = message.match(/^\[(\d+)\/(\d+)\]\s+(.+?)\s+[\u2014\u2013-]\s+(.+)$/u);
+            if (!match) return null;
+            const scanIndex = Number.parseInt(match[1], 10);
+            const scanTotal = Number.parseInt(match[2], 10);
+            const name = match[3].trim();
+            const status = match[4].trim();
+            const isSkipped = /skipped/i.test(status);
+            const usageMatch = status.match(/(\d+)\s+usage\(s\)/i);
+            const usageCount = /unused/i.test(status)
+              ? 0
+              : usageMatch
+                ? Number.parseInt(usageMatch[1], 10)
+                : NaN;
+            return {
+              scanIndex: Number.isFinite(scanIndex) ? scanIndex : undefined,
+              scanTotal: Number.isFinite(scanTotal) ? scanTotal : undefined,
+              name,
+              status,
+              isSkipped,
+              usageCount: Number.isFinite(usageCount) ? Math.max(0, usageCount) : null,
+            };
+          };
+          const toProjectProvisionalRow = (parsed: {
+            scanIndex?: number;
+            scanTotal?: number;
+            name: string;
+            status: string;
+            isSkipped: boolean;
+            usageCount: number | null;
+          }): ProvisionalCodeEnv | null => {
+            if (!parsed.name) return null;
+            if (parsed.isSkipped) {
+              return {
+                name: parsed.name,
+                usageCount: -1,
+                statusLabel: parsed.status,
+                isSkipped: true,
+                scanIndex: parsed.scanIndex,
+                scanTotal: parsed.scanTotal,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+            if (parsed.usageCount == null) return null;
+            return {
+              name: parsed.name,
+              usageCount: parsed.usageCount,
+              statusLabel: parsed.status,
+              scanIndex: parsed.scanIndex,
+              scanTotal: parsed.scanTotal,
+              updatedAt: new Date().toISOString(),
+            };
+          };
           const replayProjectProgressEvents = (events: Array<BenchEventLike>) => {
+            const provisionalRows: ProvisionalCodeEnv[] = [];
             events.forEach((event) => {
-              if (!shouldLogProgressEvent(event)) return;
               const key = projectProgressEventKey(event);
               if (seenProjectProgressEventKeys.has(key)) return;
               seenProjectProgressEventKeys.add(key);
-              const eventLevel =
-                event.level === 'warn' || event.level === 'error' ? event.level : 'info';
-              log(benchEventLine('pjft', event), eventLevel);
+              const normalizedStep = String(event.step || '')
+                .trim()
+                .toLowerCase();
+              if (normalizedStep === 'code_env_usage_scan_start') {
+                const startMatch = String(event.message || '').match(/checking\s+(\d+)\s+code envs/i);
+                const scannedTotal = startMatch ? Number.parseInt(startMatch[1], 10) : NaN;
+                if (Number.isFinite(scannedTotal) && scannedTotal > 0) {
+                  projectUsageScanTotal = scannedTotal;
+                }
+              }
+              if (normalizedStep === 'code_env_usage_check') {
+                const parsed = parseProjectUsageCheckMessage(String(event.message || '').trim());
+                if (parsed) {
+                  if (typeof parsed.scanTotal === 'number' && parsed.scanTotal > 0) {
+                    projectUsageScanTotal = parsed.scanTotal;
+                  }
+                  const provisional = toProjectProvisionalRow(parsed);
+                  if (provisional) provisionalRows.push(provisional);
+                }
+              }
+              if (shouldLogProgressEvent(event)) {
+                const eventLevel =
+                  event.level === 'warn' || event.level === 'error' ? event.level : 'info';
+                log(benchEventLine('pjft', event), eventLevel);
+              }
             });
+            if (projectUsageScanTotal != null) {
+              const expectedFromScan = Math.max(0, projectUsageScanTotal);
+              setExpectedCodeEnvCountFromProject(expectedFromScan);
+            }
+            if (provisionalRows.length > 0) {
+              dispatch({ type: 'UPSERT_PROVISIONAL_CODE_ENVS', payload: provisionalRows });
+            }
           };
 
           let projectFootprintRowsSince = 0;
@@ -930,16 +1065,22 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 if (projectFootprintProgressRunId) {
                   query.set('runId', projectFootprintProgressRunId);
                 }
+                projectFootprintProgressAbortController = new AbortController();
                 const payload = await withTimeout(
                   fetchJson<ProjectFootprintProgressResponse>(
                     `${projectFootprintProgressPath}?${query.toString()}`,
+                    { signal: projectFootprintProgressAbortController.signal },
                   ),
                   projectFootprintProgressPath,
-                  5000,
+                  LIVE_PROGRESS_TIMEOUT_MS,
                 );
                 if (payload.runId && payload.runId !== projectFootprintProgressRunId) {
                   projectFootprintProgressRunId = payload.runId;
                   projectFootprintProgressCursor = 0;
+                  projectFootprintRowsSince = 0;
+                  seenProjectProgressEventKeys.clear();
+                  projectUsageScanTotal = null;
+                  continue;
                 }
                 const nextCursor =
                   typeof payload.next === 'number' ? payload.next : projectFootprintProgressCursor;
@@ -988,6 +1129,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   projectFootprintRowsSince = payload.partialRowsNext;
                 }
               } catch (err) {
+                if ((!projectFootprintProgressActive || cancelled) && isAbortError(err)) {
+                  break;
+                }
                 if (!projectFootprintProgressWarned) {
                   projectFootprintProgressWarned = true;
                   log(
@@ -995,6 +1139,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                     'warn',
                   );
                 }
+              } finally {
+                projectFootprintProgressAbortController = null;
               }
               if (!projectFootprintProgressActive) break;
               await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -1006,6 +1152,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             timed<ProjectFootprintResponse>('/api/project-footprint', beSettings.fe_timeout_project_footprint ?? 620000),
           );
           projectFootprintProgressActive = false;
+          abortPendingRequest(projectFootprintProgressAbortController);
           await projectFootprintProgressPromise;
           projectFootprintDone = true;
           if (cancelled) return;
@@ -1168,39 +1315,16 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           }
         };
 
-        const runDirTree = async () => {
-          const dirTreeDepth = (() => {
-            try {
-              const raw = window.localStorage.getItem('diagparser.thresholds');
-              if (raw) {
-                const t = JSON.parse(raw);
-                if (typeof t.dirTreeDefaultDepth === 'number') return t.dirTreeDefaultDepth;
-              }
-            } catch { /* use default */ }
-            return 3;
-          })();
-          dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: true, error: null, scope: 'dss', projectKey: '' } });
-          const dirRes = await settle(timed<DirTreeData>(`/api/dir-tree?maxDepth=${dirTreeDepth}&scope=dss`, beSettings.fe_timeout_dir_tree ?? 300000));
-          if (cancelled) return;
-          if (dirRes.status === 'fulfilled' && dirRes.value) {
-            dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, tree: dirRes.value, expandedNodes: new Map(), error: null } });
-            log(`Loaded dir tree (${dirRes.value.root?.children?.length || 0} children)`);
-          } else {
-            const msg = settledError(dirRes);
-            dispatch({ type: 'SET_API_DIR_TREE', payload: { isLoading: false, error: msg } });
-            log(`Failed /api/dir-tree: ${msg}`, 'warn');
-          }
-        };
-
         log(
-          'Phase 3 strategy: launch all endpoints in parallel; heavy endpoints are code-envs + project-footprint',
+          'Phase 3 strategy: launch code-envs + project-footprint in parallel; defer dir-tree until Directory page is opened',
         );
         const phase3Start = nowMs();
         const heavyStart = nowMs();
         const lowStart = nowMs();
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
-        const lowGate = Promise.allSettled([runProjects(), runLogs(), runDirTree()]);
+        log('Deferred /api/dir-tree until Directory page is opened');
+        const lowGate = Promise.allSettled([runProjects(), runLogs()]);
 
         await heavyGate;
         clearTimeout(slowHeavyTimer);

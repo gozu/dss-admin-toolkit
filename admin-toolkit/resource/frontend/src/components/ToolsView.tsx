@@ -1184,7 +1184,7 @@ export function ToolsView() {
   const { parsedData, activePage } = state;
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
-  const [, setApiDataLoaded] = useState(false);
+  const [_apiDataLoaded, setApiDataLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(null);
 
@@ -1739,7 +1739,7 @@ export function ToolsView() {
     [selectedCampaignId],
   );
 
-  if (isLoading) {
+  if (activePage === 'outreach' && isLoading) {
     const analysisLoading = parsedData.analysisLoading;
     return (
       <main className="flex-1 py-4">
@@ -1776,7 +1776,7 @@ export function ToolsView() {
     );
   }
 
-  if (!data) {
+  if (activePage === 'outreach' && !data) {
     return (
       <main className="flex-1 py-4">
         <Container ultraWide={ultraWideEnabled}>
@@ -1817,7 +1817,7 @@ export function ToolsView() {
                           {config.summaryLabel}
                         </div>
                         <div className="text-2xl font-mono text-[var(--text-primary)]">
-                          {getSummaryCount(data, config)}
+                          {getSummaryCount(data!, config)}
                         </div>
                       </div>
                     ))}
@@ -1937,7 +1937,7 @@ export function ToolsView() {
                         {(() => {
                           const isDisabled = disabledCampaigns.has(selectedConfig.id);
                           // Show all recipients (unfiltered) — exempt ones shown in green
-                          const recipients = getRecipients(data, selectedConfig);
+                          const recipients = getRecipients(data!, selectedConfig);
                           const keys = getSelectedKeys(selectedConfig.id);
                           const selectedCount = recipients.filter((r) =>
                             keys.includes(r.recipientKey),

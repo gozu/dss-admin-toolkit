@@ -75,6 +75,10 @@ export function ConnectionsChart() {
     };
   }, [connections]);
 
+  if (!isVisible('connections-chart') || Object.keys(connections).length === 0) {
+    return null;
+  }
+
   const centerTextPlugin: Plugin<'doughnut'> = useMemo(() => ({
     id: 'connectionsCenterText',
     afterDraw(chart) {
@@ -107,10 +111,6 @@ export function ConnectionsChart() {
       ctx.restore();
     },
   }), [chartData.total]);
-
-  if (!isVisible('connections-chart') || Object.keys(connections).length === 0) {
-    return null;
-  }
 
   const options = {
     responsive: true,

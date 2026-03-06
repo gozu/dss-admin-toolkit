@@ -509,7 +509,11 @@ export function CodeEnvCleaner() {
                       <td className="text-[var(--text-secondary)]">{row.owner}</td>
                       <td>
                         {row.isProvisional ? (
-                          row.usageCount === 0 ? (
+                          row.provisional?.isSkipped ? (
+                            <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-[var(--bg-glass)] text-[var(--text-muted)]">
+                              {row.provisional?.statusLabel || 'Skipped'}
+                            </span>
+                          ) : row.usageCount === 0 ? (
                             <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-400/20 text-amber-400">
                               Unused
                             </span>

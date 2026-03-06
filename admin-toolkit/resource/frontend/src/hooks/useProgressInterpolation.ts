@@ -21,7 +21,7 @@ export function useProgressInterpolation(
 ): ProgressInterpolator {
   const onProgressChangeRef = useRef(onProgressChange);
   const lastRealValueRef = useRef(0);
-  const lastRealAtRef = useRef(0);
+  const lastRealAtRef = useRef(Date.now());
   const currentDisplayRef = useRef(0);
   const doneRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);

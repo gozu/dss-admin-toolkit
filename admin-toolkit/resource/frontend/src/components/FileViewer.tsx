@@ -81,7 +81,6 @@ export function FileViewer({
   }, []);
 
   // Process content when modal opens
-  /* eslint-disable react-hooks/set-state-in-effect -- intentional state sync on dep change */
   useEffect(() => {
     if (isOpen && content) {
       setIsFullyLoaded(false);
@@ -114,7 +113,6 @@ export function FileViewer({
       setShowingLastLines(false);
     }
   }, [isOpen, content, isLog]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Apply syntax highlighting for non-log files
   useEffect(() => {

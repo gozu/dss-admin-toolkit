@@ -1,4 +1,5 @@
 import json
+import hashlib
 import math
 import os
 import platform
@@ -24,12 +25,11 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
+_SHARED_USAGE_SCANS: Dict[str, Dict[str, Any]] = {}
+_SHARED_USAGE_SCANS_LOCK = threading.Lock()
 _THREAD_LOCAL = threading.local()
 _PROGRESS: Dict[str, Dict[str, Any]] = {}
 _PROGRESS_LOCK = threading.Lock()
-# Shared state for deduplicating concurrent _collect_project_code_env_usage calls
-_CODE_ENV_USAGE_COND = threading.Condition()
-_CODE_ENV_USAGE_SHARED: Dict[str, Any] = {'result': None, 'ts': 0.0, 'computing': False}
 _PROGRESS_EVENT_LIMIT = 10000
 _PROGRESS_RETENTION_SEC = 1800
 
@@ -131,6 +131,17 @@ def _cache_get(key: str, ttl: int, loader):
     with _CACHE_LOCK:
         _CACHE[key] = {'ts': now, 'value': value}
     return value
+
+
+def _shared_project_code_env_usage_key(project_info: Dict[str, Dict[str, str]]) -> str:
+    project_keys = sorted(str(project_key).strip() for project_key in project_info.keys() if str(project_key).strip())
+    digest = hashlib.sha1('\n'.join(project_keys).encode('utf-8')).hexdigest()
+    return f"{len(project_keys)}:{digest}"
+
+
+def _clear_shared_project_code_env_usage() -> None:
+    with _SHARED_USAGE_SCANS_LOCK:
+        _SHARED_USAGE_SCANS.clear()
 
 
 def _cleanup_progress_locked(now_ts: float) -> None:
@@ -3554,20 +3565,29 @@ def _check_env_usages(
 
     normalized_lang = _normalize_language(env_lang_raw)
     env_key = f"{normalized_lang}:{env_name}"
+    deployment_mode = str(env_listing.get('deploymentMode') or '').upper()
+    if deployment_mode in {'PLUGIN_MANAGED', 'DSS_INTERNAL'}:
+        return None
 
+    owner = _extract_code_env_owner(env_listing, {})
+    usages: List[Any] = []
     client = _thread_client()
     try:
-        env_obj = client.get_code_env(normalized_lang.upper(), env_name)
-        settings_raw = _safe_get_raw(env_obj.get_settings())
-        if settings_raw.get('deploymentMode') in {'PLUGIN_MANAGED', 'DSS_INTERNAL'}:
-            return None
-        usages = env_obj.list_usages() if hasattr(env_obj, 'list_usages') else []
+        raw_usages = _bench_call(
+            'list_code_env_usages',
+            _client_perform_json,
+            client,
+            'GET',
+            "/admin/code-envs/%s/%s/usages" % (str(env_lang_raw).upper(), env_name),
+        )
+        if isinstance(raw_usages, list):
+            usages = raw_usages
+        elif hasattr(client, 'get_code_env'):
+            env_obj = _bench_call('get_code_env', client.get_code_env, normalized_lang.upper(), env_name)
+            usages = _bench_call('list_code_env_usages', env_obj.list_usages) if hasattr(env_obj, 'list_usages') else []
     except Exception as exc:
         app.logger.warning("[code-env-usage] failed to check %s: %s", env_key, exc)
         usages = []
-        settings_raw = {}
-
-    owner = _extract_code_env_owner(env_listing, settings_raw)
 
     normalized_usages: List[Dict[str, Any]] = []
     for raw_usage in usages:
@@ -3715,69 +3735,6 @@ def _load_code_env_full_details(
     }
 
 
-def _get_code_env_usage_shared(
-    client: Any,
-    project_info: Dict[str, Dict[str, str]],
-    size_by_env: Dict[str, int],
-    deadline_ts: Optional[float] = None,
-    progress_cb: Optional[Callable[..., None]] = None,
-    ttl: float = 120.0,
-) -> Dict[str, Any]:
-    """Compute code env usage once and share result across concurrent callers.
-
-    If another thread is already computing, this waits for that result instead
-    of launching a duplicate scan.
-    """
-    now = time.time()
-    state = _CODE_ENV_USAGE_SHARED
-
-    with _CODE_ENV_USAGE_COND:
-        # Return cached result if fresh
-        if state['result'] is not None and now - state['ts'] < ttl:
-            return state['result']
-
-        # Another thread is already computing — wait for it
-        if state['computing']:
-            while state['computing']:
-                _CODE_ENV_USAGE_COND.wait(timeout=60)
-            if state['result'] is not None:
-                return state['result']
-
-        # We will compute
-        state['computing'] = True
-
-    try:
-        result = _collect_project_code_env_usage(
-            client,
-            project_info,
-            size_by_env,
-            include_project_object_scan=True,
-            include_code_env_usage_api=False,
-            deadline_ts=deadline_ts,
-            progress_cb=progress_cb,
-        )
-    except Exception:
-        with _CODE_ENV_USAGE_COND:
-            state['computing'] = False
-            _CODE_ENV_USAGE_COND.notify_all()
-        raise
-
-    with _CODE_ENV_USAGE_COND:
-        state['result'] = result
-        state['ts'] = time.time()
-        state['computing'] = False
-        _CODE_ENV_USAGE_COND.notify_all()
-
-    return result
-
-
-def _invalidate_code_env_usage_shared():
-    """Clear the shared code env usage cache."""
-    with _CODE_ENV_USAGE_COND:
-        _CODE_ENV_USAGE_SHARED['result'] = None
-        _CODE_ENV_USAGE_SHARED['ts'] = 0.0
-
-
 def _collect_project_code_env_usage(
     client: Any,
     project_info: Dict[str, Dict[str, str]],
@@ -3795,7 +3752,7 @@ def _collect_project_code_env_usage(
     )
 
     envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
-    workers = min(_parallel_workers(8), len(envs))
+    workers = min(_parallel_workers(16), len(envs))
     total = len(envs)
     _notify_progress(
         progress_cb,
@@ -3907,6 +3864,142 @@ def _collect_project_code_env_usage(
         'envMetaByKey': env_meta_by_key,
         'codeStudioCountByProject': {},
     }
+
+
+def _get_shared_project_code_env_usage(
+    client: Any,
+    project_info: Dict[str, Dict[str, str]],
+    size_by_env: Dict[str, int],
+    include_project_object_scan: bool = True,
+    include_code_env_usage_api: bool = True,
+    deadline_ts: Optional[float] = None,
+    progress_cb: Optional[Callable[..., None]] = None,
+) -> Dict[str, Any]:
+    if not project_info:
+        return {}
+
+    cache_key = _shared_project_code_env_usage_key(project_info)
+    ttl_sec = max(1, int(_BACKEND_SETTINGS.get('cache_ttl_usage_full') or 5))
+    now_ts = time.time()
+    wait_event: Optional[threading.Event] = None
+    is_owner = False
+
+    with _SHARED_USAGE_SCANS_LOCK:
+        stale_keys = [
+            key
+            for key, entry in _SHARED_USAGE_SCANS.items()
+            if isinstance(entry, dict)
+            and str(entry.get('status') or '') != 'running'
+            and (now_ts - float(entry.get('ts') or now_ts)) > ttl_sec
+        ]
+        for key in stale_keys:
+            _SHARED_USAGE_SCANS.pop(key, None)
+
+        entry = _SHARED_USAGE_SCANS.get(cache_key)
+        if isinstance(entry, dict):
+            entry_status = str(entry.get('status') or '')
+            entry_ts = float(entry.get('ts') or 0.0)
+            entry_result = entry.get('result')
+            if entry_status == 'done' and (now_ts - entry_ts) <= ttl_sec and isinstance(entry_result, dict):
+                _notify_progress(
+                    progress_cb,
+                    'collect_project_code_env_usage_cache_hit',
+                    f"reusing cached code env usage scan envs={len((entry_result.get('envMetaByKey') or {}))}",
+                )
+                return entry_result
+            if entry_status == 'running':
+                ready = entry.get('ready')
+                if isinstance(ready, threading.Event):
+                    wait_event = ready
+
+        if wait_event is None:
+            wait_event = threading.Event()
+            _SHARED_USAGE_SCANS[cache_key] = {
+                'status': 'running',
+                'ts': now_ts,
+                'ready': wait_event,
+                'result': None,
+                'error': None,
+            }
+            is_owner = True
+
+    if is_owner:
+        try:
+            result = _collect_project_code_env_usage(
+                client,
+                project_info,
+                size_by_env,
+                include_project_object_scan=include_project_object_scan,
+                include_code_env_usage_api=include_code_env_usage_api,
+                deadline_ts=deadline_ts,
+                progress_cb=progress_cb,
+            )
+        except Exception as exc:
+            with _SHARED_USAGE_SCANS_LOCK:
+                entry = _SHARED_USAGE_SCANS.get(cache_key)
+                if isinstance(entry, dict) and entry.get('ready') is wait_event:
+                    entry['status'] = 'error'
+                    entry['ts'] = time.time()
+                    entry['error'] = str(exc)
+                    wait_event.set()
+            raise
+
+        with _SHARED_USAGE_SCANS_LOCK:
+            entry = _SHARED_USAGE_SCANS.get(cache_key)
+            if isinstance(entry, dict) and entry.get('ready') is wait_event:
+                entry['status'] = 'done'
+                entry['ts'] = time.time()
+                entry['result'] = result
+                entry['error'] = None
+                wait_event.set()
+        return result
+
+    _notify_progress(
+        progress_cb,
+        'collect_project_code_env_usage_wait',
+        'waiting for shared code env usage scan',
+    )
+    timeout_seconds = None if deadline_ts is None else max(0.0, deadline_ts - time.time())
+    finished = wait_event.wait(timeout_seconds)
+
+    with _SHARED_USAGE_SCANS_LOCK:
+        entry = _SHARED_USAGE_SCANS.get(cache_key)
+        entry_status = str(entry.get('status') or '') if isinstance(entry, dict) else ''
+        entry_result = entry.get('result') if isinstance(entry, dict) else None
+        entry_error = str(entry.get('error') or '') if isinstance(entry, dict) else ''
+
+    if finished and entry_status == 'done' and isinstance(entry_result, dict):
+        _notify_progress(
+            progress_cb,
+            'collect_project_code_env_usage_wait_done',
+            f"shared code env usage scan ready envs={len((entry_result.get('envMetaByKey') or {}))}",
+        )
+        return entry_result
+
+    if entry_status == 'error':
+        _notify_progress(
+            progress_cb,
+            'collect_project_code_env_usage_wait_retry',
+            f"shared code env usage scan failed ({entry_error or 'unknown error'}); retrying locally",
+            'warn',
+        )
+    else:
+        _notify_progress(
+            progress_cb,
+            'collect_project_code_env_usage_wait_timeout',
+            'shared code env usage scan wait timed out; retrying locally',
+            'warn',
+        )
+
+    return _collect_project_code_env_usage(
+        client,
+        project_info,
+        size_by_env,
+        include_project_object_scan=include_project_object_scan,
+        include_code_env_usage_api=include_code_env_usage_api,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
 
 
 def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_depth: int,
@@ -4598,10 +4691,12 @@ def api_code_envs():
             if project_info and not deadline_reached('collect_project_code_env_usage'):
                 step_started = time.time()
                 add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
-                usage_data = _get_code_env_usage_shared(
+                usage_data = _get_shared_project_code_env_usage(
                     client,
                     project_info,
                     size_by_env,
+                    include_project_object_scan=True,
+                    include_code_env_usage_api=False,
                     deadline_ts=deadline,
                     progress_cb=progress_event,
                 )
@@ -5107,10 +5202,12 @@ def api_project_footprint():
             if project_keys and not deadline_reached('collect_project_code_env_usage'):
                 step_start = time.time()
                 add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_keys)} projects")
-                usage_data = _get_code_env_usage_shared(
+                usage_data = _get_shared_project_code_env_usage(
                     client,
                     project_info,
                     {},
+                    include_project_object_scan=True,
+                    include_code_env_usage_api=False,
                     deadline_ts=deadline,
                     progress_cb=progress_event,
                 )
@@ -6724,7 +6821,7 @@ def api_tracking_refresh():
     # Invalidate outreach data cache to force fresh DSS API calls
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
-    _invalidate_code_env_usage_shared()
+    _clear_shared_project_code_env_usage()
     # Load fresh outreach data (populates _CACHE['tools_outreach_data'])
     try:
         with app.test_request_context('/api/tools/outreach-data'):
@@ -6994,6 +7091,7 @@ def api_cache_clear():
     """Clear the in-memory cache so subsequent requests fetch fresh data."""
     with _CACHE_LOCK:
         _CACHE.clear()
+    _clear_shared_project_code_env_usage()
     return jsonify({'ok': True})
 
 
@@ -7145,7 +7243,7 @@ def api_code_env_cleaner_delete(lang, name):
     _CACHE.pop('code_envs', None)
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
-    _invalidate_code_env_usage_shared()
+    _clear_shared_project_code_env_usage()
 
     app.logger.info("[code-env-cleaner] backed up %s to managed folder %s and deleted %s/%s", zip_filename, folder_id, lang, name)
     return jsonify({"backed_up_to": "managed folder", "zip_name": zip_filename, "deleted": name}), 200

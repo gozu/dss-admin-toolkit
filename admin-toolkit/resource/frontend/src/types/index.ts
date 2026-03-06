@@ -171,6 +171,7 @@ export interface ProvisionalCodeEnv {
   name: string;
   usageCount: number;
   statusLabel: string;
+  isSkipped?: boolean;
   scanIndex?: number;
   scanTotal?: number;
   updatedAt: string;
@@ -767,6 +768,7 @@ export interface ComparisonResult {
   collections: {
     users: CollectionDelta<User>;
     projects: CollectionDelta<Project>;
+    clusters: CollectionDelta<Cluster>;
     codeEnvs: CollectionDelta<CodeEnv>;
     plugins: CollectionDelta<string>;
   };
