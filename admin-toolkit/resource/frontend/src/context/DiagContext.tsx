@@ -286,6 +286,7 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useDiag(): DiagContextValue {
   const context = useContext(DiagContext);
   if (context === undefined) {

@@ -38,7 +38,6 @@ function escapeRegex(str: string): string {
 }
 
 interface CategorizedEntries {
-  clusters: Entry[];
   projects: Entry[];
   plugins: Entry[];
   codeEnvs: Entry[];
@@ -71,18 +70,12 @@ function categorizeEntries(
   const escapedRoot = escapeRegex(configRoot);
 
   const patterns = {
-    clusterJson: new RegExp(`^${escapedRoot}config/clusters/[^/]+\\.json$`),
-    clusterConfig: new RegExp(`^${escapedRoot}clusters/([^/]+)/exec/\\1_config.*\\.yaml$`),
-    kubeConfig: new RegExp(`^${escapedRoot}clusters/([^/]+)/exec/kube_config$`),
-    startLog: new RegExp(`^${escapedRoot}clusters/([^/]+)/log/start\\.log$`),
-    stopLog: new RegExp(`^${escapedRoot}clusters/([^/]+)/log/stop\\.log$`),
     project: new RegExp(`^${escapedRoot}config/projects/[^/]+/params\\.json$`),
     plugin: new RegExp(`^${escapedRoot}config/plugins/[^/]+/settings\\.json$`),
     codeEnv: new RegExp(`^${escapedRoot}code-envs/desc/[^/]+/[^/]+/desc\\.json$`),
   };
 
   const result: CategorizedEntries = {
-    clusters: [],
     projects: [],
     plugins: [],
     codeEnvs: [],
@@ -103,14 +96,6 @@ function categorizeEntries(
       result.plugins.push(entry);
     } else if (patterns.codeEnv.test(filename)) {
       result.codeEnvs.push(entry);
-    } else if (
-      patterns.clusterJson.test(filename) ||
-      patterns.clusterConfig.test(filename) ||
-      patterns.kubeConfig.test(filename) ||
-      patterns.startLog.test(filename) ||
-      patterns.stopLog.test(filename)
-    ) {
-      result.clusters.push(entry);
     } else if (!filename.includes('/')) {
       // Root file
       if (filename === 'output.log' || filename.endsWith('/output.log')) {
@@ -327,8 +312,7 @@ export function useFileProcessor(): UseFileProcessorReturn {
       timer.mark('parallel');
       setProgress('Extracting data files...');
 
-      const [, projectsExtracted, , ,rootFilesExtracted] = await Promise.all([
-        extractBatch(categorized.clusters, extractedFiles),
+      const [projectsExtracted, , , rootFilesExtracted] = await Promise.all([
         extractBatch(categorized.projects, extractedFiles),
         extractBatch(categorized.plugins, extractedFiles),
         extractBatch(categorized.codeEnvs, extractedFiles),

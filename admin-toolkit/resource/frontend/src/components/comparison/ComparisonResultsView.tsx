@@ -242,7 +242,6 @@ export function ComparisonResultsView({ onBack }: ComparisonResultsViewProps) {
           <ComparisonCollectionsSection
             users={result.collections.users}
             projects={result.collections.projects}
-            clusters={result.collections.clusters}
             codeEnvs={result.collections.codeEnvs}
             plugins={result.collections.plugins}
           />

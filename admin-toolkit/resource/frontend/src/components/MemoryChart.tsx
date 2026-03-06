@@ -59,10 +59,6 @@ export function MemoryChart() {
     };
   }, [memoryInfo]);
 
-  if (!isVisible('memory-chart') || Object.keys(memoryInfo).length === 0) {
-    return null;
-  }
-
   const centerTextPlugin: Plugin<'doughnut'> = useMemo(() => ({
     id: 'memoryCenterText',
     afterDraw(chart) {
@@ -95,6 +91,10 @@ export function MemoryChart() {
       ctx.restore();
     },
   }), [chartData.total, memoryInfo.total]);
+
+  if (!isVisible('memory-chart') || Object.keys(memoryInfo).length === 0) {
+    return null;
+  }
 
   const options = {
     responsive: true,

@@ -8,6 +8,7 @@ function useCountUp(target: number, duration = 1000) {
   const startTimeRef = useRef<number | null>(null);
   const rafRef = useRef<number>(0);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- animation loop */
   useEffect(() => {
     if (target === 0) {
       setValue(0);
@@ -34,6 +35,7 @@ function useCountUp(target: number, duration = 1000) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, [target, duration]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return value;
 }
@@ -118,10 +120,10 @@ interface MetricCardProps {
 
 function AnimatedNumber({ value }: { value: string }) {
   const match = value.match(/^([\d.]+)\s*(.*)$/);
-  if (!match) return <>{value}</>;
-  const num = parseFloat(match[1]);
-  const suffix = match[2];
+  const num = match ? parseFloat(match[1]) : 0;
+  const suffix = match ? match[2] : '';
   const animated = useCountUp(num, 1200);
+  if (!match) return <>{value}</>;
   return <>{animated}{suffix ? ` ${suffix}` : ''}</>;
 }
 

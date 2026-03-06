@@ -1,12 +1,11 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
-import type { CollectionDelta, User, Project, Cluster, CodeEnv } from '../../types';
+import type { CollectionDelta, User, Project, CodeEnv } from '../../types';
 import { CountBadge } from './DeltaBadge';
 
 interface ComparisonCollectionsSectionProps {
   users: CollectionDelta<User>;
   projects: CollectionDelta<Project>;
-  clusters: CollectionDelta<Cluster>;
   codeEnvs: CollectionDelta<CodeEnv>;
   plugins: CollectionDelta<string>;
 }
@@ -298,83 +297,6 @@ function renderProjectModified(item: { before: Project; after: Project; changes:
   );
 }
 
-function renderCluster(cluster: Cluster, type: 'added' | 'removed') {
-  const color = type === 'added' ? 'text-[var(--neon-green)]' : 'text-[var(--neon-red)]';
-  return (
-    <div className="flex items-center justify-between">
-      <div>
-        <span className={`font-medium ${color}`}>{cluster.name}</span>
-        {cluster.region && <span className="text-[var(--text-muted)] text-sm ml-2">({cluster.region})</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        {cluster.version && (
-          <span className="text-xs text-[var(--text-muted)]">v{cluster.version}</span>
-        )}
-        {cluster.status && (
-          <span className={`badge ${cluster.status === 'ON' ? 'badge-success' : cluster.status === 'OFF' ? 'badge-neutral' : 'badge-warning'} text-xs`}>
-            {cluster.status}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function renderClusterModified(item: { before: Cluster; after: Cluster; changes: string[] }) {
-  // Determine if this is a positive or negative change
-  const statusChange = item.changes.includes('status');
-  const isPositive = statusChange && item.before.status !== 'ON' && item.after.status === 'ON';
-  const isNegative = statusChange && item.before.status === 'ON' && item.after.status !== 'ON';
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-[var(--neon-amber)]">{item.after.name}</span>
-          {isPositive && (
-            <span className="text-[var(--neon-green)]" title="Cluster turned ON">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
-            </span>
-          )}
-          {isNegative && (
-            <span className="text-[var(--neon-red)]" title="Cluster turned OFF">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-              </svg>
-            </span>
-          )}
-        </div>
-        <span className="text-xs text-[var(--text-muted)]">
-          Changed: {item.changes.join(', ')}
-        </span>
-      </div>
-      {statusChange && (
-        <div className="text-sm">
-          <span className="text-[var(--text-muted)]">Status: </span>
-          <span className="line-through text-[var(--text-muted)]">{item.before.status}</span>
-          <span className="mx-1">→</span>
-          <span className={item.after.status === 'ON' ? 'text-[var(--neon-green)]' : 'text-[var(--neon-red)]'}>
-            {item.after.status}
-          </span>
-        </div>
-      )}
-      {item.changes.includes('version') && (
-        <div className="text-sm">
-          <span className="text-[var(--text-muted)]">Version: </span>
-          <span className="line-through text-[var(--text-muted)]">{item.before.version}</span>
-          <span className="mx-1">→</span>
-          <span className="text-[var(--text-primary)]">{item.after.version}</span>
-        </div>
-      )}
-      {item.changes.includes('nodeGroups') && (
-        <div className="text-sm text-[var(--neon-amber)]">Node groups modified</div>
-      )}
-    </div>
-  );
-}
-
 function renderCodeEnv(env: CodeEnv, type: 'added' | 'removed') {
   const color = type === 'added' ? 'text-[var(--neon-green)]' : 'text-[var(--neon-red)]';
   return (
@@ -416,12 +338,6 @@ const ProjectsIcon = () => (
   </svg>
 );
 
-const ClustersIcon = () => (
-  <svg className="w-5 h-5 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-  </svg>
-);
-
 const CodeEnvsIcon = () => (
   <svg className="w-5 h-5 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
@@ -447,7 +363,6 @@ interface CombinedChangeEntry {
 export function ComparisonCollectionsSection({
   users,
   projects,
-  clusters,
   codeEnvs,
   plugins,
 }: ComparisonCollectionsSectionProps) {
@@ -456,7 +371,6 @@ export function ComparisonCollectionsSection({
   const totalChanges =
     users.added.length + users.removed.length + users.modified.length +
     projects.added.length + projects.removed.length + projects.modified.length +
-    clusters.added.length + clusters.removed.length + clusters.modified.length +
     codeEnvs.added.length + codeEnvs.removed.length + codeEnvs.modified.length +
     plugins.added.length + plugins.removed.length;
 
@@ -464,7 +378,6 @@ export function ComparisonCollectionsSection({
   const hasData =
     users.added.length + users.removed.length + users.modified.length + users.unchanged > 0 ||
     projects.added.length + projects.removed.length + projects.modified.length + projects.unchanged > 0 ||
-    clusters.added.length + clusters.removed.length + clusters.modified.length + clusters.unchanged > 0 ||
     codeEnvs.added.length + codeEnvs.removed.length + codeEnvs.modified.length + codeEnvs.unchanged > 0 ||
     plugins.added.length + plugins.removed.length + plugins.unchanged > 0;
 
@@ -485,16 +398,6 @@ export function ComparisonCollectionsSection({
     ...projects.added.map(p => ({ type: 'added' as const, collection: 'Project', name: p.name, detail: p.key })),
     ...projects.removed.map(p => ({ type: 'removed' as const, collection: 'Project', name: p.name, detail: p.key })),
     ...projects.modified.map(m => ({ type: 'modified' as const, collection: 'Project', name: m.after.name, detail: m.changes.join(', ') })),
-    ...clusters.added.map(c => ({ type: 'added' as const, collection: 'Cluster', name: c.name, detail: c.region })),
-    ...clusters.removed.map(c => ({ type: 'removed' as const, collection: 'Cluster', name: c.name, detail: c.region })),
-    ...clusters.modified.map(m => ({
-      type: 'modified' as const,
-      collection: 'Cluster',
-      name: m.after.name,
-      detail: m.changes.join(', '),
-      isPositive: m.changes.includes('status') && m.before.status !== 'ON' && m.after.status === 'ON',
-      isNegative: m.changes.includes('status') && m.before.status === 'ON' && m.after.status !== 'ON',
-    })),
     ...codeEnvs.added.map(e => ({ type: 'added' as const, collection: 'Code Env', name: e.name, detail: e.version })),
     ...codeEnvs.removed.map(e => ({ type: 'removed' as const, collection: 'Code Env', name: e.name, detail: e.version })),
     ...codeEnvs.modified.map(m => ({ type: 'modified' as const, collection: 'Code Env', name: m.after.name, detail: `${m.before.version} → ${m.after.version}` })),
@@ -630,17 +533,6 @@ export function ComparisonCollectionsSection({
             renderItem={renderProject}
             renderModified={renderProjectModified}
             getKey={(p) => p.key}
-          />
-        )}
-
-        {(clusters.added.length + clusters.removed.length + clusters.modified.length + clusters.unchanged > 0) && (
-          <CollectionCard
-            title="K8s Clusters"
-            icon={<ClustersIcon />}
-            delta={clusters}
-            renderItem={renderCluster}
-            renderModified={renderClusterModified}
-            getKey={(c) => c.name}
           />
         )}
 

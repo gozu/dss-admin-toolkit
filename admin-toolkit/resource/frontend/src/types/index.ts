@@ -15,42 +15,6 @@ export interface DebugLogEntry {
 // Extracted files map
 export type ExtractedFiles = Record<string, string>;
 
-// Cluster types
-export interface NodeGroup {
-  name: string;
-  instanceType: string;
-  desiredCapacity: number;
-  minSize: number;
-  maxSize: number;
-  volumeSize?: number;
-  volumeType?: string;
-  spot?: boolean;
-  labels?: Record<string, string>;
-  taints?: Array<{ key: string; value: string; effect: string }>;
-}
-
-export interface Cluster {
-  name: string;
-  region?: string;
-  version?: string;
-  networkType?: string;
-  vpcCidr?: string;
-  subnets?: Record<string, Record<string, { id: string }>>;
-  subnetIds?: string[];
-  securityGroups?: string[];
-  vpcId?: string;
-  status?: 'ON' | 'OFF' | 'UNKNOWN';
-  uptime?: string;
-  server?: string;
-  nodeGroups: NodeGroup[];
-  lastStartTime?: Date;
-  lastStopTime?: Date;
-  currentContext?: string;
-  clusterName?: string;
-  authCommand?: string;
-  authApiVersion?: string;
-}
-
 // Project types
 export interface Permission {
   type: 'Group' | 'User';
@@ -467,7 +431,6 @@ export interface ParsedData {
   rVersionCounts?: Record<string, number>;
   totalEnvCount?: number;
   skippedEnvCount?: number;
-  clusters?: Cluster[];
   mailChannels?: MailChannel[];
 
   // License
@@ -753,7 +716,6 @@ export interface ComparisonResult {
   collections: {
     users: CollectionDelta<User>;
     projects: CollectionDelta<Project>;
-    clusters: CollectionDelta<Cluster>;
     codeEnvs: CollectionDelta<CodeEnv>;
     plugins: CollectionDelta<string>;
   };

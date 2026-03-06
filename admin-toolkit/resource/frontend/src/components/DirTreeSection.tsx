@@ -68,7 +68,6 @@ export function DirTreeSection({ file }: DirTreeSectionProps) {
         console.log(`[DirTreeSection] Streaming datadir_listing.txt: ${formatSize(totalSize)}`);
 
         // Get readable stream from entry - streams data without holding in memory
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const readable = (dirListingEntry as Entry & { readable: ReadableStream<Uint8Array> }).readable;
 
         if (readable) {

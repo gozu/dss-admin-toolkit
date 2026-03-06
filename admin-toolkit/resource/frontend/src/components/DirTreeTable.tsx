@@ -52,7 +52,7 @@ interface TreeRowProps {
   maxSize: number;
   expanded: Set<string>;
   toggleExpand: (path: string) => void;
-  visibleCount: { current: number };
+  visibleCounter: { current: number };
   maxVisible: number;
   onLazyExpand?: (dirPath: string) => Promise<DirEntry | null>;
   lazyExpandedNodes?: Map<string, DirEntry>;
@@ -65,14 +65,14 @@ function TreeRow({
   maxSize,
   expanded,
   toggleExpand,
-  visibleCount,
+  visibleCounter,
   maxVisible,
   onLazyExpand,
   lazyExpandedNodes,
   isExpanding
 }: TreeRowProps) {
-  if (visibleCount.current >= maxVisible) return null;
-  visibleCount.current++;
+  if (visibleCounter.current >= maxVisible) return null;
+  visibleCounter.current++; // eslint-disable-line react-hooks/immutability -- intentional mutable counter
 
   const isExpanded = expanded.has(node.path);
   const hasChildren = node.isDirectory && (node.children.length > 0 || node.hasHiddenChildren);
@@ -192,7 +192,7 @@ function TreeRow({
             maxSize={maxSize}
             expanded={expanded}
             toggleExpand={toggleExpand}
-            visibleCount={visibleCount}
+            visibleCounter={visibleCounter}
             maxVisible={maxVisible}
             onLazyExpand={onLazyExpand}
             lazyExpandedNodes={lazyExpandedNodes}
@@ -205,6 +205,30 @@ function TreeRow({
 }
 
 type SortField = 'name' | 'size' | 'files' | 'items';
+
+function SortHeader({ field, sortField, sortDirection, onSort, children }: {
+  field: SortField;
+  sortField: SortField;
+  sortDirection: 'asc' | 'desc';
+  onSort: (field: SortField) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <th
+      className="py-2 px-3 text-left text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--text-primary)] transition-colors select-none"
+      onClick={() => onSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        {children}
+        {sortField === field && (
+          <span className="text-[var(--neon-cyan)]">
+            {sortDirection === 'asc' ? '↑' : '↓'}
+          </span>
+        )}
+      </div>
+    </th>
+  );
+}
 
 export function DirTreeTable({ data, onExpand, expandedNodes, isExpanding }: DirTreeTableProps) {
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -291,23 +315,7 @@ export function DirTreeTable({ data, onExpand, expandedNodes, isExpanding }: Dir
     );
   }
 
-  const SortHeader = ({ field, children }: { field: SortField; children: React.ReactNode }) => (
-    <th
-      className="py-2 px-3 text-left text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider cursor-pointer hover:text-[var(--text-primary)] transition-colors select-none"
-      onClick={() => handleSort(field)}
-    >
-      <div className="flex items-center gap-1">
-        {children}
-        {sortField === field && (
-          <span className="text-[var(--neon-cyan)]">
-            {sortDirection === 'asc' ? '↑' : '↓'}
-          </span>
-        )}
-      </div>
-    </th>
-  );
-
-  const visibleCount = { current: 0 };
+  const visibleCounter = { current: 0 };
 
   return (
     <motion.div
@@ -346,13 +354,13 @@ export function DirTreeTable({ data, onExpand, expandedNodes, isExpanding }: Dir
         <table className="w-full">
           <thead className="sticky top-0 bg-[var(--bg-glass)] z-10">
             <tr className="border-b border-[var(--border-glass)]">
-              <SortHeader field="name">Name</SortHeader>
-              <SortHeader field="size">Size</SortHeader>
+              <SortHeader field="name" sortField={sortField} sortDirection={sortDirection} onSort={handleSort}>Name</SortHeader>
+              <SortHeader field="size" sortField={sortField} sortDirection={sortDirection} onSort={handleSort}>Size</SortHeader>
               <th className="py-2 px-3 text-left text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider w-24">
                 Usage
               </th>
-              <SortHeader field="files">Files</SortHeader>
-              <SortHeader field="items">Items</SortHeader>
+              <SortHeader field="files" sortField={sortField} sortDirection={sortDirection} onSort={handleSort}>Files</SortHeader>
+              <SortHeader field="items" sortField={sortField} sortDirection={sortDirection} onSort={handleSort}>Items</SortHeader>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-glass)]">
@@ -363,7 +371,7 @@ export function DirTreeTable({ data, onExpand, expandedNodes, isExpanding }: Dir
                 maxSize={data.totalSize}
                 expanded={expanded}
                 toggleExpand={toggleExpand}
-                visibleCount={visibleCount}
+                visibleCounter={visibleCounter}
                 maxVisible={maxVisible}
                 onLazyExpand={onExpand}
                 lazyExpandedNodes={expandedNodes}
@@ -374,7 +382,7 @@ export function DirTreeTable({ data, onExpand, expandedNodes, isExpanding }: Dir
         </table>
       </div>
 
-      {visibleCount.current >= maxVisible && (
+      {visibleCounter.current >= maxVisible && (
         <div className="mt-2 text-xs text-[var(--text-muted)] text-center">
           Showing {maxVisible} items. Expand fewer directories to see more.
         </div>

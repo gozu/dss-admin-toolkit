@@ -1184,7 +1184,7 @@ export function ToolsView() {
   const { parsedData, activePage } = state;
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
-  const [_apiDataLoaded, setApiDataLoaded] = useState(false);
+  const [, setApiDataLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(null);
 

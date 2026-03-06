@@ -10,7 +10,6 @@ import type {
   DeltaSeverity,
   User,
   Project,
-  Cluster,
   CodeEnv,
   HealthIssue,
 } from '../types';
@@ -149,20 +148,6 @@ function compareProjects(before: Project, after: Project): string[] {
   if (before.versionNumber !== after.versionNumber) changes.push('version');
   if (JSON.stringify(before.permissions) !== JSON.stringify(after.permissions)) {
     changes.push('permissions');
-  }
-  return changes;
-}
-
-/**
- * Compare clusters with detailed change detection
- */
-function compareClusters(before: Cluster, after: Cluster): string[] {
-  const changes: string[] = [];
-  if (before.version !== after.version) changes.push('version');
-  if (before.status !== after.status) changes.push('status');
-  if (before.region !== after.region) changes.push('region');
-  if (JSON.stringify(before.nodeGroups) !== JSON.stringify(after.nodeGroups)) {
-    changes.push('nodeGroups');
   }
   return changes;
 }
@@ -400,7 +385,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
       userCount: beforeData.users?.length,
       projectCount: beforeData.projects?.length,
       pluginCount: beforeData.pluginsCount ?? beforeData.plugins?.length,
-      clusterCount: beforeData.clusters?.length,
       codeEnvCount: beforeData.codeEnvs?.length,
       ...beforeData.userStats,
     },
@@ -408,7 +392,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
       userCount: afterData.users?.length,
       projectCount: afterData.projects?.length,
       pluginCount: afterData.pluginsCount ?? afterData.plugins?.length,
-      clusterCount: afterData.clusters?.length,
       codeEnvCount: afterData.codeEnvs?.length,
       ...afterData.userStats,
     },
@@ -417,7 +400,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
       userCount: 'Total Users',
       projectCount: 'Total Projects',
       pluginCount: 'Plugins',
-      clusterCount: 'K8s Clusters',
       codeEnvCount: 'Code Environments',
     }
   );
@@ -444,13 +426,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
     afterData.projects,
     (p) => p.key,
     compareProjects
-  );
-
-  const clustersComparison = compareCollections(
-    beforeData.clusters,
-    afterData.clusters,
-    (c) => c.name,
-    compareClusters
   );
 
   const codeEnvsComparison = compareCollections(
@@ -490,9 +465,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
     projectsComparison.added.length +
     projectsComparison.removed.length +
     projectsComparison.modified.length +
-    clustersComparison.added.length +
-    clustersComparison.removed.length +
-    clustersComparison.modified.length +
     codeEnvsComparison.added.length +
     codeEnvsComparison.removed.length +
     codeEnvsComparison.modified.length +
@@ -543,7 +515,6 @@ export function computeFullComparison(before: DiagFile, after: DiagFile): Compar
     collections: {
       users: usersComparison,
       projects: projectsComparison,
-      clusters: clustersComparison,
       codeEnvs: codeEnvsComparison,
       plugins: pluginsComparison,
     },
