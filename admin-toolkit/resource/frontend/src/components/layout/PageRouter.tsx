@@ -13,8 +13,6 @@ import { ProjectsPage } from '../pages/ProjectsPage';
 import { CodeEnvsPage } from '../pages/CodeEnvsPage';
 import { ConnectionsPage } from '../pages/ConnectionsPage';
 import { RuntimeConfigPage } from '../pages/RuntimeConfigPage';
-import { SecurityConfigPage } from '../pages/SecurityConfigPage';
-import { PlatformConfigPage } from '../pages/PlatformConfigPage';
 import { LogsPage } from '../pages/LogsPage';
 
 // Lazy-load only the heavy views
@@ -65,10 +63,6 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
       return <ConnectionsPage />;
     case 'runtime-config':
       return <RuntimeConfigPage />;
-    case 'security-config':
-      return <SecurityConfigPage />;
-    case 'platform-config':
-      return <PlatformConfigPage />;
     case 'logs':
       return <LogsPage />;
     case 'outreach':

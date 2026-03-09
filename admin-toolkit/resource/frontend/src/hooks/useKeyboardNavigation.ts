@@ -17,8 +17,6 @@ const PAGE_ORDER: PageId[] = [
   'code-envs',
   'connections',
   'runtime-config',
-  'security-config',
-  'platform-config',
   'logs',
   'outreach',
   'code-env-cleaner',
@@ -36,7 +34,6 @@ const NUMBER_KEY_MAP: Record<string, PageId> = {
   '7': 'code-envs',
   '8': 'connections',
   '9': 'runtime-config',
-  '0': 'security-config',
 };
 
 function isInputFocused(): boolean {

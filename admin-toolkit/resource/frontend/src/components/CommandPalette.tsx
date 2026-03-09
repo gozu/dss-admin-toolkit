@@ -68,19 +68,7 @@ const PAGE_DEFS: PageDef[] = [
     id: 'runtime-config',
     label: 'Runtime',
     section: 'Configuration',
-    keywords: ['java', 'memory', 'spark', 'settings'],
-  },
-  {
-    id: 'security-config',
-    label: 'Security',
-    section: 'Configuration',
-    keywords: ['auth', 'cgroups', 'users', 'isolation'],
-  },
-  {
-    id: 'platform-config',
-    label: 'Platform',
-    section: 'Configuration',
-    keywords: ['container', 'integration', 'proxy'],
+    keywords: ['java', 'memory', 'spark', 'settings', 'auth', 'cgroups', 'users', 'isolation', 'container', 'integration', 'proxy'],
   },
   {
     id: 'logs',

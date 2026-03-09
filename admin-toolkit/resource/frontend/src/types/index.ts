@@ -678,8 +678,6 @@ export type PageId =
   | 'code-envs'
   | 'connections'
   | 'runtime-config'
-  | 'security-config'
-  | 'platform-config'
   | 'logs'
   | 'outreach'
   | 'code-env-cleaner'
