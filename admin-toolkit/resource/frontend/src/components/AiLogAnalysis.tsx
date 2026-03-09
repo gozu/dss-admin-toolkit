@@ -33,6 +33,7 @@ export function AiLogAnalysis() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
   const [error, setError] = useState('');
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const llmLabelToId = useMemo(() => {
@@ -171,7 +172,7 @@ export function AiLogAnalysis() {
               />
             </div>
             <button
-              onClick={runAnalysis}
+              onClick={() => setShowDisclaimer(true)}
               disabled={isAnalyzing || !hasValidSelection}
               className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg
                          bg-[var(--accent)] text-white hover:opacity-90 transition-opacity
@@ -224,11 +225,46 @@ export function AiLogAnalysis() {
               </span>
             )}
           </div>
-          <div className="px-3 py-2 mb-3 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-default)] text-xs text-[var(--text-tertiary)] leading-relaxed">
-            AI-generated analysis may be inaccurate or incomplete. Always verify findings against official Dataiku documentation and your own system knowledge before taking action.
-          </div>
           <div className="ai-analysis-markdown">
             <ReactMarkdown>{analysis.text}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+      {showDisclaimer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowDisclaimer(false)}>
+          <div
+            className="mx-4 max-w-md rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)] shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[var(--status-warning-bg)] border border-[var(--status-warning-border)] flex items-center justify-center">
+                <svg className="w-5 h-5 text-[var(--neon-amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">AI Disclaimer</h3>
+            </div>
+            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              AI-generated analysis may be <strong className="text-[var(--text-primary)]">inaccurate, incomplete, or misleading</strong>.
+              LLMs can hallucinate error causes and suggest incorrect remediation steps.
+            </p>
+            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              Always verify findings against official Dataiku documentation and your own system knowledge before taking any action.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowDisclaimer(false)}
+                className="px-4 py-2 text-sm rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { setShowDisclaimer(false); runAnalysis(); }}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--accent)] text-white hover:opacity-90 transition-opacity"
+              >
+                I understand, proceed
+              </button>
+            </div>
           </div>
         </div>
       )}
