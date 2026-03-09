@@ -1,15 +1,24 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { fetchJson } from '../utils/api';
-import type { LlmOption, AiAnalysisResponse } from '../types';
+import { fetchJson, getBackendUrl } from '../utils/api';
+import type { LlmOption } from '../types';
+
+interface AnalysisState {
+  phase: string;
+  text: string;
+  llmId: string;
+  logCharsAnalyzed: number;
+  done: boolean;
+}
 
 export function AiLogAnalysis() {
   const [llms, setLlms] = useState<LlmOption[]>([]);
   const [selectedLlmId, setSelectedLlmId] = useState('');
   const [isLoadingLlms, setIsLoadingLlms] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<AiAnalysisResponse | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
   const [error, setError] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms')
@@ -22,27 +31,93 @@ export function AiLogAnalysis() {
       .finally(() => setIsLoadingLlms(false));
   }, []);
 
-  const runAnalysis = async () => {
+  const runAnalysis = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setIsAnalyzing(true);
     setError('');
-    setResult(null);
+    setAnalysis({ phase: 'Starting', text: '', llmId: '', logCharsAnalyzed: 0, done: false });
+
     try {
-      const data = await fetchJson<AiAnalysisResponse>('/api/logs/ai-analysis', {
+      const url = getBackendUrl('/api/logs/ai-analysis');
+      const response = await fetch(url, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ llmId: selectedLlmId }),
+        signal: controller.signal,
       });
-      if (data.error) {
-        setError(data.error);
-      } else {
-        setResult(data);
+
+      if (!response.ok || !response.body) {
+        const body = await response.text();
+        throw new Error(`Request failed: ${response.status} ${response.statusText} - ${body.slice(0, 240)}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          const eventMatch = part.match(/^event:\s*(\S+)/m);
+          const dataMatch = part.match(/^data:\s*(.*)/m);
+          if (!eventMatch || !dataMatch) continue;
+
+          const eventType = eventMatch[1];
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(dataMatch[1]);
+          } catch {
+            continue;
+          }
+
+          if (eventType === 'phase') {
+            setAnalysis((prev) =>
+              prev ? { ...prev, phase: String(payload.phase || '') } : prev,
+            );
+          } else if (eventType === 'chunk') {
+            setAnalysis((prev) =>
+              prev ? { ...prev, text: prev.text + String(payload.text || ''), phase: 'Generating analysis' } : prev,
+            );
+          } else if (eventType === 'done') {
+            setAnalysis((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    done: true,
+                    phase: 'Complete',
+                    llmId: String(payload.llmId || prev.llmId),
+                    logCharsAnalyzed: Number(payload.logCharsAnalyzed) || prev.logCharsAnalyzed,
+                    // If 'analysis' field present (no-errors case), use it as text
+                    ...(payload.analysis ? { text: String(payload.analysis) } : {}),
+                  }
+                : prev,
+            );
+          } else if (eventType === 'error') {
+            setError(String(payload.error || 'Unknown error'));
+          }
+        }
       }
     } catch (err) {
-      setError(String(err));
+      if ((err as Error).name !== 'AbortError') {
+        setError(String(err));
+      }
     } finally {
       setIsAnalyzing(false);
     }
-  };
+  }, [selectedLlmId]);
+
+  const showResult = analysis && (analysis.text || analysis.done);
+  const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
 
   return (
     <div className="mb-4">
@@ -58,8 +133,10 @@ export function AiLogAnalysis() {
             <select
               value={selectedLlmId}
               onChange={(e) => setSelectedLlmId(e.target.value)}
+              disabled={isAnalyzing}
               className="px-3 py-1.5 text-sm rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]
-                         text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                         text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]
+                         disabled:opacity-50"
             >
               {llms.map((llm) => (
                 <option key={llm.id} value={llm.id}>
@@ -79,7 +156,7 @@ export function AiLogAnalysis() {
                   <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
                   </svg>
-                  Analyzing...
+                  {phaseLabel || 'Analyzing...'}
                 </>
               ) : (
                 <>
@@ -91,6 +168,9 @@ export function AiLogAnalysis() {
                 </>
               )}
             </button>
+            {phaseLabel && !showResult && (
+              <span className="text-sm text-[var(--text-secondary)] italic">{phaseLabel}...</span>
+            )}
           </>
         )}
       </div>
@@ -101,16 +181,25 @@ export function AiLogAnalysis() {
         </div>
       )}
 
-      {result && (
+      {showResult && (
         <div className="ai-analysis-result mt-3">
           <div className="flex items-center justify-between mb-3 pb-2 border-b border-[var(--border-default)]">
-            <span className="text-sm font-medium text-[var(--accent)]">AI Analysis</span>
-            <span className="text-xs text-[var(--text-tertiary)]">
-              {result.llmId} &middot; {(result.logCharsAnalyzed / 1000).toFixed(1)}K chars analyzed
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-[var(--accent)]">AI Analysis</span>
+              {!analysis.done && (
+                <svg className="w-3.5 h-3.5 animate-spin text-[var(--accent)]" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+                </svg>
+              )}
+            </div>
+            {analysis.done && analysis.llmId && (
+              <span className="text-xs text-[var(--text-tertiary)]">
+                {analysis.llmId} &middot; {(analysis.logCharsAnalyzed / 1000).toFixed(1)}K chars analyzed
+              </span>
+            )}
           </div>
           <div className="ai-analysis-markdown">
-            <ReactMarkdown>{result.analysis}</ReactMarkdown>
+            <ReactMarkdown>{analysis.text}</ReactMarkdown>
           </div>
         </div>
       )}

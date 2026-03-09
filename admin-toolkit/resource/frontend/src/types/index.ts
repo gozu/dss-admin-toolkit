@@ -379,13 +379,6 @@ export interface LlmOption {
   type: string;
 }
 
-export interface AiAnalysisResponse {
-  analysis: string;
-  llmId: string;
-  logCharsAnalyzed: number;
-  error?: string;
-}
-
 // Memory info
 export type MemoryInfo = Record<string, string>;
 
