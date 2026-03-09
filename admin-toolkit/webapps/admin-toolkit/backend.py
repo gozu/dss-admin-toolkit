@@ -1063,7 +1063,25 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
         if len(recent_errors) > max_errors:
             recent_errors.pop(0)
 
-    formatted = _format_log_errors(recent_errors)
+    if recent_errors:
+        formatted = _format_log_errors(recent_errors)
+    else:
+        # No regex-matched errors — show last 1000 lines raw as a fallback
+        tail_lines = lines[-1000:] if len(lines) > 1000 else lines
+        raw_tail = '\n'.join(tail_lines)
+        escaped = (raw_tail
+                   .replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;'))
+        formatted = (
+            '<div class="log-error-block">'
+            '<div class="log-header">No ERROR/FATAL/SEVERE patterns matched — showing last '
+            f'{len(tail_lines):,} lines of backend.log</div>'
+            f'<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;">{escaped}</pre>'
+            '</div>'
+        )
+        recent_errors = [{'timestamp': 'tail', 'data': tail_lines}]
+
     return {
         'formattedLogErrors': formatted,
         'rawLogErrors': recent_errors,
