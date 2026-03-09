@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { useTableFilter } from '../hooks/useTableFilter';
+import { AiLogAnalysis } from './AiLogAnalysis';
 
 export function LogErrorsSection() {
   const { state } = useDiag();
@@ -87,6 +88,8 @@ export function LogErrorsSection() {
                 before and after the error to help with debugging.
               </p>
             </div>
+
+            <AiLogAnalysis />
 
             <div
               className="log-container rounded-lg"

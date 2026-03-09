@@ -372,6 +372,20 @@ export interface LogStats {
   'Displayed Errors': number;
 }
 
+// AI Log Analysis types
+export interface LlmOption {
+  id: string;
+  label: string;
+  type: string;
+}
+
+export interface AiAnalysisResponse {
+  analysis: string;
+  llmId: string;
+  logCharsAnalyzed: number;
+  error?: string;
+}
+
 // Memory info
 export type MemoryInfo = Record<string, string>;
 

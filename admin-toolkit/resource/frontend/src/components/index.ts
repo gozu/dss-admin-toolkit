@@ -20,6 +20,7 @@ export { FileViewer } from './FileViewer';
 export { ProjectPermissionsModal } from './ProjectPermissionsModal';
 export { FileDownloadButtons } from './FileDownloadButtons';
 export { LogErrorsSection } from './LogErrorsSection';
+export { AiLogAnalysis } from './AiLogAnalysis';
 export { DisabledFeaturesTable } from './DisabledFeaturesTable';
 export { PacmanLoader } from './PacmanLoader';
 export { AlertBanner } from './AlertBanner';
