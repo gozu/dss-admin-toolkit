@@ -40,21 +40,43 @@ export function AiLogAnalysis() {
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
   const [error, setError] = useState('');
   const [showDisclaimer, setShowDisclaimer] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+  const konamiRef = useRef('');
   const abortRef = useRef<AbortController | null>(null);
+
+  const filteredLlms = useMemo(() => {
+    if (unlocked) return llms;
+    return llms.filter((l) => l.type === 'HUGGINGFACE_TRANSFORMER_LOCAL');
+  }, [llms, unlocked]);
 
   const llmLabelToId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const llm of llms) map.set(llm.label, llm.id);
+    for (const llm of filteredLlms) map.set(llm.label, llm.id);
     return map;
-  }, [llms]);
+  }, [filteredLlms]);
 
-  const llmLabels = useMemo(() => llms.map((l) => l.label), [llms]);
+  const llmLabels = useMemo(() => filteredLlms.map((l) => l.label), [filteredLlms]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      konamiRef.current += e.key.toLowerCase();
+      if (konamiRef.current.length > 20) konamiRef.current = konamiRef.current.slice(-20);
+      if (konamiRef.current.includes('kaos')) {
+        setUnlocked(true);
+        window.removeEventListener('keydown', handler);
+      }
+    };
+    if (!unlocked) window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [unlocked]);
 
   useEffect(() => {
     fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms')
       .then((data) => {
         setLlms(data.llms);
-        if (data.llms.length > 0) setSelectedLlmLabel(data.llms[0].label);
+        const hfLlms = data.llms.filter((l) => l.type === 'HUGGINGFACE_TRANSFORMER_LOCAL');
+        const initial = hfLlms.length > 0 ? hfLlms[0] : data.llms[0];
+        if (initial) setSelectedLlmLabel(initial.label);
         if (data.error) setError(data.error);
       })
       .catch((err) => setError(String(err)))
