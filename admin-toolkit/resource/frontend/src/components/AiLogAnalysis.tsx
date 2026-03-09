@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { fetchJson, getBackendUrl } from '../utils/api';
+import { loadFromStorage } from '../utils/storage';
+import { SearchableCombobox } from './SearchableCombobox';
 import type { LlmOption } from '../types';
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
+export const DEFAULT_AI_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
 
 Your task:
 1. Identify the root cause of each distinct error or error pattern.
@@ -13,6 +15,8 @@ Your task:
 5. Highlight data loss risk, security issues, or service outage indicators.
 
 Format: markdown with headings per issue, bullet points for remediation. Start with a 2-3 sentence Executive Summary.`;
+
+export const AI_PROMPT_STORAGE_KEY = 'aiLogAnalysisPrompt';
 
 interface AnalysisState {
   phase: string;
@@ -24,20 +28,26 @@ interface AnalysisState {
 
 export function AiLogAnalysis() {
   const [llms, setLlms] = useState<LlmOption[]>([]);
-  const [selectedLlmId, setSelectedLlmId] = useState('');
+  const [selectedLlmLabel, setSelectedLlmLabel] = useState('');
   const [isLoadingLlms, setIsLoadingLlms] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
   const [error, setError] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const abortRef = useRef<AbortController | null>(null);
+
+  const llmLabelToId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const llm of llms) map.set(llm.label, llm.id);
+    return map;
+  }, [llms]);
+
+  const llmLabels = useMemo(() => llms.map((l) => l.label), [llms]);
 
   useEffect(() => {
     fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms')
       .then((data) => {
         setLlms(data.llms);
-        if (data.llms.length > 0) setSelectedLlmId(data.llms[0].id);
+        if (data.llms.length > 0) setSelectedLlmLabel(data.llms[0].label);
         if (data.error) setError(data.error);
       })
       .catch((err) => setError(String(err)))
@@ -45,6 +55,9 @@ export function AiLogAnalysis() {
   }, []);
 
   const runAnalysis = useCallback(async () => {
+    const llmId = llmLabelToId.get(selectedLlmLabel);
+    if (!llmId) return;
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -53,13 +66,16 @@ export function AiLogAnalysis() {
     setError('');
     setAnalysis({ phase: 'Starting', text: '', llmId: '', logCharsAnalyzed: 0, done: false });
 
+    const storedPrompt = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
+    const systemPrompt = storedPrompt.trim() || DEFAULT_AI_SYSTEM_PROMPT;
+
     try {
       const url = getBackendUrl('/api/logs/ai-analysis');
       const response = await fetch(url, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llmId: selectedLlmId, systemPrompt: systemPrompt.trim() }),
+        body: JSON.stringify({ llmId, systemPrompt }),
         signal: controller.signal,
       });
 
@@ -126,11 +142,11 @@ export function AiLogAnalysis() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [selectedLlmId, systemPrompt]);
+  }, [selectedLlmLabel, llmLabelToId]);
 
   const showResult = analysis && (analysis.text || analysis.done);
   const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
-  const isPromptModified = systemPrompt.trim() !== DEFAULT_SYSTEM_PROMPT;
+  const hasValidSelection = llmLabelToId.has(selectedLlmLabel);
 
   return (
     <div className="mb-4">
@@ -143,23 +159,20 @@ export function AiLogAnalysis() {
           </span>
         ) : (
           <>
-            <select
-              value={selectedLlmId}
-              onChange={(e) => setSelectedLlmId(e.target.value)}
-              disabled={isAnalyzing}
-              className="px-3 py-1.5 text-sm rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]
-                         text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]
-                         disabled:opacity-50"
-            >
-              {llms.map((llm) => (
-                <option key={llm.id} value={llm.id}>
-                  {llm.label}
-                </option>
-              ))}
-            </select>
+            <div className="w-64">
+              <SearchableCombobox
+                value={selectedLlmLabel}
+                onChange={setSelectedLlmLabel}
+                options={llmLabels}
+                placeholder="Search LLMs..."
+                className="w-full px-3 py-1.5 text-sm rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]
+                           text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]
+                           disabled:opacity-50"
+              />
+            </div>
             <button
               onClick={runAnalysis}
-              disabled={isAnalyzing}
+              disabled={isAnalyzing || !hasValidSelection}
               className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg
                          bg-[var(--accent)] text-white hover:opacity-90 transition-opacity
                          disabled:opacity-50 disabled:cursor-not-allowed"
@@ -181,54 +194,12 @@ export function AiLogAnalysis() {
                 </>
               )}
             </button>
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1 px-2 py-1.5 text-xs text-[var(--text-tertiary)]
-                         hover:text-[var(--text-secondary)] transition-colors"
-              title="Advanced settings"
-            >
-              <svg
-                className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              Advanced
-              {isPromptModified && (
-                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]" title="Prompt modified" />
-              )}
-            </button>
             {phaseLabel && !showResult && (
               <span className="text-sm text-[var(--text-secondary)] italic">{phaseLabel}...</span>
             )}
           </>
         )}
       </div>
-
-      {showAdvanced && (
-        <div className="mt-2 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]">
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-[var(--text-secondary)]">System Prompt</label>
-            {isPromptModified && (
-              <button
-                onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
-                className="text-xs text-[var(--accent)] hover:underline"
-              >
-                Reset to default
-              </button>
-            )}
-          </div>
-          <textarea
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            disabled={isAnalyzing}
-            rows={10}
-            className="w-full px-3 py-2 text-sm font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
-                       text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]
-                       disabled:opacity-50 resize-y"
-          />
-        </div>
-      )}
 
       {error && (
         <div className="mt-3 p-3 rounded-lg bg-[var(--status-danger-bg)] border border-[var(--status-danger-border)] text-sm text-[var(--danger)]">

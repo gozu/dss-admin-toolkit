@@ -9,7 +9,7 @@ export function LogErrorsSection() {
   const { parsedData } = state;
   const { formattedLogErrors, logStats } = parsedData;
 
-  const [showLogs, setShowLogs] = useState(false);
+  const [showLogs, setShowLogs] = useState(true);
 
   const hasErrors =
     formattedLogErrors && formattedLogErrors !== 'No log errors found';
