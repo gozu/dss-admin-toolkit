@@ -41,7 +41,7 @@ export class LogParser extends BaseTextParser<LogParserResult> {
         if (typeof t.logMaxErrors === 'number') MAX_ERRORS = t.logMaxErrors;
       }
     } catch { /* use defaults */ }
-    const LOG_LEVELS = ['\\[ERROR\\]', '\\[FATAL\\]', '\\[SEVERE\\]'];
+    const LOG_LEVELS = ['\\[ERROR\\]', '\\[FATAL\\]', '\\[SEVERE\\]', '\\[WARN\\]'];
 
     // Create regex to match log levels
     const logLevelRegex = new RegExp(`(${LOG_LEVELS.join('|')})`);

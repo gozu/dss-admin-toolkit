@@ -969,7 +969,7 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
     lines_after = 100
     time_threshold = 5
     max_errors = 5
-    log_levels = [r"\[ERROR\]", r"\[FATAL\]", r"\[SEVERE\]", r"\bERROR\b", r"\bFATAL\b", r"\bSEVERE\b"]
+    log_levels = [r"\[ERROR\]", r"\[FATAL\]", r"\[SEVERE\]", r"\[WARN\]", r"\bERROR\b", r"\bFATAL\b", r"\bSEVERE\b", r"\bWARN\b"]
     log_level_regex = re.compile(r"(" + '|'.join(log_levels) + r")")
     timestamp_regex = re.compile(r"\[(\d{4}/\d{2}/\d{2}-\d{2}:\d{2}:\d{2}\.\d{3})\]")
     leading_timestamp_regex = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)")
@@ -1076,7 +1076,7 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
                    .replace('>', '&gt;'))
         formatted = (
             '<div class="log-error-block">'
-            '<div class="log-header">No ERROR/FATAL/SEVERE patterns matched — showing last '
+            '<div class="log-header">No ERROR/FATAL/SEVERE/WARN patterns matched — showing last '
             f'{len(tail_lines):,} lines of backend.log</div>'
             f'<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;">{escaped}</pre>'
             '</div>'
