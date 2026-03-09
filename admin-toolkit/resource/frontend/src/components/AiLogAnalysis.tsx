@@ -224,6 +224,9 @@ export function AiLogAnalysis() {
               </span>
             )}
           </div>
+          <div className="px-3 py-2 mb-3 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-default)] text-xs text-[var(--text-tertiary)] leading-relaxed">
+            AI-generated analysis may be inaccurate or incomplete. Always verify findings against official Dataiku documentation and your own system knowledge before taking action.
+          </div>
           <div className="ai-analysis-markdown">
             <ReactMarkdown>{analysis.text}</ReactMarkdown>
           </div>
