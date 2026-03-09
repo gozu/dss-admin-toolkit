@@ -6,6 +6,7 @@ import { useUltraWideLayout } from '../hooks';
 import { useThresholds, type ThresholdSettings } from '../hooks/useThresholds';
 import { fetchJson } from '../utils/api';
 import { loadFromStorage, saveToStorage } from '../utils/storage';
+import { DEFAULT_AI_SYSTEM_PROMPT, AI_PROMPT_STORAGE_KEY } from './AiLogAnalysis';
 import type { CampaignExemption } from '../types';
 
 interface SettingsViewProps {
@@ -189,6 +190,22 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const { state } = useDiag();
   const { parsedData } = state;
   const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // AI Log Analysis prompt state
+  const [aiPrompt, setAiPrompt] = useState(() =>
+    loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, DEFAULT_AI_SYSTEM_PROMPT),
+  );
+  const isAiPromptModified = aiPrompt.trim() !== DEFAULT_AI_SYSTEM_PROMPT;
+
+  const handleAiPromptChange = useCallback((value: string) => {
+    setAiPrompt(value);
+    saveToStorage(AI_PROMPT_STORAGE_KEY, value);
+  }, []);
+
+  const resetAiPrompt = useCallback(() => {
+    setAiPrompt(DEFAULT_AI_SYSTEM_PROMPT);
+    saveToStorage(AI_PROMPT_STORAGE_KEY, DEFAULT_AI_SYSTEM_PROMPT);
+  }, []);
 
   // Backend settings state
   const [backendSettings, setBackendSettings] = useState<BackendSettings>({});
@@ -467,7 +484,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
               </span>
               <h3 className="text-lg font-semibold text-[var(--text-primary)]">Advanced Settings</h3>
               <span className="text-xs text-[var(--text-muted)] ml-auto">
-                Health weights, log parsing, scan limits
+                Health weights, log parsing, scan limits, AI prompt
               </span>
             </button>
             {advancedOpen && (
@@ -490,6 +507,33 @@ export function SettingsView({ onBack }: SettingsViewProps) {
                     </div>
                   </div>
                 ))}
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-sm font-semibold text-[var(--text-secondary)]">AI Log Analysis — System Prompt</h4>
+                    {isAiPromptModified && (
+                      <button
+                        onClick={resetAiPrompt}
+                        className="text-xs text-[var(--accent)] hover:underline"
+                      >
+                        Reset to default
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-[var(--text-muted)] mb-2">
+                    The system prompt sent to the LLM when analyzing log errors. Customise to adjust analysis focus, severity criteria, or output format.
+                  </p>
+                  <textarea
+                    value={aiPrompt}
+                    onChange={(e) => handleAiPromptChange(e.target.value)}
+                    rows={10}
+                    className="w-full px-3 py-2 text-sm font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                               text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
+                  />
+                  {isAiPromptModified && (
+                    <span className="text-[10px] text-[var(--neon-amber)]">Modified from default</span>
+                  )}
+                </div>
               </div>
             )}
           </section>

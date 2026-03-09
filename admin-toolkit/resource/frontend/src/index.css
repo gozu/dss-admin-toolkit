@@ -688,6 +688,97 @@ pre,
 }
 
 /* =============================================================================
+   AI Log Analysis
+   ============================================================================= */
+
+.ai-analysis-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.ai-analysis-result {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.ai-analysis-markdown h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 1.25rem 0 0.5rem;
+  color: var(--text-primary);
+}
+
+.ai-analysis-markdown h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.4rem;
+  color: var(--text-primary);
+}
+
+.ai-analysis-markdown h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.3rem;
+  color: var(--text-secondary);
+}
+
+.ai-analysis-markdown p {
+  margin: 0.4rem 0;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.ai-analysis-markdown ul,
+.ai-analysis-markdown ol {
+  margin: 0.4rem 0;
+  padding-left: 1.5rem;
+  color: var(--text-secondary);
+}
+
+.ai-analysis-markdown li {
+  margin: 0.2rem 0;
+  line-height: 1.5;
+}
+
+.ai-analysis-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background-color: var(--bg-tertiary);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+.ai-analysis-markdown pre {
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+.ai-analysis-markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.ai-analysis-markdown strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.ai-analysis-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-default);
+  margin: 1rem 0;
+}
+
+/* =============================================================================
    Syntax Highlighting Classes
    ============================================================================= */
 

@@ -1063,7 +1063,25 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
         if len(recent_errors) > max_errors:
             recent_errors.pop(0)
 
-    formatted = _format_log_errors(recent_errors)
+    if recent_errors:
+        formatted = _format_log_errors(recent_errors)
+    else:
+        # No regex-matched errors — show last 1000 lines raw as a fallback
+        tail_lines = lines[-1000:] if len(lines) > 1000 else lines
+        raw_tail = '\n'.join(tail_lines)
+        escaped = (raw_tail
+                   .replace('&', '&amp;')
+                   .replace('<', '&lt;')
+                   .replace('>', '&gt;'))
+        formatted = (
+            '<div class="log-error-block">'
+            '<div class="log-header">No ERROR/FATAL/SEVERE patterns matched — showing last '
+            f'{len(tail_lines):,} lines of backend.log</div>'
+            f'<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;">{escaped}</pre>'
+            '</div>'
+        )
+        recent_errors = [{'timestamp': 'tail', 'data': tail_lines}]
+
     return {
         'formattedLogErrors': formatted,
         'rawLogErrors': recent_errors,
@@ -7493,6 +7511,138 @@ def api_logs_errors():
 
     data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
     return jsonify(data)
+
+
+@app.route('/api/llms')
+def api_llms():
+    try:
+        client = dataiku.api_client()
+        project = client.get_project(dataiku.default_project_key())
+        llms = project.list_llms()
+        completion_llms = [
+            {'id': llm['id'], 'label': llm.get('friendlyName') or llm['id'], 'type': llm.get('type', '')}
+            for llm in llms if llm.get('type') != 'RETRIEVAL_AUGMENTED'
+        ]
+        return jsonify({'llms': completion_llms})
+    except Exception as e:
+        return jsonify({'error': str(e), 'llms': []}), 500
+
+
+@app.route('/api/logs/ai-analysis', methods=['POST'])
+def api_logs_ai_analysis():
+    """Stream AI log analysis via SSE with phase updates and token streaming."""
+    body = request.get_json(force=True)
+    llm_id = body.get('llmId', '').strip()
+    custom_system_prompt = (body.get('systemPrompt') or '').strip()
+
+    _DEFAULT_SYSTEM_PROMPT = (
+        "You are an expert Dataiku DSS administrator and backend engineer "
+        "analyzing error logs from a DSS instance's backend.log file.\n\n"
+        "Before answering, think step-by-step through each error carefully. For each error pattern:\n"
+        "- Reason through what component, subsystem, or configuration could cause it.\n"
+        "- Search the web for the specific error message, Java exception, or stack trace to find "
+        "known issues, Dataiku Knowledge Base articles, community posts, or release notes.\n"
+        "- Cross-reference with official Dataiku documentation (doc.dataiku.com) for configuration "
+        "guidance, known limitations, and recommended fixes.\n"
+        "- Only after researching, provide your diagnosis and remediation.\n\n"
+        "Your task:\n"
+        "1. Identify the root cause of each distinct error or error pattern.\n"
+        "2. Assess severity (Critical / Warning / Informational).\n"
+        "3. Provide specific, actionable remediation steps, including links to relevant "
+        "documentation or KB articles when available.\n"
+        "4. Group related errors sharing a root cause.\n"
+        "5. Highlight data loss risk, security issues, or service outage indicators.\n\n"
+        "Format: markdown with headings per issue, bullet points for remediation. "
+        "Start with a 2-3 sentence Executive Summary."
+    )
+    system_prompt = custom_system_prompt if custom_system_prompt else _DEFAULT_SYSTEM_PROMPT
+
+    def generate():
+        if not llm_id:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": "llmId is required"})
+            return
+
+        try:
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Preparing log data"})
+
+            client = dataiku.api_client()
+            project_key = dataiku.default_project_key()
+            project = client.get_project(project_key)
+
+            dip_home = _dip_home()
+
+            def loader():
+                log_content = None
+                try:
+                    log_content = client.get_log('backend.log')
+                except Exception:
+                    log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
+                return _parse_log_errors(log_content)
+
+            log_data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
+            raw_errors = log_data.get('rawLogErrors', [])
+
+            if not raw_errors:
+                yield "event: done\ndata: %s\n\n" % json.dumps({
+                    "analysis": "No log errors found to analyze.",
+                    "llmId": llm_id, "logCharsAnalyzed": 0,
+                })
+                return
+
+            error_text = '\n---\n'.join('\n'.join(block.get('data', [])) for block in raw_errors)
+            max_chars = 100_000
+            if len(error_text) > max_chars:
+                error_text = error_text[-max_chars:]
+            log_chars = len(error_text)
+
+            log_stats = log_data.get('logStats', {})
+            user_message = (
+                "Analyze the following DSS backend.log errors.\n"
+                "Stats: %d unique errors, %d total log lines.\n\n"
+                "```\n%s\n```"
+            ) % (log_stats.get('Unique Errors', 0), log_stats.get('Total Lines', 0), error_text)
+
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Sending to LLM"})
+
+            completion = project.get_llm(llm_id).new_completion()
+            completion.settings['maxOutputTokens'] = 4096
+            completion.settings['temperature'] = 0.3
+            completion.with_message(message=system_prompt, role='system')
+            completion.with_message(message=user_message, role='user')
+
+            # Try streaming first, fall back to non-streamed
+            streamed = False
+            try:
+                yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Generating analysis"})
+                resp_stream = completion.execute_streamed()
+                for chunk in resp_stream:
+                    text = str(chunk.text) if hasattr(chunk, 'text') else ''
+                    if text:
+                        streamed = True
+                        yield "event: chunk\ndata: %s\n\n" % json.dumps({"text": text})
+            except (AttributeError, TypeError):
+                # execute_streamed() not available, fall back
+                resp = completion.execute()
+                analysis_text = str(resp.text)
+                yield "event: chunk\ndata: %s\n\n" % json.dumps({"text": analysis_text})
+                streamed = False
+
+            yield "event: done\ndata: %s\n\n" % json.dumps({
+                "llmId": llm_id,
+                "logCharsAnalyzed": log_chars,
+                "streamed": streamed,
+            })
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": str(e)})
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route('/api/dir-tree')
