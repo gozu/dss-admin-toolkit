@@ -19,15 +19,16 @@ export function SearchableCombobox({
 }: SearchableComboboxProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [rawSelectedIndex, setSelectedIndex] = useState(0);
+  const [isTyping, setIsTyping] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
-    if (!value.trim()) return options;
+    if (!isTyping || !value.trim()) return options;
     const q = value.toLowerCase();
     return options.filter((opt) => opt.toLowerCase().includes(q));
-  }, [value, options]);
+  }, [value, options, isTyping]);
 
   // Derive clamped index from raw index + results length (resets when list shrinks)
   const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, filtered.length - 1));
@@ -47,6 +48,7 @@ export function SearchableCombobox({
     const handler = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
+        setIsTyping(false);
       }
     };
     document.addEventListener('mousedown', handler);
@@ -57,6 +59,7 @@ export function SearchableCombobox({
     (opt: string) => {
       onChange(opt);
       setIsOpen(false);
+      setIsTyping(false);
       inputRef.current?.focus();
     },
     [onChange],
@@ -97,6 +100,7 @@ export function SearchableCombobox({
             e.preventDefault();
             e.stopPropagation();
             setIsOpen(false);
+            setIsTyping(false);
           }
           break;
         }
@@ -114,9 +118,11 @@ export function SearchableCombobox({
         onChange={(e) => {
           onChange(e.target.value);
           setSelectedIndex(0);
+          setIsTyping(true);
           if (!isOpen) setIsOpen(true);
         }}
         onFocus={() => {
+          setIsTyping(false);
           if (options.length > 0) setIsOpen(true);
         }}
         onKeyDown={handleKeyDown}
