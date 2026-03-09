@@ -122,9 +122,16 @@ export function SearchableCombobox({
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         className={className}
+        style={{ paddingRight: '2rem' }}
         autoComplete="off"
         spellCheck={false}
       />
+      <svg
+        className={`pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)] transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+      </svg>
       {isOpen && filtered.length > 0 && (
         <div
           ref={listRef}
