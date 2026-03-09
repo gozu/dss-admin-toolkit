@@ -60,6 +60,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'fe_timeout_project_footprint': 620000,
     'fe_timeout_projects': 45000,
     'fe_timeout_logs': 30000,
+    'fe_timeout_llm_analysis': 120000,
     # Tracking
     'sqlite_connect_timeout': 30,
     'tracking_issue_page_size': 500,
@@ -7606,7 +7607,7 @@ def api_logs_ai_analysis():
 
             completion = project.get_llm(llm_id).new_completion()
             completion.settings['maxOutputTokens'] = 4096
-            completion.settings['temperature'] = 0.3
+            # completion.settings['temperature'] = 0.3  # disabled – not supported by some small LLMs (e.g. GPT-5 mini/nano)
             completion.with_message(message=system_prompt, role='system')
             completion.with_message(message=user_message, role='user')
 

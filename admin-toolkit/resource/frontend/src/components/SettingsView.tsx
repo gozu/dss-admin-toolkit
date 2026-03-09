@@ -113,6 +113,7 @@ const BACKEND_FIELD_GROUPS: { group: string; fields: { key: string; label: strin
       { key: 'fe_timeout_project_footprint', label: 'Project Footprint Fetch', description: 'Frontend timeout for project footprint.', min: 30000, max: 1800000, step: 30000 },
       { key: 'fe_timeout_projects', label: 'Projects Fetch', description: 'Frontend timeout for projects list.', min: 5000, max: 300000, step: 5000 },
       { key: 'fe_timeout_logs', label: 'Logs Fetch', description: 'Frontend timeout for log errors.', min: 5000, max: 300000, step: 5000 },
+      { key: 'fe_timeout_llm_analysis', label: 'LLM Analysis', description: 'Timeout for AI log analysis LLM response.', min: 30000, max: 600000, step: 10000 },
     ],
   },
   {

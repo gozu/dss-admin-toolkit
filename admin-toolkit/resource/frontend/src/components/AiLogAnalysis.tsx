@@ -43,6 +43,9 @@ export function AiLogAnalysis() {
   const [unlocked, setUnlocked] = useState(false);
   const konamiRef = useRef('');
   const abortRef = useRef<AbortController | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timedOutRef = useRef(false);
+  const [llmTimeout, setLlmTimeout] = useState(120000);
 
   const filteredLlms = useMemo(() => {
     if (unlocked) return llms;
@@ -71,6 +74,14 @@ export function AiLogAnalysis() {
   }, [unlocked]);
 
   useEffect(() => {
+    fetchJson<Record<string, number>>('/api/settings')
+      .then((data) => {
+        if (data.fe_timeout_llm_analysis) setLlmTimeout(data.fe_timeout_llm_analysis);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms')
       .then((data) => {
         setLlms(data.llms);
@@ -97,6 +108,14 @@ export function AiLogAnalysis() {
 
     const storedPrompt = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
     const systemPrompt = storedPrompt.trim() || DEFAULT_AI_SYSTEM_PROMPT;
+
+    // Start LLM timeout timer
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timedOutRef.current = false;
+    timeoutRef.current = setTimeout(() => {
+      timedOutRef.current = true;
+      controller.abort();
+    }, llmTimeout);
 
     try {
       const url = getBackendUrl('/api/logs/ai-analysis');
@@ -165,13 +184,18 @@ export function AiLogAnalysis() {
         }
       }
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+      if ((err as Error).name === 'AbortError') {
+        setError(timedOutRef.current
+          ? 'LLM response timed out. You can increase the timeout in Settings > Backend Settings > Frontend API Timeouts.'
+          : 'Analysis aborted.');
+      } else {
         setError(String(err));
       }
     } finally {
+      if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
       setIsAnalyzing(false);
     }
-  }, [selectedLlmLabel, llmLabelToId]);
+  }, [selectedLlmLabel, llmLabelToId, llmTimeout]);
 
   const showResult = analysis && (analysis.text || analysis.done);
   const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
@@ -199,30 +223,32 @@ export function AiLogAnalysis() {
                            disabled:opacity-50"
               />
             </div>
-            <button
-              onClick={() => setShowDisclaimer(true)}
-              disabled={isAnalyzing || !hasValidSelection}
-              className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg
-                         bg-[var(--accent)] text-white hover:opacity-90 transition-opacity
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isAnalyzing ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
-                  </svg>
-                  {phaseLabel || 'Analyzing...'}
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                  AI Log Analysis
-                </>
-              )}
-            </button>
+            {isAnalyzing ? (
+              <button
+                onClick={() => abortRef.current?.abort()}
+                className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg
+                           bg-[var(--neon-red)] text-white hover:opacity-90 transition-opacity"
+              >
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="1" />
+                </svg>
+                Abort
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowDisclaimer(true)}
+                disabled={!hasValidSelection}
+                className="flex items-center gap-2 px-4 py-1.5 text-sm font-medium rounded-lg
+                           bg-[var(--accent)] text-white hover:opacity-90 transition-opacity
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                AI Log Analysis
+              </button>
+            )}
             {phaseLabel && !showResult && (
               <span className="text-sm text-[var(--text-secondary)] italic">{phaseLabel}...</span>
             )}
