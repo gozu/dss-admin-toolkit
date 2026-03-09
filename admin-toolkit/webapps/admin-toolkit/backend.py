@@ -7533,6 +7533,21 @@ def api_logs_ai_analysis():
     """Stream AI log analysis via SSE with phase updates and token streaming."""
     body = request.get_json(force=True)
     llm_id = body.get('llmId', '').strip()
+    custom_system_prompt = (body.get('systemPrompt') or '').strip()
+
+    _DEFAULT_SYSTEM_PROMPT = (
+        "You are an expert Dataiku DSS administrator and backend engineer "
+        "analyzing error logs from a DSS instance's backend.log file.\n\n"
+        "Your task:\n"
+        "1. Identify the root cause of each distinct error or error pattern.\n"
+        "2. Assess severity (Critical / Warning / Informational).\n"
+        "3. Provide specific, actionable remediation steps.\n"
+        "4. Group related errors sharing a root cause.\n"
+        "5. Highlight data loss risk, security issues, or service outage indicators.\n\n"
+        "Format: markdown with headings per issue, bullet points for remediation. "
+        "Start with a 2-3 sentence Executive Summary."
+    )
+    system_prompt = custom_system_prompt if custom_system_prompt else _DEFAULT_SYSTEM_PROMPT
 
     def generate():
         if not llm_id:
@@ -7571,19 +7586,6 @@ def api_logs_ai_analysis():
             if len(error_text) > max_chars:
                 error_text = error_text[-max_chars:]
             log_chars = len(error_text)
-
-            system_prompt = (
-                "You are an expert Dataiku DSS administrator and backend engineer "
-                "analyzing error logs from a DSS instance's backend.log file.\n\n"
-                "Your task:\n"
-                "1. Identify the root cause of each distinct error or error pattern.\n"
-                "2. Assess severity (Critical / Warning / Informational).\n"
-                "3. Provide specific, actionable remediation steps.\n"
-                "4. Group related errors sharing a root cause.\n"
-                "5. Highlight data loss risk, security issues, or service outage indicators.\n\n"
-                "Format: markdown with headings per issue, bullet points for remediation. "
-                "Start with a 2-3 sentence Executive Summary."
-            )
 
             log_stats = log_data.get('logStats', {})
             user_message = (

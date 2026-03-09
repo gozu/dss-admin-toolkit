@@ -3,6 +3,17 @@ import ReactMarkdown from 'react-markdown';
 import { fetchJson, getBackendUrl } from '../utils/api';
 import type { LlmOption } from '../types';
 
+const DEFAULT_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
+
+Your task:
+1. Identify the root cause of each distinct error or error pattern.
+2. Assess severity (Critical / Warning / Informational).
+3. Provide specific, actionable remediation steps.
+4. Group related errors sharing a root cause.
+5. Highlight data loss risk, security issues, or service outage indicators.
+
+Format: markdown with headings per issue, bullet points for remediation. Start with a 2-3 sentence Executive Summary.`;
+
 interface AnalysisState {
   phase: string;
   text: string;
@@ -18,6 +29,8 @@ export function AiLogAnalysis() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
   const [error, setError] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -46,7 +59,7 @@ export function AiLogAnalysis() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llmId: selectedLlmId }),
+        body: JSON.stringify({ llmId: selectedLlmId, systemPrompt: systemPrompt.trim() }),
         signal: controller.signal,
       });
 
@@ -97,7 +110,6 @@ export function AiLogAnalysis() {
                     phase: 'Complete',
                     llmId: String(payload.llmId || prev.llmId),
                     logCharsAnalyzed: Number(payload.logCharsAnalyzed) || prev.logCharsAnalyzed,
-                    // If 'analysis' field present (no-errors case), use it as text
                     ...(payload.analysis ? { text: String(payload.analysis) } : {}),
                   }
                 : prev,
@@ -114,10 +126,11 @@ export function AiLogAnalysis() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [selectedLlmId]);
+  }, [selectedLlmId, systemPrompt]);
 
   const showResult = analysis && (analysis.text || analysis.done);
   const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
+  const isPromptModified = systemPrompt.trim() !== DEFAULT_SYSTEM_PROMPT;
 
   return (
     <div className="mb-4">
@@ -168,12 +181,54 @@ export function AiLogAnalysis() {
                 </>
               )}
             </button>
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-1 px-2 py-1.5 text-xs text-[var(--text-tertiary)]
+                         hover:text-[var(--text-secondary)] transition-colors"
+              title="Advanced settings"
+            >
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              Advanced
+              {isPromptModified && (
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent)]" title="Prompt modified" />
+              )}
+            </button>
             {phaseLabel && !showResult && (
               <span className="text-sm text-[var(--text-secondary)] italic">{phaseLabel}...</span>
             )}
           </>
         )}
       </div>
+
+      {showAdvanced && (
+        <div className="mt-2 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-medium text-[var(--text-secondary)]">System Prompt</label>
+            {isPromptModified && (
+              <button
+                onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                className="text-xs text-[var(--accent)] hover:underline"
+              >
+                Reset to default
+              </button>
+            )}
+          </div>
+          <textarea
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            disabled={isAnalyzing}
+            rows={10}
+            className="w-full px-3 py-2 text-sm font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                       text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]
+                       disabled:opacity-50 resize-y"
+          />
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 p-3 rounded-lg bg-[var(--status-danger-bg)] border border-[var(--status-danger-border)] text-sm text-[var(--danger)]">
