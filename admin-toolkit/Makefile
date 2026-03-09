@@ -52,6 +52,7 @@ DEPLOY_COMMIT_PATHS := \
 	plugin.json \
 	python-lib \
 	webapps \
+	resource/dist \
 	resource/frontend/src \
 	resource/frontend/public \
 	resource/frontend/index.html \
@@ -96,11 +97,15 @@ build-frontend: $(FRONTEND_STAMP)
 plugin: dist-clean $(FRONTEND_STAMP)
 	@echo "[START] Archiving plugin to dist/ folder..."
 	python3 -c "import json; json.load(open('plugin.json'))" || (echo "[ERROR] Invalid plugin.json"; exit 1)
+	@# Safety: abort if resource/dist has uncommitted changes
+	@if git status --porcelain resource/dist | grep -q .; then \
+		echo "[ERROR] resource/dist has uncommitted changes — commit them first (run make deploy)."; \
+		exit 1; \
+	fi
 	mkdir -p dist
 	echo "{\"remote_url\":\"${remote_url}\",\"last_commit_id\":\"${last_commit_id}\"}" > release_info.json
 	git archive -v -9 --format zip -o "dist/$(archive_file_name)" HEAD
 	zip -u "dist/$(archive_file_name)" release_info.json
-	zip -u -r "dist/$(archive_file_name)" resource/dist
 	rm -f release_info.json
 	@echo "[SUCCESS] Archiving plugin: dist/$(archive_file_name)"
 
@@ -196,6 +201,7 @@ deploy-all: deploy-dev deploy-prod-secure
 deploy:
 	@echo "[START] Bumping version..."
 	@python3 -c "import json,pathlib; pf=pathlib.Path('plugin.json'); d=json.loads(pf.read_text()); p=d['version'].split('.'); b=int(p[2])+1; nv=('%s.%d.%03d'%(p[0],int(p[1])+1,0)) if b>999 else ('%s.%s.%03d'%(p[0],p[1],b)); print('plugin.json: %s -> %s'%(d['version'],nv)); d['version']=nv; pf.write_text(json.dumps(d,indent=4)+chr(10)); pkg=pathlib.Path('resource/frontend/package.json'); exec('p2=json.loads(pkg.read_text());print(\"package.json: %s -> %s\"%(p2[\"version\"],nv));p2[\"version\"]=nv;pkg.write_text(json.dumps(p2,indent=2)+chr(10))') if pkg.exists() else None"
+	@$(MAKE) build-frontend
 	@echo "[START] Committing deploy-relevant changes..."
 	@git add -- $(DEPLOY_COMMIT_PATHS)
 	@git commit -m "$(COMMIT_MSG)" -- $(DEPLOY_COMMIT_PATHS) || echo "[INFO] Nothing deploy-relevant to commit"
