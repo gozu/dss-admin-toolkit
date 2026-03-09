@@ -10,7 +10,7 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   base: process.env.MODE === 'production'
-    ? '/plugins/diag-parser/resource/dist/'
+    ? '/plugins/admin-toolkit/resource/dist/'
     : '/',
   build: {
     outDir: '../../resource/dist',
