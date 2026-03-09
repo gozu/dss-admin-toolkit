@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
+import dkulogo from '../../assets/dkulogo.png';
 import { exportAllTablesToZip } from '../../utils/exportTables';
 
 const COLLAPSE_BREAKPOINT = 1280;
@@ -65,7 +66,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
         {/* Center branding */}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2">
           <img
-            src="https://pbs.twimg.com/profile_images/1937529036705570816/dsylyC_j_400x400.png"
+            src={dkulogo}
             alt="Dataiku"
             className="h-5 w-5"
           />

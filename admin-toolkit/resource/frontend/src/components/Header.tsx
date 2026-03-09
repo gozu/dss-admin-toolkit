@@ -2,6 +2,7 @@ import { useTheme } from '../hooks/useTheme';
 import { useUltraWideLayout } from '../hooks/useUltraWideLayout';
 import { useScrolled } from '../hooks/useScrolled';
 import type { DiagType } from '../types';
+import dkulogo from '../assets/dkulogo.png';
 
 interface HeaderProps {
   onBack?: () => void;
@@ -104,7 +105,7 @@ export function Header({
           <div className="flex items-center gap-3">
             {/* Bird Logo */}
             <img
-              src="https://pbs.twimg.com/profile_images/1937529036705570816/dsylyC_j_400x400.png"
+              src={dkulogo}
               alt="Dataiku"
               className="h-8 w-8"
             />
