@@ -67,7 +67,7 @@ const PAGE_DEFS: PageDef[] = [
   {
     id: 'runtime-config',
     label: 'Runtime',
-    section: 'Configuration',
+    section: 'Insights',
     keywords: ['java', 'memory', 'spark', 'settings', 'auth', 'cgroups', 'users', 'isolation', 'container', 'integration', 'proxy'],
   },
   {

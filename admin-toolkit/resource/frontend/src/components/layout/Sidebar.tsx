@@ -161,11 +161,6 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'projects', label: 'Projects' },
       { id: 'code-envs', label: 'Code Envs' },
       { id: 'connections', label: 'Connections' },
-    ],
-  },
-  {
-    title: 'DSS CONFIG',
-    items: [
       { id: 'runtime-config', label: 'Runtime' },
     ],
   },

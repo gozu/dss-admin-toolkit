@@ -15,7 +15,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   projects: { label: 'Insights', firstPage: 'projects' },
   'code-envs': { label: 'Insights', firstPage: 'projects' },
   connections: { label: 'Insights', firstPage: 'projects' },
-  'runtime-config': { label: 'Configuration', firstPage: 'runtime-config' },
+  'runtime-config': { label: 'Insights', firstPage: 'projects' },
   logs: { label: 'Logs', firstPage: 'logs' },
   outreach: { label: 'Tools', firstPage: 'outreach' },
   'code-env-cleaner': { label: 'Tools', firstPage: 'outreach' },
