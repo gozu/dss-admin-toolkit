@@ -7377,6 +7377,7 @@ def api_tools_plugins_compare():
 
     try:
         remote_client = dataikuapi.DSSClient(remote_url, remote_api_key)
+        remote_client._session.verify = False
         remote_plugins_raw = remote_client.list_plugins()
     except Exception as e:
         return jsonify({"error": "Failed to fetch remote plugins: %s" % str(e)}), 500
@@ -7436,6 +7437,7 @@ def api_tools_plugins_deploy_one():
 
     local_client = dataiku.api_client()
     remote_client = dataikuapi.DSSClient(remote_url, api_key)
+    remote_client._session.verify = False
 
     # Strategy 1: dev plugin → download stream and upload archive
     try:
