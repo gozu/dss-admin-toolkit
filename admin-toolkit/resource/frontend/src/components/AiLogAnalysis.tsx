@@ -64,7 +64,7 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timedOutRef = useRef(false);
   const [llmTimeout, setLlmTimeout] = useState(120000);
-  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(true);
 
   const initialSystemPrompt = useMemo(() => {
     const stored = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
@@ -298,26 +298,20 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
       </div>
 
       {rawLogErrors && rawLogErrors.length > 0 && (
-        <div className="mt-3 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]">
-          <div className="flex items-center justify-between mb-2">
+        <div className="mt-3 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)] space-y-3">
+          <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
-              Log data being sent to LLM
+              Data being sent to LLM
             </label>
             <span className="text-xs text-[var(--text-tertiary)]">
-              {editableUserMessage.length.toLocaleString()} chars
+              {(editableSystemPrompt.length + editableUserMessage.length).toLocaleString()} total chars
             </span>
           </div>
-          <textarea
-            value={editableUserMessage}
-            onChange={(e) => setEditableUserMessage(e.target.value)}
-            rows={12}
-            className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
-                       text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
-          />
-          <div className="mt-2">
+
+          <div>
             <button
               onClick={() => setShowSystemPrompt(!showSystemPrompt)}
-              className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+              className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors mb-1"
             >
               <svg
                 className={`w-3 h-3 transition-transform ${showSystemPrompt ? 'rotate-90' : ''}`}
@@ -328,16 +322,31 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
               System prompt
+              <span className="font-normal text-[var(--text-tertiary)]">({editableSystemPrompt.length.toLocaleString()} chars)</span>
             </button>
             {showSystemPrompt && (
               <textarea
                 value={editableSystemPrompt}
                 onChange={(e) => setEditableSystemPrompt(e.target.value)}
-                rows={6}
-                className="mt-2 w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                rows={10}
+                className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
                            text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
               />
             )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">
+              User message — log data
+              <span className="font-normal text-[var(--text-tertiary)] ml-1">({editableUserMessage.length.toLocaleString()} chars)</span>
+            </label>
+            <textarea
+              value={editableUserMessage}
+              onChange={(e) => setEditableUserMessage(e.target.value)}
+              rows={12}
+              className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                         text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
+            />
           </div>
         </div>
       )}
