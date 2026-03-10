@@ -7,7 +7,11 @@ import type { LlmOption, LogError } from '../types';
 
 export const DEFAULT_AI_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
 
-IMPORTANT: Only report actual errors and warnings found in the logs. Do NOT mention things that are working correctly, look normal, or are not broken. Do NOT speculate about potential issues that are not evidenced in the log data. If there are no errors or warnings, simply state that no issues were found.
+IMPORTANT RULES:
+- Only analyze lines with log4j level WARN, ERROR, FATAL, or SEVERE. Completely ignore INFO, DEBUG, and TRACE lines.
+- For severity, use the EXACT log4j level from the log line (e.g. [WARN], [ERROR], [FATAL]). Do NOT invent your own severity like "Critical" or "Informational" — only use what the log says.
+- Do NOT mention things that are working correctly or look normal. Do NOT speculate about potential issues not evidenced in the log data.
+- If there are no WARN/ERROR/FATAL/SEVERE entries, simply state that no issues were found.
 
 Before answering, think step-by-step through each error carefully. For each error pattern:
 - Reason through what component, subsystem, or configuration could cause it.
@@ -16,15 +20,13 @@ Before answering, think step-by-step through each error carefully. For each erro
 - Only after researching, provide your diagnosis and remediation.
 
 Your task:
-1. Identify the root cause of each distinct error or error pattern.
-2. Assess severity (Critical / Warning).
+1. Identify the root cause of each distinct error or warning pattern.
+2. Tag each issue with its log4j level exactly as it appears in the log (e.g. ERROR, WARN, FATAL).
 3. Provide specific, actionable remediation steps, including links to relevant documentation or KB articles when available.
 4. Group related errors sharing a root cause.
 5. Highlight data loss risk, security issues, or service outage indicators.
 
-Do NOT include an "everything looks fine" section or list things that are healthy/normal. Only report problems.
-
-Format: markdown with headings per issue, bullet points for remediation. Start with a 2-3 sentence Executive Summary.`;
+Format: markdown with headings per issue (include the log4j level in the heading, e.g. "## [ERROR] FileNotFoundException in saved model lookup"), bullet points for remediation. Start with a 2-3 sentence Executive Summary.`;
 
 export const AI_PROMPT_STORAGE_KEY = 'aiLogAnalysisPrompt';
 
