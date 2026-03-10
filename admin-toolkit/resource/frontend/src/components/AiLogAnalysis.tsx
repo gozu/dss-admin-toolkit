@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { fetchJson, getBackendUrl } from '../utils/api';
 import { loadFromStorage } from '../utils/storage';
 import { SearchableCombobox } from './SearchableCombobox';
-import type { LlmOption, LogError, LogStats } from '../types';
+import type { LlmOption, LogError } from '../types';
 
 export const DEFAULT_AI_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
 
@@ -30,7 +30,6 @@ export const AI_PROMPT_STORAGE_KEY = 'aiLogAnalysisPrompt';
 
 interface AiLogAnalysisProps {
   rawLogErrors?: LogError[];
-  logStats?: LogStats;
 }
 
 interface AnalysisState {
@@ -41,16 +40,13 @@ interface AnalysisState {
   done: boolean;
 }
 
-function buildUserMessage(rawLogErrors: LogError[], logStats?: LogStats): string {
-  const MAX_CHARS = 100_000;
-  let errorText = rawLogErrors.map(block => block.data.join('\n')).join('\n---\n');
-  if (errorText.length > MAX_CHARS) errorText = errorText.slice(-MAX_CHARS);
-  const uniqueErrors = logStats?.['Unique Errors'] ?? 0;
-  const totalLines = logStats?.['Total Lines'] ?? 0;
-  return `Analyze the following DSS backend.log errors.\nStats: ${uniqueErrors} unique errors, ${totalLines} total log lines.\n\n\`\`\`\n${errorText}\n\`\`\``;
+type LogMode = 'curated' | 'raw';
+
+function buildCuratedLogData(rawLogErrors: LogError[]): string {
+  return rawLogErrors.map(block => block.data.join('\n')).join('\n---\n');
 }
 
-export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
+export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
   const [llms, setLlms] = useState<LlmOption[]>([]);
   const [selectedLlmLabel, setSelectedLlmLabel] = useState('');
   const [isLoadingLlms, setIsLoadingLlms] = useState(true);
@@ -64,32 +60,68 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timedOutRef = useRef(false);
   const [llmTimeout, setLlmTimeout] = useState(120000);
-  const [showSystemPrompt, setShowSystemPrompt] = useState(true);
 
+  // Log mode: curated errors vs raw full log
+  const [logMode, setLogMode] = useState<LogMode>('curated');
+  const [rawLogTail, setRawLogTail] = useState<string | null>(null);
+  const [isLoadingRawLog, setIsLoadingRawLog] = useState(false);
+
+  // System prompt
   const initialSystemPrompt = useMemo(() => {
     const stored = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
     return stored.trim() || DEFAULT_AI_SYSTEM_PROMPT;
   }, []);
-  const [editableSystemPrompt, setEditableSystemPrompt] = useState(initialSystemPrompt);
+  const [editableSystemPrompt] = useState(initialSystemPrompt);
 
-  const initialUserMessage = useMemo(
-    () => (rawLogErrors?.length ? buildUserMessage(rawLogErrors, logStats) : ''),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+  // Curated log data
+  const curatedLogData = useMemo(
+    () => (rawLogErrors?.length ? buildCuratedLogData(rawLogErrors) : ''),
+    [rawLogErrors],
   );
-  const [editableUserMessage, setEditableUserMessage] = useState(initialUserMessage);
 
-  // Update user message when rawLogErrors changes (but not on initial mount)
+  // Editable content — single textarea combining system prompt + log data
+  const buildFullMessage = useCallback((systemPrompt: string, logData: string) => {
+    return `${systemPrompt}\n\n---\n\n${logData}`;
+  }, []);
+
+  const [editableContent, setEditableContent] = useState(() =>
+    buildFullMessage(initialSystemPrompt, rawLogErrors?.length ? buildCuratedLogData(rawLogErrors) : ''),
+  );
+
+  // When log mode changes, rebuild the content
+  const switchLogMode = useCallback((mode: LogMode) => {
+    setLogMode(mode);
+    if (mode === 'curated') {
+      setEditableContent(buildFullMessage(editableSystemPrompt, curatedLogData));
+    } else if (mode === 'raw') {
+      if (rawLogTail !== null) {
+        setEditableContent(buildFullMessage(editableSystemPrompt, rawLogTail));
+      } else {
+        // Fetch raw log
+        setIsLoadingRawLog(true);
+        fetchJson<{ text: string; chars: number }>('/api/logs/raw-tail')
+          .then((data) => {
+            setRawLogTail(data.text);
+            setEditableContent(buildFullMessage(editableSystemPrompt, data.text));
+          })
+          .catch((err) => setError(`Failed to load raw log: ${err}`))
+          .finally(() => setIsLoadingRawLog(false));
+      }
+    }
+  }, [editableSystemPrompt, curatedLogData, rawLogTail, buildFullMessage]);
+
+  // Update content when rawLogErrors changes (for curated mode)
   const isFirstRender = useRef(true);
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
-    if (rawLogErrors?.length) {
-      setEditableUserMessage(buildUserMessage(rawLogErrors, logStats));
+    if (logMode === 'curated' && rawLogErrors?.length) {
+      const newLogData = buildCuratedLogData(rawLogErrors);
+      setEditableContent(buildFullMessage(editableSystemPrompt, newLogData));
     }
-  }, [rawLogErrors, logStats]);
+  }, [rawLogErrors, logMode, editableSystemPrompt, buildFullMessage]);
 
   const filteredLlms = useMemo(() => {
     if (unlocked) return llms;
@@ -150,6 +182,19 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
     setError('');
     setAnalysis({ phase: 'Starting', text: '', llmId: '', logCharsAnalyzed: 0, done: false });
 
+    // Split editable content back into system prompt + user message at the --- separator
+    const separatorIdx = editableContent.indexOf('\n\n---\n\n');
+    let systemPrompt: string;
+    let userMessage: string;
+    if (separatorIdx !== -1) {
+      systemPrompt = editableContent.slice(0, separatorIdx);
+      userMessage = editableContent.slice(separatorIdx + 7); // length of '\n\n---\n\n'
+    } else {
+      // No separator found — send everything as user message
+      systemPrompt = '';
+      userMessage = editableContent;
+    }
+
     // Start LLM timeout timer
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timedOutRef.current = false;
@@ -164,7 +209,7 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llmId, systemPrompt: editableSystemPrompt, userMessage: editableUserMessage }),
+        body: JSON.stringify({ llmId, systemPrompt, userMessage }),
         signal: controller.signal,
       });
 
@@ -236,7 +281,7 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
       setIsAnalyzing(false);
     }
-  }, [selectedLlmLabel, llmLabelToId, llmTimeout, editableSystemPrompt, editableUserMessage]);
+  }, [selectedLlmLabel, llmLabelToId, llmTimeout, editableContent]);
 
   const showResult = analysis && (analysis.text || analysis.done);
   const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
@@ -298,56 +343,47 @@ export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
       </div>
 
       {rawLogErrors && rawLogErrors.length > 0 && (
-        <div className="mt-3 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)] space-y-3">
+        <div className="mt-3 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)] space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
-              Data being sent to LLM
-            </label>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
+                LLM prompt preview
+              </label>
+              <div className="flex rounded-md overflow-hidden border border-[var(--border-default)]">
+                <button
+                  onClick={() => switchLogMode('curated')}
+                  className={`px-2.5 py-0.5 text-xs font-medium transition-colors ${
+                    logMode === 'curated'
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
+                  }`}
+                >
+                  Curated errors
+                </button>
+                <button
+                  onClick={() => switchLogMode('raw')}
+                  disabled={isLoadingRawLog}
+                  className={`px-2.5 py-0.5 text-xs font-medium transition-colors border-l border-[var(--border-default)] ${
+                    logMode === 'raw'
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
+                  } disabled:opacity-50`}
+                >
+                  {isLoadingRawLog ? 'Loading...' : 'Raw log (last 100K)'}
+                </button>
+              </div>
+            </div>
             <span className="text-xs text-[var(--text-tertiary)]">
-              {(editableSystemPrompt.length + editableUserMessage.length).toLocaleString()} total chars
+              {editableContent.length.toLocaleString()} chars
             </span>
           </div>
-
-          <div>
-            <button
-              onClick={() => setShowSystemPrompt(!showSystemPrompt)}
-              className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors mb-1"
-            >
-              <svg
-                className={`w-3 h-3 transition-transform ${showSystemPrompt ? 'rotate-90' : ''}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              System prompt
-              <span className="font-normal text-[var(--text-tertiary)]">({editableSystemPrompt.length.toLocaleString()} chars)</span>
-            </button>
-            {showSystemPrompt && (
-              <textarea
-                value={editableSystemPrompt}
-                onChange={(e) => setEditableSystemPrompt(e.target.value)}
-                rows={10}
-                className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
-                           text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
-              />
-            )}
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">
-              User message — log data
-              <span className="font-normal text-[var(--text-tertiary)] ml-1">({editableUserMessage.length.toLocaleString()} chars)</span>
-            </label>
-            <textarea
-              value={editableUserMessage}
-              onChange={(e) => setEditableUserMessage(e.target.value)}
-              rows={12}
-              className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
-                         text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
-            />
-          </div>
+          <textarea
+            value={editableContent}
+            onChange={(e) => setEditableContent(e.target.value)}
+            rows={16}
+            className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                       text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
+          />
         </div>
       )}
 

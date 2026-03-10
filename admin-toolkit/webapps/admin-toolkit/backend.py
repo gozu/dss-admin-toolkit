@@ -7531,6 +7531,26 @@ def api_llms():
         return jsonify({'error': str(e), 'llms': []}), 500
 
 
+@app.route('/api/logs/raw-tail')
+def api_logs_raw_tail():
+    """Return the last 100K characters of backend.log as plain text."""
+    max_chars = 100_000
+    try:
+        client = dataiku.api_client()
+        dip_home = _dip_home()
+        log_content = None
+        try:
+            log_content = client.get_log('backend.log')
+        except Exception:
+            log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
+        text = _coerce_log_text(log_content) or ''
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return jsonify({'text': text, 'chars': len(text)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'text': '', 'chars': 0}), 500
+
+
 @app.route('/api/logs/ai-analysis', methods=['POST'])
 def api_logs_ai_analysis():
     """Stream AI log analysis via SSE with phase updates and token streaming."""

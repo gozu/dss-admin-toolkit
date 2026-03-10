@@ -89,7 +89,7 @@ export function LogErrorsSection() {
               </p>
             </div>
 
-            <AiLogAnalysis rawLogErrors={rawLogErrors} logStats={logStats} />
+            <AiLogAnalysis rawLogErrors={rawLogErrors} />
 
             <div
               className="log-container rounded-lg"
