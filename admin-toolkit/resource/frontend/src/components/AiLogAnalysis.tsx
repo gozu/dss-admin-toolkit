@@ -25,6 +25,7 @@ Your task:
 3. Provide specific, actionable remediation steps, including links to relevant documentation or KB articles when available.
 4. Group related errors sharing a root cause.
 5. Highlight data loss risk, security issues, or service outage indicators.
+6. Do not write anything about INFO level logs, only WARN and above.
 
 Format: markdown with headings per issue (include the log4j level in the heading, e.g. "## [ERROR] FileNotFoundException in saved model lookup"), bullet points for remediation. Start with a 2-3 sentence Executive Summary.`;
 
