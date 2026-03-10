@@ -64,7 +64,7 @@ export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
   // Log mode: curated errors vs raw full log
   const [logMode, setLogMode] = useState<LogMode>('curated');
   const [rawLogTail, setRawLogTail] = useState<string | null>(null);
-  const [isLoadingRawLog, setIsLoadingRawLog] = useState(false);
+  const [isLoadingRawLog, setIsLoadingRawLog] = useState(true);
 
   // System prompt
   const initialSystemPrompt = useMemo(() => {
@@ -88,25 +88,21 @@ export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
     buildFullMessage(initialSystemPrompt, rawLogErrors?.length ? buildCuratedLogData(rawLogErrors) : ''),
   );
 
+  // Fetch raw log eagerly on mount
+  useEffect(() => {
+    fetchJson<{ text: string; chars: number }>('/api/logs/raw-tail')
+      .then((data) => setRawLogTail(data.text))
+      .catch((err) => setError(`Failed to load raw log: ${err}`))
+      .finally(() => setIsLoadingRawLog(false));
+  }, []);
+
   // When log mode changes, rebuild the content
   const switchLogMode = useCallback((mode: LogMode) => {
     setLogMode(mode);
     if (mode === 'curated') {
       setEditableContent(buildFullMessage(editableSystemPrompt, curatedLogData));
-    } else if (mode === 'raw') {
-      if (rawLogTail !== null) {
-        setEditableContent(buildFullMessage(editableSystemPrompt, rawLogTail));
-      } else {
-        // Fetch raw log
-        setIsLoadingRawLog(true);
-        fetchJson<{ text: string; chars: number }>('/api/logs/raw-tail')
-          .then((data) => {
-            setRawLogTail(data.text);
-            setEditableContent(buildFullMessage(editableSystemPrompt, data.text));
-          })
-          .catch((err) => setError(`Failed to load raw log: ${err}`))
-          .finally(() => setIsLoadingRawLog(false));
-      }
+    } else if (mode === 'raw' && rawLogTail !== null) {
+      setEditableContent(buildFullMessage(editableSystemPrompt, rawLogTail));
     }
   }, [editableSystemPrompt, curatedLogData, rawLogTail, buildFullMessage]);
 
