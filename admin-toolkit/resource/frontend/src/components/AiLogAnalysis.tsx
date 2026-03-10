@@ -62,7 +62,7 @@ export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
   const [llmTimeout, setLlmTimeout] = useState(120000);
 
   // Log mode: curated errors vs raw full log
-  const [logMode, setLogMode] = useState<LogMode>('curated');
+  const [logMode, setLogMode] = useState<LogMode>('raw');
   const [rawLogTail, setRawLogTail] = useState<string | null>(null);
   const [isLoadingRawLog, setIsLoadingRawLog] = useState(true);
 
@@ -85,15 +85,19 @@ export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
   }, []);
 
   const [editableContent, setEditableContent] = useState(() =>
-    buildFullMessage(initialSystemPrompt, rawLogErrors?.length ? buildCuratedLogData(rawLogErrors) : ''),
+    buildFullMessage(initialSystemPrompt, 'Loading raw log...'),
   );
 
-  // Fetch raw log eagerly on mount
+  // Fetch raw log eagerly on mount — populate textarea since raw is default mode
   useEffect(() => {
     fetchJson<{ text: string; chars: number }>('/api/logs/raw-tail')
-      .then((data) => setRawLogTail(data.text))
+      .then((data) => {
+        setRawLogTail(data.text);
+        setEditableContent(buildFullMessage(initialSystemPrompt, data.text));
+      })
       .catch((err) => setError(`Failed to load raw log: ${err}`))
       .finally(() => setIsLoadingRawLog(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // When log mode changes, rebuild the content
