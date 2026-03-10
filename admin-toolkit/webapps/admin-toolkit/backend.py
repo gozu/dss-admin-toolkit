@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import logging
 
 import dataiku
+from dateutil import parser as dtparser
 from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
@@ -3268,6 +3269,7 @@ _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
     projects = _bench_call('list_projects', client.list_projects) or []
     out: List[Dict[str, str]] = []
+    keys: List[str] = []
     for project in projects:
         if not isinstance(project, dict):
             continue
@@ -3279,12 +3281,34 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
             'name': str(project.get('name') or key),
             'owner': str(project.get('ownerLogin') or project.get('owner') or project.get('ownerName') or 'Unknown'),
         }
-        version_tag = project.get('versionTag') or {}
-        if isinstance(version_tag, dict):
-            last_modified = version_tag.get('lastModifiedOn')
-            if last_modified is not None:
-                entry['lastModifiedOn'] = last_modified
         out.append(entry)
+        keys.append(key)
+
+    # Fetch last-modified timestamps from git log in parallel (replaces versionTag
+    # which does not reflect webapp edits).
+    def _fetch_git_ts(project_key: str) -> Tuple[str, Optional[int]]:
+        try:
+            project_obj = client.get_project(project_key)
+            log = project_obj.get_project_git().log()
+            ts_str = log['entries'][0]['timestamp']
+            epoch_ms = int(dtparser.isoparse(ts_str).timestamp() * 1000)
+            return (project_key, epoch_ms)
+        except Exception:
+            return (project_key, None)
+
+    if keys:
+        workers = min(16, len(keys))
+        ts_map: Dict[str, Optional[int]] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_fetch_git_ts, k): k for k in keys}
+            for future in as_completed(futures):
+                pkey, epoch_ms = future.result()
+                ts_map[pkey] = epoch_ms
+        for entry in out:
+            ts = ts_map.get(entry['key'])
+            if ts is not None:
+                entry['lastModifiedOn'] = ts
+
     out.sort(key=lambda item: item.get('key') or '')
     return out
 
