@@ -100,11 +100,11 @@ def _get_tracking_db():
                     initial_dir = os.path.join(os.path.dirname(p), 'initial')
                     if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
                         db_dir = initial_dir
-                    else:
-                        db_dir = p  # fallback to run dir
                     break
             if db_dir is None:
-                db_dir = '/tmp'
+                logging.getLogger(__name__).error("[tracking] no writable initial dir found in sys.path")
+                _tracking_db_instance = None
+                return None
             db_path = os.path.join(db_dir, 'tracking.db')
             _tracking_db_instance = TrackingDB(db_path)
             _tracking_db_instance._get_conn()  # init schema
@@ -1708,26 +1708,6 @@ def _compute_footprint_payload(
     return unwrapped
 
 
-def _footprint_item_name(item: Any, idx: int) -> str:
-    if isinstance(item, dict):
-        if item.get('projectKey'):
-            return str(item.get('projectKey'))
-        if item.get('path'):
-            return str(item.get('path'))
-        if item.get('name') and item.get('language'):
-            return f"{item.get('name')} ({item.get('language')})"
-        if item.get('name') and item.get('type'):
-            return f"{item.get('name')} ({item.get('type')})"
-        if item.get('name'):
-            return str(item.get('name'))
-    else:
-        for attr in ('projectKey', 'path', 'name'):
-            if hasattr(item, attr):
-                value = getattr(item, attr)
-                if value:
-                    return str(value)
-    return f'entry-{idx}'
-
 
 def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
     if scope == 'all':
@@ -1766,52 +1746,16 @@ def _read_license_via_client_api(client: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _footprint_attr(footprint: Any, *keys: str) -> Any:
-    if isinstance(footprint, dict):
-        for key in keys:
-            if key in footprint:
-                return footprint.get(key)
-        return None
-    for key in keys:
-        if hasattr(footprint, key):
-            return getattr(footprint, key)
-    return None
-
 
 def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
-    raw_details = None
-    try:
-        raw_details = _footprint_attr(footprint, 'details', 'children')
-    except Exception:
-        raw_details = None
-
-    if isinstance(raw_details, dict):
-        return raw_details
-    if isinstance(raw_details, list):
-        out: Dict[str, Any] = {}
-        for idx, item in enumerate(raw_details):
-            name = _footprint_item_name(item, idx)
-            out[name] = item
-        return out
-
-    if isinstance(footprint, dict):
-        items = footprint.get('items')
-        if isinstance(items, list):
-            out = {}
-            for idx, item in enumerate(items):
-                out[_footprint_item_name(item, idx)] = item
-            return out
-        out = {}
-        for key, value in footprint.items():
-            if isinstance(value, dict):
-                out[str(key)] = value
-        return out
-
+    details = footprint.get('details')
+    if isinstance(details, dict):
+        return details
     return {}
 
 
 def _footprint_size(footprint: Any) -> int:
-    size = _coerce_int(_footprint_attr(footprint, 'size', 'totalSize', 'bytes'), 0)
+    size = _coerce_int(footprint.get('size'), 0)
     if size > 0:
         return size
     details = _footprint_details_map(footprint)
@@ -1846,7 +1790,7 @@ def _collect_bucket_file_count_by_name(footprint: Any, matcher) -> int:
     for name, child in details.items():
         normalized = _normalize_bucket_name(name)
         if matcher(normalized):
-            total += _coerce_int(_footprint_attr(child, 'nbFiles', 'nb_files', 'fileCount'), 0)
+            total += _coerce_int(child.get('nbFiles'), 0)
             continue
         total += _collect_bucket_file_count_by_name(child, matcher)
     return total
@@ -2027,22 +1971,12 @@ def _extract_nested_int(payload: Any, *paths: str) -> Optional[int]:
 
 
 def _normalize_project_permissions(perms_raw: Any) -> List[Dict[str, Any]]:
-    raw = perms_raw
-    if hasattr(raw, 'get_raw'):
-        try:
-            raw = raw.get_raw()
-        except Exception:
-            pass
+    if not isinstance(perms_raw, dict):
+        return []
 
-    entries: List[Any] = []
-    if isinstance(raw, list):
-        entries = raw
-    elif isinstance(raw, dict):
-        nested = raw.get('permissions')
-        if isinstance(nested, list):
-            entries = nested
-        elif raw.get('group') or raw.get('user'):
-            entries = [raw]
+    entries = perms_raw.get('permissions')
+    if not isinstance(entries, list):
+        return []
 
     normalized: List[Dict[str, Any]] = []
     for perm in entries:
@@ -2063,35 +1997,21 @@ def _normalize_project_permissions(perms_raw: Any) -> List[Dict[str, Any]]:
 
 
 def _extract_project_version_number(listing: Dict[str, Any], summary: Dict[str, Any], settings: Dict[str, Any]) -> int:
-    candidates = (
-        _extract_nested_int(summary, 'versionTag.versionNumber'),
-        _extract_nested_int(listing, 'versionTag.versionNumber'),
-        _extract_nested_int(settings, 'versionTag.versionNumber'),
-        _extract_nested_int(settings, 'settings.versionTag.versionNumber'),
-        _extract_nested_int(settings, 'settings.dkuProperties.versionNumber'),
-        _extract_nested_int(settings, 'dkuProperties.versionNumber'),
-    )
-    for value in candidates:
-        if value is not None:
-            return value
+    value = summary.get('versionTag', {}).get('versionNumber')
+    if isinstance(value, (int, float)):
+        return int(value)
     return 0
 
 
 def _extract_code_env_owner(env_listing: Dict[str, Any], settings_raw: Optional[Dict[str, Any]]) -> str:
-    owner = _extract_nested_text(
-        settings_raw or {},
-        'owner',
-        'desc.owner',
-        'spec.owner',
-        'meta.owner',
-    )
-    if owner:
-        return owner
+    if settings_raw:
+        owner = settings_raw.get('owner')
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
 
-    for key in ('owner', 'createdBy', 'creator'):
-        value = env_listing.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    owner = env_listing.get('owner')
+    if isinstance(owner, str) and owner.strip():
+        return owner.strip()
     return 'Unknown'
 
 
@@ -3083,108 +3003,16 @@ def _render_template_text(template: str, variables: Dict[str, str]) -> str:
 def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) -> List[Dict[str, str]]:
     diag = diagnostics if diagnostics is not None else []
     channels: List[Dict[str, str]] = []
-    raw_items: List[Any] = []
 
-    has_method = hasattr(client, 'list_messaging_channels')
-    diag.append(f"has_list_messaging_channels={has_method}")
-
-    if has_method:
-        for idx, attempt in enumerate((
-            lambda: client.list_messaging_channels(as_type='objects', channel_family='mail'),
-            lambda: client.list_messaging_channels(channel_family='mail'),
-            lambda: client.list_messaging_channels(),
-        )):
-            try:
-                result = attempt()
-                rtype = type(result).__name__
-                rlen = len(result) if isinstance(result, (list, tuple)) else '?'
-                diag.append(f"python_attempt[{idx}] type={rtype} len={rlen}")
-                if isinstance(result, list):
-                    raw_items.extend(result)
-            except Exception as exc:
-                diag.append(f"python_attempt[{idx}] error={exc!r}")
-                continue
-
-    diag.append(f"raw_items_after_python_client={len(raw_items)}")
-
-    # If Python client method didn't yield results, try internal HTTP API
-    if not raw_items:
-        for api_path in ('/admin/messaging-channels/', '/public/api/admin/messaging-channels/'):
-            try:
-                result = _client_perform_json(client, 'GET', api_path)
-                rtype = type(result).__name__ if result is not None else 'None'
-                rlen = len(result) if isinstance(result, (list, dict)) else '?'
-                diag.append(f"http_fallback path={api_path} type={rtype} len={rlen}")
-                if isinstance(result, list):
-                    raw_items.extend(result)
-                    break
-                # Some endpoints wrap in {"channels": [...]}
-                if isinstance(result, dict):
-                    items = result.get('channels') or result.get('items') or []
-                    if isinstance(items, list) and items:
-                        raw_items.extend(items)
-                        diag.append(f"http_fallback unwrapped keys={list(result.keys())[:5]} items={len(items)}")
-                        break
-            except Exception as exc:
-                diag.append(f"http_fallback path={api_path} error={exc!r}")
-                continue
-
-    # Log first few item shapes for diagnostics
-    for i, item in enumerate(raw_items[:3]):
-        if isinstance(item, dict):
-            diag.append(f"item[{i}] type=dict keys={sorted(item.keys())[:8]}")
-        else:
-            diag.append(f"item[{i}] type={type(item).__name__} attrs={[a for a in dir(item) if not a.startswith('_')][:8]}")
+    raw_items = client.list_messaging_channels(as_type='objects', channel_family='mail')
+    diag.append(f"raw_items={len(raw_items) if isinstance(raw_items, list) else '?'}")
 
     for item in raw_items:
-        channel_id = None
-        label = None
-        family = ''
-        channel_type = ''
-
-        if isinstance(item, dict):
-            family = str(item.get('channelFamily') or item.get('family') or '').lower()
-            channel_type = str(item.get('type') or '').lower()
-            channel_id = (
-                item.get('id')
-                or item.get('name')
-                or item.get('identifier')
-            )
-            label = item.get('label') or item.get('name') or channel_id
-        else:
-            if hasattr(item, 'get_id'):
-                try:
-                    channel_id = item.get_id()
-                except Exception:
-                    channel_id = None
-            if hasattr(item, 'id') and not channel_id:
-                try:
-                    channel_id = getattr(item, 'id')
-                except Exception:
-                    channel_id = None
-            if hasattr(item, 'family') and not family:
-                try:
-                    family = str(getattr(item, 'family') or '').lower()
-                except Exception:
-                    family = ''
-            if hasattr(item, 'type'):
-                try:
-                    channel_type = str(getattr(item, 'type') or '').lower()
-                except Exception:
-                    channel_type = ''
-            if hasattr(item, 'get_raw'):
-                try:
-                    raw = item.get_raw()
-                    if isinstance(raw, dict):
-                        family = str(raw.get('channelFamily') or raw.get('family') or family).lower()
-                        channel_type = str(raw.get('type') or channel_type).lower()
-                        if not channel_id:
-                            channel_id = raw.get('id') or raw.get('name')
-                        label = raw.get('label') or raw.get('name')
-                except Exception:
-                    pass
-            if hasattr(item, 'name') and not label:
-                label = getattr(item, 'name')
+        raw = item.get_raw()
+        channel_id = raw.get('id')
+        family = str(raw.get('channelFamily') or '').lower()
+        channel_type = str(raw.get('type') or '').lower()
+        label = raw.get('label') or channel_id
 
         if family and family != 'mail':
             continue
@@ -3203,7 +3031,7 @@ def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) ->
         unique[channel['id']] = channel
 
     result = list(unique.values())
-    diag.append(f"raw_items={len(raw_items)} filtered={len(channels)} deduped={len(result)}")
+    diag.append(f"filtered={len(channels)} deduped={len(result)}")
     if not result:
         app.logger.warning(
             "[tools] _list_mail_channels: no mail channels found — diag: %s",
@@ -4055,7 +3883,7 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
         # Pre-sort children by size to identify top-N for adaptive depth
         child_items = []
         for child_name, child_footprint in details.items():
-            child_size = _coerce_int(_footprint_attr(child_footprint, 'size', 'totalSize', 'bytes'), 0)
+            child_size = _coerce_int(child_footprint.get('size'), 0)
             child_items.append((child_name, child_footprint, child_size))
         child_items.sort(key=lambda x: x[2], reverse=True)
 
@@ -4072,8 +3900,8 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
 
     children.sort(key=lambda c: c.get('size', 0), reverse=True)
 
-    size = _coerce_int(_footprint_attr(footprint, 'size', 'totalSize', 'bytes'), 0)
-    file_count = _coerce_int(_footprint_attr(footprint, 'nb_files', 'nbFiles', 'fileCount'), 0)
+    size = _coerce_int(footprint.get('size'), 0)
+    file_count = _coerce_int(footprint.get('nbFiles'), 0)
 
     if size <= 0 and children:
         size = sum(child['size'] for child in children)
@@ -4081,7 +3909,7 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
         file_count = sum(child['fileCount'] for child in children)
 
     own_size = max(0, size - sum(child['size'] for child in children))
-    locations_raw = _footprint_attr(footprint, 'locations')
+    locations_raw = footprint.get('locations')
     locations: List[str] = []
     if isinstance(locations_raw, list):
         locations = [str(loc) for loc in locations_raw if loc is not None and str(loc).strip()]
@@ -4298,12 +4126,12 @@ def api_connections():
         if isinstance(connections, dict):
             items = connections.items()
         else:
-            items = [(c.get('name') or c.get('id') or c.get('connectionName'), c) for c in connections]
+            items = [(c.get('name'), c) for c in connections]
 
         for name, config in items:
             if not isinstance(config, dict):
                 continue
-            conn_type = config.get('type') or config.get('connectionType')
+            conn_type = config.get('type')
             if conn_type == 'EC2':
                 conn_type = 'S3'
             if not conn_type:
@@ -4441,31 +4269,11 @@ def api_projects():
                 except Exception as exc:
                     app.logger.warning("[projects] %s permissions fetch failed: %s", key, exc)
 
-            name_override = _extract_nested_text(
-                summary,
-                'name',
-            ) or _extract_nested_text(
-                settings,
-                'name',
-                'settings.name',
-                'settings.dkuProperties.name',
-                'dkuProperties.name',
-            )
+            name_override = summary.get('name')
             if name_override:
                 name = name_override
 
-            owner_override = _extract_nested_text(
-                summary,
-                'ownerLogin',
-                'owner',
-                'ownerName',
-            ) or _extract_nested_text(
-                settings,
-                'owner',
-                'settings.owner',
-                'settings.dkuProperties.owner',
-                'dkuProperties.owner',
-            )
+            owner_override = summary.get('ownerLogin')
             if owner_override:
                 owner = owner_override
 
@@ -6757,19 +6565,7 @@ def api_tools_email_send():
             continue
 
         try:
-            try:
-                channel_obj.send(project_key, [to_email], subject, body, plain_text=plain_text)
-            except TypeError:
-                try:
-                    channel_obj.send(
-                        project_key=project_key,
-                        to=[to_email],
-                        subject=subject,
-                        body=body,
-                        plain_text=plain_text,
-                    )
-                except TypeError:
-                    channel_obj.send(project_key, [to_email], subject, body)
+            channel_obj.send(project_key, [to_email], subject, body, plain_text=plain_text)
             sent_count += 1
             results.append({
                 'recipientKey': recipient_key,
