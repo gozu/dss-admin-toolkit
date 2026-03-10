@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { fetchJson, getBackendUrl } from '../utils/api';
 import { loadFromStorage } from '../utils/storage';
 import { SearchableCombobox } from './SearchableCombobox';
-import type { LlmOption } from '../types';
+import type { LlmOption, LogError, LogStats } from '../types';
 
 export const DEFAULT_AI_SYSTEM_PROMPT = `You are an expert Dataiku DSS administrator and backend engineer analyzing error logs from a DSS instance's backend.log file.
 
@@ -28,6 +28,11 @@ Format: markdown with headings per issue, bullet points for remediation. Start w
 
 export const AI_PROMPT_STORAGE_KEY = 'aiLogAnalysisPrompt';
 
+interface AiLogAnalysisProps {
+  rawLogErrors?: LogError[];
+  logStats?: LogStats;
+}
+
 interface AnalysisState {
   phase: string;
   text: string;
@@ -36,7 +41,16 @@ interface AnalysisState {
   done: boolean;
 }
 
-export function AiLogAnalysis() {
+function buildUserMessage(rawLogErrors: LogError[], logStats?: LogStats): string {
+  const MAX_CHARS = 100_000;
+  let errorText = rawLogErrors.map(block => block.data.join('\n')).join('\n---\n');
+  if (errorText.length > MAX_CHARS) errorText = errorText.slice(-MAX_CHARS);
+  const uniqueErrors = logStats?.['Unique Errors'] ?? 0;
+  const totalLines = logStats?.['Total Lines'] ?? 0;
+  return `Analyze the following DSS backend.log errors.\nStats: ${uniqueErrors} unique errors, ${totalLines} total log lines.\n\n\`\`\`\n${errorText}\n\`\`\``;
+}
+
+export function AiLogAnalysis({ rawLogErrors, logStats }: AiLogAnalysisProps) {
   const [llms, setLlms] = useState<LlmOption[]>([]);
   const [selectedLlmLabel, setSelectedLlmLabel] = useState('');
   const [isLoadingLlms, setIsLoadingLlms] = useState(true);
@@ -50,6 +64,32 @@ export function AiLogAnalysis() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timedOutRef = useRef(false);
   const [llmTimeout, setLlmTimeout] = useState(120000);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+
+  const initialSystemPrompt = useMemo(() => {
+    const stored = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
+    return stored.trim() || DEFAULT_AI_SYSTEM_PROMPT;
+  }, []);
+  const [editableSystemPrompt, setEditableSystemPrompt] = useState(initialSystemPrompt);
+
+  const initialUserMessage = useMemo(
+    () => (rawLogErrors?.length ? buildUserMessage(rawLogErrors, logStats) : ''),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [editableUserMessage, setEditableUserMessage] = useState(initialUserMessage);
+
+  // Update user message when rawLogErrors changes (but not on initial mount)
+  const isFirstRender = useRef(true);
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    if (rawLogErrors?.length) {
+      setEditableUserMessage(buildUserMessage(rawLogErrors, logStats));
+    }
+  }, [rawLogErrors, logStats]);
 
   const filteredLlms = useMemo(() => {
     if (unlocked) return llms;
@@ -110,9 +150,6 @@ export function AiLogAnalysis() {
     setError('');
     setAnalysis({ phase: 'Starting', text: '', llmId: '', logCharsAnalyzed: 0, done: false });
 
-    const storedPrompt = loadFromStorage<string>(AI_PROMPT_STORAGE_KEY, '');
-    const systemPrompt = storedPrompt.trim() || DEFAULT_AI_SYSTEM_PROMPT;
-
     // Start LLM timeout timer
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timedOutRef.current = false;
@@ -127,7 +164,7 @@ export function AiLogAnalysis() {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llmId, systemPrompt }),
+        body: JSON.stringify({ llmId, systemPrompt: editableSystemPrompt, userMessage: editableUserMessage }),
         signal: controller.signal,
       });
 
@@ -199,7 +236,7 @@ export function AiLogAnalysis() {
       if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
       setIsAnalyzing(false);
     }
-  }, [selectedLlmLabel, llmLabelToId, llmTimeout]);
+  }, [selectedLlmLabel, llmLabelToId, llmTimeout, editableSystemPrompt, editableUserMessage]);
 
   const showResult = analysis && (analysis.text || analysis.done);
   const phaseLabel = analysis && !analysis.done ? analysis.phase : null;
@@ -259,6 +296,51 @@ export function AiLogAnalysis() {
           </>
         )}
       </div>
+
+      {rawLogErrors && rawLogErrors.length > 0 && (
+        <div className="mt-3 p-3 rounded-lg bg-[var(--bg-surface)] border border-[var(--border-default)]">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
+              Log data being sent to LLM
+            </label>
+            <span className="text-xs text-[var(--text-tertiary)]">
+              {editableUserMessage.length.toLocaleString()} chars
+            </span>
+          </div>
+          <textarea
+            value={editableUserMessage}
+            onChange={(e) => setEditableUserMessage(e.target.value)}
+            rows={12}
+            className="w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                       text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
+          />
+          <div className="mt-2">
+            <button
+              onClick={() => setShowSystemPrompt(!showSystemPrompt)}
+              className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              <svg
+                className={`w-3 h-3 transition-transform ${showSystemPrompt ? 'rotate-90' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              System prompt
+            </button>
+            {showSystemPrompt && (
+              <textarea
+                value={editableSystemPrompt}
+                onChange={(e) => setEditableSystemPrompt(e.target.value)}
+                rows={6}
+                className="mt-2 w-full p-2 text-xs font-mono rounded-lg bg-[var(--bg-primary)] border border-[var(--border-default)]
+                           text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] resize-y"
+              />
+            )}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 p-3 rounded-lg bg-[var(--status-danger-bg)] border border-[var(--status-danger-border)] text-sm text-[var(--danger)]">

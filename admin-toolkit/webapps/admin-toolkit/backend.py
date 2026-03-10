@@ -7537,6 +7537,7 @@ def api_logs_ai_analysis():
     body = request.get_json(force=True)
     llm_id = body.get('llmId', '').strip()
     custom_system_prompt = (body.get('systemPrompt') or '').strip()
+    client_user_message = (body.get('userMessage') or '').strip()
 
     _DEFAULT_SYSTEM_PROMPT = (
         "You are an expert Dataiku DSS administrator and backend engineer "
@@ -7572,38 +7573,44 @@ def api_logs_ai_analysis():
             project_key = dataiku.default_project_key()
             project = client.get_project(project_key)
 
-            dip_home = _dip_home()
+            if client_user_message:
+                # Frontend provided the pre-built user message — use it directly
+                user_message = client_user_message
+                log_chars = len(user_message)
+            else:
+                # Fallback: build user message from cache/disk (backward compat)
+                dip_home = _dip_home()
 
-            def loader():
-                log_content = None
-                try:
-                    log_content = client.get_log('backend.log')
-                except Exception:
-                    log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
-                return _parse_log_errors(log_content)
+                def loader():
+                    log_content = None
+                    try:
+                        log_content = client.get_log('backend.log')
+                    except Exception:
+                        log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
+                    return _parse_log_errors(log_content)
 
-            log_data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
-            raw_errors = log_data.get('rawLogErrors', [])
+                log_data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
+                raw_errors = log_data.get('rawLogErrors', [])
 
-            if not raw_errors:
-                yield "event: done\ndata: %s\n\n" % json.dumps({
-                    "analysis": "No log errors found to analyze.",
-                    "llmId": llm_id, "logCharsAnalyzed": 0,
-                })
-                return
+                if not raw_errors:
+                    yield "event: done\ndata: %s\n\n" % json.dumps({
+                        "analysis": "No log errors found to analyze.",
+                        "llmId": llm_id, "logCharsAnalyzed": 0,
+                    })
+                    return
 
-            error_text = '\n---\n'.join('\n'.join(block.get('data', [])) for block in raw_errors)
-            max_chars = 100_000
-            if len(error_text) > max_chars:
-                error_text = error_text[-max_chars:]
-            log_chars = len(error_text)
+                error_text = '\n---\n'.join('\n'.join(block.get('data', [])) for block in raw_errors)
+                max_chars = 100_000
+                if len(error_text) > max_chars:
+                    error_text = error_text[-max_chars:]
+                log_chars = len(error_text)
 
-            log_stats = log_data.get('logStats', {})
-            user_message = (
-                "Analyze the following DSS backend.log errors.\n"
-                "Stats: %d unique errors, %d total log lines.\n\n"
-                "```\n%s\n```"
-            ) % (log_stats.get('Unique Errors', 0), log_stats.get('Total Lines', 0), error_text)
+                log_stats = log_data.get('logStats', {})
+                user_message = (
+                    "Analyze the following DSS backend.log errors.\n"
+                    "Stats: %d unique errors, %d total log lines.\n\n"
+                    "```\n%s\n```"
+                ) % (log_stats.get('Unique Errors', 0), log_stats.get('Total Lines', 0), error_text)
 
             yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Sending to LLM"})
 
