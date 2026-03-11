@@ -39,19 +39,13 @@ async function toApiError(response: Response, url: string): Promise<ApiRequestEr
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = getBackendUrl(path);
-  const method = init?.method ?? 'GET';
-  const t0 = performance.now();
-  console.log(`[api] ${method} ${path} → ${url}`);
   const response = await fetch(url, {
     credentials: 'same-origin',
     ...init,
   });
-  const elapsed = (performance.now() - t0).toFixed(0);
   if (!response.ok) {
-    console.error(`[api] ${method} ${path} → ${response.status} ${response.statusText} (${elapsed}ms)`);
     throw await toApiError(response, url);
   }
-  console.log(`[api] ${method} ${path} → ${response.status} OK (${elapsed}ms)`);
   return response.json() as Promise<T>;
 }
 

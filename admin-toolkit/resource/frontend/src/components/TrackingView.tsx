@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Container } from './Container';
 import { fetchJson } from '../utils/api';
+import { useDiag } from '../context/DiagContext';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -168,6 +169,11 @@ function statusPill(status: string) {
 /* ------------------------------------------------------------------ */
 
 export function TrackingView() {
+  const { addDebugLog } = useDiag();
+  const log = useCallback((msg: string, level: 'info' | 'warn' | 'error' = 'info') => {
+    addDebugLog(msg, 'tracking', level);
+  }, [addDebugLog]);
+
   const [users, setUsers] = useState<AggregatedUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -179,80 +185,83 @@ export function TrackingView() {
 
   const loadUsers = useCallback(() => {
     const t0 = performance.now();
-    console.log('[tracking:loadUsers] fetching /api/tracking/users...');
+    log('GET /api/tracking/users');
     return fetchJson<{ users: UserRow[] }>('/api/tracking/users')
       .then((data) => {
-        const elapsed = (performance.now() - t0).toFixed(0);
+        const ms = (performance.now() - t0).toFixed(0);
         const agg = aggregate(data.users);
         const totalOpen = agg.reduce((s, u) => s + u.open, 0);
         const totalResolved = agg.reduce((s, u) => s + u.resolved, 0);
-        console.log(`[tracking:loadUsers] OK in ${elapsed}ms — ${data.users.length} raw users → ${agg.length} aggregated, ${totalOpen} open, ${totalResolved} resolved`);
+        log(`GET /api/tracking/users OK (${ms}ms) — ${data.users.length} raw → ${agg.length} users, open=${totalOpen} resolved=${totalResolved}`);
         if (data.users.length > 0) {
-          console.log('[tracking:loadUsers] sample user:', JSON.stringify(data.users[0]).slice(0, 300));
+          log(`Sample user: ${JSON.stringify(data.users[0]).slice(0, 200)}`);
+        } else {
+          log('No users returned (DB may be empty, waiting for refresh)', 'warn');
         }
         setUsers(agg);
         setError(null);
       })
       .catch((err) => {
-        const elapsed = (performance.now() - t0).toFixed(0);
-        console.error(`[tracking:loadUsers] FAILED in ${elapsed}ms:`, err);
-        console.error('[tracking:loadUsers] error details:', {
-          message: err instanceof Error ? err.message : String(err),
-          status: (err as { status?: number }).status,
-          statusText: (err as { statusText?: string }).statusText,
-          bodySnippet: (err as { bodySnippet?: string }).bodySnippet,
-        });
+        const ms = (performance.now() - t0).toFixed(0);
+        const status = (err as { status?: number }).status ?? '?';
+        const body = (err as { bodySnippet?: string }).bodySnippet ?? '';
+        log(`GET /api/tracking/users FAILED (${ms}ms) status=${status} body=${body}`, 'error');
         setError(err instanceof Error ? err.message : 'Failed to load tracking data');
       });
-  }, []);
+  }, [log]);
 
   // On mount: load stale data immediately, then trigger background refresh
   useEffect(() => {
     let cancelled = false;
-    console.log('[tracking:mount] === TrackingView MOUNTED ===');
-    console.log('[tracking:mount] step 1: loading existing user data...');
+    log('=== TrackingView MOUNTED ===');
+    log('Step 1: loading existing user data from DB...');
     // Show existing data fast
     loadUsers().finally(() => {
       if (!cancelled) {
-        console.log('[tracking:mount] step 1 done, setting loading=false');
+        log('Step 1 complete, loading spinner dismissed');
         setLoading(false);
       }
     });
     // Then trigger a background refresh (re-scans DSS for resolved issues)
     // and reload user data when it completes
     const refreshT0 = performance.now();
-    console.log('[tracking:mount] step 2: triggering background refresh...');
+    log('Step 2: POST /api/tracking/refresh (background DSS scan)...');
     fetchJson('/api/tracking/refresh', { method: 'POST' })
       .then((result) => {
-        const elapsed = ((performance.now() - refreshT0) / 1000).toFixed(1);
-        console.log(`[tracking:mount] step 2 refresh completed in ${elapsed}s, result:`, result);
+        const secs = ((performance.now() - refreshT0) / 1000).toFixed(1);
+        const info = JSON.stringify(result).slice(0, 200);
+        log(`Step 2 refresh OK (${secs}s): ${info}`);
         if (!cancelled) {
-          console.log('[tracking:mount] step 3: reloading user data after refresh...');
+          log('Step 3: reloading users after refresh...');
           return loadUsers();
         }
       })
       .catch((err) => {
-        const elapsed = ((performance.now() - refreshT0) / 1000).toFixed(1);
-        console.error(`[tracking:mount] step 2 refresh FAILED after ${elapsed}s:`, err);
+        const secs = ((performance.now() - refreshT0) / 1000).toFixed(1);
+        const status = (err as { status?: number }).status ?? '?';
+        const body = (err as { bodySnippet?: string }).bodySnippet ?? '';
+        log(`Step 2 refresh FAILED (${secs}s) status=${status} body=${body}`, 'error');
       });
-    return () => { cancelled = true; console.log('[tracking:mount] cleanup — cancelled=true'); };
-  }, [loadUsers]);
+    return () => { cancelled = true; };
+  }, [loadUsers, log]);
 
   const handleRefresh = useCallback(() => {
-    console.log('[tracking:refresh] manual refresh triggered');
+    log('Manual refresh triggered');
     setRefreshing(true);
     const t0 = performance.now();
     fetchJson('/api/tracking/refresh', { method: 'POST' })
       .then((result) => {
-        console.log(`[tracking:refresh] refresh done in ${((performance.now() - t0) / 1000).toFixed(1)}s:`, result);
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        log(`Manual refresh OK (${secs}s): ${JSON.stringify(result).slice(0, 200)}`);
         return loadUsers();
       })
       .catch((err) => {
-        console.error(`[tracking:refresh] refresh failed in ${((performance.now() - t0) / 1000).toFixed(1)}s:`, err);
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        log(`Manual refresh FAILED (${secs}s): ${err instanceof Error ? err.message : err}`, 'error');
         return loadUsers();
       })
       .finally(() => setRefreshing(false));
-  }, [loadUsers]);
+  }, [loadUsers, log]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -438,31 +447,32 @@ export function TrackingView() {
 /* ------------------------------------------------------------------ */
 
 function UserRowGroup({ user, expanded, onToggle }: { user: AggregatedUser; expanded: boolean; onToggle: () => void }) {
+  const { addDebugLog } = useDiag();
   const [issues, setIssues] = useState<Issue[]>([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
 
   const handleToggle = useCallback(() => {
-    console.log(`[tracking:row] toggle user=${user.login} expanded=${!expanded}`);
+    addDebugLog(`Expand user=${user.login} → ${!expanded ? 'open' : 'close'}`, 'tracking');
     if (!expanded) setIssuesLoading(true);
     onToggle();
-  }, [expanded, onToggle, user.login]);
+  }, [expanded, onToggle, user.login, addDebugLog]);
 
   useEffect(() => {
     if (!expanded) return;
     const t0 = performance.now();
     const url = `/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`;
-    console.log(`[tracking:row] fetching issues for ${user.login}: ${url}`);
+    addDebugLog(`GET issues for ${user.login}`, 'tracking');
     fetchJson<{ issues: Issue[] }>(url)
       .then((data) => {
-        console.log(`[tracking:row] got ${data.issues.length} issues for ${user.login} in ${(performance.now() - t0).toFixed(0)}ms`);
+        addDebugLog(`Got ${data.issues.length} issues for ${user.login} (${(performance.now() - t0).toFixed(0)}ms)`, 'tracking');
         setIssues(data.issues);
       })
       .catch((err) => {
-        console.error(`[tracking:row] FAILED fetching issues for ${user.login}:`, err);
+        addDebugLog(`FAILED issues for ${user.login}: ${err instanceof Error ? err.message : err}`, 'tracking', 'error');
         setIssues([]);
       })
       .finally(() => setIssuesLoading(false));
-  }, [expanded, user.login]);
+  }, [expanded, user.login, addDebugLog]);
 
   return (
     <>
