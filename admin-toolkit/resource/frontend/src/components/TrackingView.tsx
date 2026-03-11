@@ -178,12 +178,30 @@ export function TrackingView() {
   const [refreshing, setRefreshing] = useState(false);
 
   const loadUsers = useCallback(() => {
+    const t0 = performance.now();
+    console.log('[tracking:loadUsers] fetching /api/tracking/users...');
     return fetchJson<{ users: UserRow[] }>('/api/tracking/users')
       .then((data) => {
-        setUsers(aggregate(data.users));
+        const elapsed = (performance.now() - t0).toFixed(0);
+        const agg = aggregate(data.users);
+        const totalOpen = agg.reduce((s, u) => s + u.open, 0);
+        const totalResolved = agg.reduce((s, u) => s + u.resolved, 0);
+        console.log(`[tracking:loadUsers] OK in ${elapsed}ms — ${data.users.length} raw users → ${agg.length} aggregated, ${totalOpen} open, ${totalResolved} resolved`);
+        if (data.users.length > 0) {
+          console.log('[tracking:loadUsers] sample user:', JSON.stringify(data.users[0]).slice(0, 300));
+        }
+        setUsers(agg);
         setError(null);
       })
       .catch((err) => {
+        const elapsed = (performance.now() - t0).toFixed(0);
+        console.error(`[tracking:loadUsers] FAILED in ${elapsed}ms:`, err);
+        console.error('[tracking:loadUsers] error details:', {
+          message: err instanceof Error ? err.message : String(err),
+          status: (err as { status?: number }).status,
+          statusText: (err as { statusText?: string }).statusText,
+          bodySnippet: (err as { bodySnippet?: string }).bodySnippet,
+        });
         setError(err instanceof Error ? err.message : 'Failed to load tracking data');
       });
   }, []);
@@ -191,23 +209,48 @@ export function TrackingView() {
   // On mount: load stale data immediately, then trigger background refresh
   useEffect(() => {
     let cancelled = false;
+    console.log('[tracking:mount] === TrackingView MOUNTED ===');
+    console.log('[tracking:mount] step 1: loading existing user data...');
     // Show existing data fast
     loadUsers().finally(() => {
-      if (!cancelled) setLoading(false);
+      if (!cancelled) {
+        console.log('[tracking:mount] step 1 done, setting loading=false');
+        setLoading(false);
+      }
     });
     // Then trigger a background refresh (re-scans DSS for resolved issues)
     // and reload user data when it completes
+    const refreshT0 = performance.now();
+    console.log('[tracking:mount] step 2: triggering background refresh...');
     fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then(() => { if (!cancelled) return loadUsers(); })
-      .catch(() => {});
-    return () => { cancelled = true; };
+      .then((result) => {
+        const elapsed = ((performance.now() - refreshT0) / 1000).toFixed(1);
+        console.log(`[tracking:mount] step 2 refresh completed in ${elapsed}s, result:`, result);
+        if (!cancelled) {
+          console.log('[tracking:mount] step 3: reloading user data after refresh...');
+          return loadUsers();
+        }
+      })
+      .catch((err) => {
+        const elapsed = ((performance.now() - refreshT0) / 1000).toFixed(1);
+        console.error(`[tracking:mount] step 2 refresh FAILED after ${elapsed}s:`, err);
+      });
+    return () => { cancelled = true; console.log('[tracking:mount] cleanup — cancelled=true'); };
   }, [loadUsers]);
 
   const handleRefresh = useCallback(() => {
+    console.log('[tracking:refresh] manual refresh triggered');
     setRefreshing(true);
+    const t0 = performance.now();
     fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then(() => loadUsers())
-      .catch(() => loadUsers())
+      .then((result) => {
+        console.log(`[tracking:refresh] refresh done in ${((performance.now() - t0) / 1000).toFixed(1)}s:`, result);
+        return loadUsers();
+      })
+      .catch((err) => {
+        console.error(`[tracking:refresh] refresh failed in ${((performance.now() - t0) / 1000).toFixed(1)}s:`, err);
+        return loadUsers();
+      })
       .finally(() => setRefreshing(false));
   }, [loadUsers]);
 
@@ -399,15 +442,25 @@ function UserRowGroup({ user, expanded, onToggle }: { user: AggregatedUser; expa
   const [issuesLoading, setIssuesLoading] = useState(false);
 
   const handleToggle = useCallback(() => {
+    console.log(`[tracking:row] toggle user=${user.login} expanded=${!expanded}`);
     if (!expanded) setIssuesLoading(true);
     onToggle();
-  }, [expanded, onToggle]);
+  }, [expanded, onToggle, user.login]);
 
   useEffect(() => {
     if (!expanded) return;
-    fetchJson<{ issues: Issue[] }>(`/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`)
-      .then((data) => setIssues(data.issues))
-      .catch(() => setIssues([]))
+    const t0 = performance.now();
+    const url = `/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`;
+    console.log(`[tracking:row] fetching issues for ${user.login}: ${url}`);
+    fetchJson<{ issues: Issue[] }>(url)
+      .then((data) => {
+        console.log(`[tracking:row] got ${data.issues.length} issues for ${user.login} in ${(performance.now() - t0).toFixed(0)}ms`);
+        setIssues(data.issues);
+      })
+      .catch((err) => {
+        console.error(`[tracking:row] FAILED fetching issues for ${user.login}:`, err);
+        setIssues([]);
+      })
       .finally(() => setIssuesLoading(false));
   }, [expanded, user.login]);
 

@@ -83,34 +83,51 @@ _tracking_db_lock = threading.Lock()
 
 def _get_tracking_db():
     global _tracking_db_instance
+    _log = logging.getLogger(__name__)
+    _log.info("[tracking:get_db] called — _tracking_available=%s, _tracking_db_instance=%s",
+              _tracking_available, type(_tracking_db_instance).__name__ if _tracking_db_instance else None)
     if not _tracking_available:
+        _log.warning("[tracking:get_db] tracking module not available, returning None")
         return None
     if _tracking_db_instance is not None:
+        _log.info("[tracking:get_db] returning cached instance")
         return _tracking_db_instance
     with _tracking_db_lock:
         if _tracking_db_instance is not None:
+            _log.info("[tracking:get_db] returning cached instance (after lock)")
             return _tracking_db_instance
         try:
             # Store tracking DB in the webapp's 'initial' dir, which persists across
             # backend restarts (unlike the run dir which changes each restart).
             # Path: .../webappruns/<project>/<webapp>/initial/tracking.db
             db_dir = None
-            for p in sys.path:
+            _log.info("[tracking:get_db] scanning sys.path (%d entries) for webappruns dir", len(sys.path))
+            for i, p in enumerate(sys.path):
+                _log.info("[tracking:get_db]   sys.path[%d] = %s (match=%s)",
+                          i, p, 'webappruns' in p and 'run_' in p)
                 if 'webappruns' in p and 'run_' in p:
                     initial_dir = os.path.join(os.path.dirname(p), 'initial')
-                    if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
+                    is_dir = os.path.isdir(initial_dir)
+                    is_writable = os.access(initial_dir, os.W_OK) if is_dir else False
+                    _log.info("[tracking:get_db]   initial_dir=%s exists=%s writable=%s",
+                              initial_dir, is_dir, is_writable)
+                    if is_dir and is_writable:
                         db_dir = initial_dir
+                        _log.info("[tracking:get_db]   using initial dir: %s", db_dir)
                     else:
                         db_dir = p  # fallback to run dir
+                        _log.info("[tracking:get_db]   fallback to run dir: %s", db_dir)
                     break
             if db_dir is None:
                 db_dir = '/tmp'
+                _log.info("[tracking:get_db]   no webappruns dir found, fallback to /tmp")
             db_path = os.path.join(db_dir, 'tracking.db')
+            _log.info("[tracking:get_db] opening DB at %s", db_path)
             _tracking_db_instance = TrackingDB(db_path)
             _tracking_db_instance._get_conn()  # init schema
-            logging.getLogger(__name__).info("[tracking] initialized at %s", db_path)
+            _log.info("[tracking:get_db] DB initialized successfully at %s", db_path)
         except Exception as exc:
-            logging.getLogger(__name__).warning("[tracking] init failed: %s", exc)
+            _log.warning("[tracking:get_db] init FAILED: %s", exc, exc_info=True)
             _tracking_db_instance = None
     return _tracking_db_instance
 
@@ -5481,15 +5498,25 @@ def api_project_footprint_progress_alias():
 def _do_tracking_ingest(db, data):
     """Run a tracking ingest from outreach data. Returns the new run_id."""
     import hashlib
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:ingest] === INGEST STARTED ===")
     overview = _CACHE.get('overview', {}).get('value') or {}
     instance_info = overview.get('instanceInfo') or {}
     install_id = instance_info.get('installId') or ''
     instance_url = instance_info.get('instanceUrl') or ''
     inst_id = install_id or (hashlib.sha256(instance_url.encode()).hexdigest()[:16] if instance_url else 'unknown')
+    app.logger.info("[tracking:ingest] instance_id=%s instance_url=%s", inst_id, instance_url)
 
     disabled = db.get_disabled_campaigns()
     exemptions = db.get_exemption_set()
+    app.logger.info("[tracking:ingest] disabled_campaigns=%s, exemptions_count=%d",
+                    disabled, len(exemptions) if exemptions else 0)
+    app.logger.info("[tracking:ingest] extracting findings from outreach data (keys: %s)...",
+                    list(data.keys()) if isinstance(data, dict) else type(data).__name__)
     findings = extract_findings_from_outreach_data(data, disabled_campaigns=disabled, exemptions=exemptions)
+    app.logger.info("[tracking:ingest] extracted %d findings in %.1fs",
+                    len(findings), _time.time() - _t0)
 
     users_data = (_CACHE.get('users', {}).get('value') or {})
     projects_data = (_CACHE.get('projects', {}).get('value') or {})
@@ -5582,6 +5609,9 @@ def _do_tracking_ingest(db, data):
                 'owner': p.get('owner') or p.get('ownerLogin'),
             })
 
+    app.logger.info("[tracking:ingest] calling db.ingest_run with %d findings, %d users, %d projects, %d campaign_summaries",
+                    len(findings), len(user_ingest), len(project_ingest), len(campaign_summaries))
+    _t_db = _time.time()
     run_id = db.ingest_run(
         instance_id=inst_id,
         instance_url=instance_url,
@@ -5595,7 +5625,8 @@ def _do_tracking_ingest(db, data):
         health_metrics=health_metrics,
         campaign_summaries=campaign_summaries,
     )
-    app.logger.info("[tracking] ingested run %d with %d findings", run_id, len(findings))
+    app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
+                    run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)
     return run_id
 
 
@@ -6844,32 +6875,49 @@ def _tracking_instance_id() -> str:
 
 @app.route('/api/tracking/refresh', methods=['POST'])
 def api_tracking_refresh():
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:refresh] === REFRESH STARTED ===")
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:refresh] _get_tracking_db() returned None, aborting")
         return jsonify({'error': 'Tracking not available'}), 501
     if not _tracking_available:
+        app.logger.error("[tracking:refresh] tracking module not loaded")
         return jsonify({'error': 'Tracking module not loaded'}), 501
+    app.logger.info("[tracking:refresh] DB ok, clearing caches")
     # Invalidate outreach data cache to force fresh DSS API calls
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
     _clear_shared_project_code_env_usage()
     # Load fresh outreach data (populates _CACHE['tools_outreach_data'])
+    app.logger.info("[tracking:refresh] calling api_tools_outreach_data()...")
+    _t1 = _time.time()
     try:
         with app.test_request_context('/api/tools/outreach-data'):
             api_tools_outreach_data()
     except Exception as exc:
-        app.logger.warning("[tracking refresh] outreach-data failed: %s", exc)
+        app.logger.warning("[tracking:refresh] outreach-data FAILED after %.1fs: %s",
+                           _time.time() - _t1, exc, exc_info=True)
         return jsonify({'error': 'Failed to load outreach data: %s' % exc}), 500
+    app.logger.info("[tracking:refresh] outreach-data loaded in %.1fs", _time.time() - _t1)
     # Run tracking ingest directly (bypasses _tracking_ingested guard)
     cache_entry = _CACHE.get('tools_outreach_data')
     data = cache_entry.get('value') if cache_entry else None
     if not data:
+        app.logger.error("[tracking:refresh] cache entry present=%s but data is falsy",
+                         cache_entry is not None)
         return jsonify({'error': 'No outreach data after refresh'}), 500
+    app.logger.info("[tracking:refresh] outreach data keys: %s", list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+    _t2 = _time.time()
     try:
         run_id = _do_tracking_ingest(db, data)
+        app.logger.info("[tracking:refresh] === REFRESH DONE === run_id=%d, ingest=%.1fs, total=%.1fs",
+                        run_id, _time.time() - _t2, _time.time() - _t0)
         return jsonify({'ok': True, 'run_id': run_id})
     except Exception as exc:
-        app.logger.warning("[tracking refresh] ingest failed: %s", exc, exc_info=True)
+        app.logger.warning("[tracking:refresh] ingest FAILED after %.1fs: %s",
+                           _time.time() - _t2, exc, exc_info=True)
         return jsonify({'error': 'Ingest failed: %s' % exc}), 500
 
 
@@ -6898,8 +6946,11 @@ def api_tracking_run_detail(run_id):
 
 @app.route('/api/tracking/issues')
 def api_tracking_issues():
+    import time as _time
+    _t0 = _time.time()
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:issues] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
     instance_id = request.args.get('instance_id') or _tracking_instance_id()
     status = request.args.get('status')
@@ -6907,6 +6958,8 @@ def api_tracking_issues():
     owner_login = request.args.get('owner_login')
     limit = request.args.get('limit', 100, type=int)
     offset = request.args.get('offset', 0, type=int)
+    app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
+                    instance_id, status, campaign_id, owner_login, limit, offset)
     issues = db.list_issues(
         instance_id=instance_id,
         status=status,
@@ -6916,8 +6969,11 @@ def api_tracking_issues():
         offset=offset,
     )
     disabled = db.get_disabled_campaigns()
+    before_filter = len(issues) if issues else 0
     if disabled:
         issues = [i for i in issues if i.get('campaign_id') not in disabled]
+    app.logger.info("[tracking:issues] returning %d issues (before filter: %d) in %.1fms",
+                    len(issues), before_filter, (_time.time() - _t0) * 1000)
     return jsonify({'issues': issues, 'count': len(issues)})
 
 
@@ -6934,20 +6990,31 @@ def api_tracking_issue_detail(issue_id):
 
 @app.route('/api/tracking/users')
 def api_tracking_users_all():
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:users] GET /api/tracking/users called")
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:users] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
     instance_id = request.args.get('instance_id')
+    app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
     rows = db.list_all_user_compliance(instance_id)
+    app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
     disabled = db.get_disabled_campaigns()
+    app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
     users = {}
+    skipped = 0
     for r in rows:
         if disabled and r.get('campaign_id') in disabled:
+            skipped += 1
             continue
         login = r['owner_login']
         if login not in users:
             users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
         users[login]['campaigns'].append(r)
+    app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
+                    len(users), skipped, (_time.time() - _t0) * 1000)
     return jsonify({'users': list(users.values())})
 
 
