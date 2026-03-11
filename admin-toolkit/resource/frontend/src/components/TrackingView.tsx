@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Container } from './Container';
 import { fetchJson } from '../utils/api';
@@ -170,9 +170,11 @@ function statusPill(status: string) {
 
 export function TrackingView() {
   const { addDebugLog } = useDiag();
+  const logRef = useRef(addDebugLog);
+  logRef.current = addDebugLog;
   const log = useCallback((msg: string, level: 'info' | 'warn' | 'error' = 'info') => {
-    addDebugLog(msg, 'tracking', level);
-  }, [addDebugLog]);
+    logRef.current(msg, 'tracking', level);
+  }, []);
 
   const [users, setUsers] = useState<AggregatedUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -243,7 +245,7 @@ export function TrackingView() {
         log(`Step 2 refresh FAILED (${secs}s) status=${status} body=${body}`, 'error');
       });
     return () => { cancelled = true; };
-  }, [loadUsers, log]);
+  }, [loadUsers]);
 
   const handleRefresh = useCallback(() => {
     log('Manual refresh triggered');
@@ -261,7 +263,7 @@ export function TrackingView() {
         return loadUsers();
       })
       .finally(() => setRefreshing(false));
-  }, [loadUsers, log]);
+  }, [loadUsers]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -448,31 +450,33 @@ export function TrackingView() {
 
 function UserRowGroup({ user, expanded, onToggle }: { user: AggregatedUser; expanded: boolean; onToggle: () => void }) {
   const { addDebugLog } = useDiag();
+  const logRef = useRef(addDebugLog);
+  logRef.current = addDebugLog;
   const [issues, setIssues] = useState<Issue[]>([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
 
   const handleToggle = useCallback(() => {
-    addDebugLog(`Expand user=${user.login} → ${!expanded ? 'open' : 'close'}`, 'tracking');
+    logRef.current(`Expand user=${user.login} → ${!expanded ? 'open' : 'close'}`, 'tracking');
     if (!expanded) setIssuesLoading(true);
     onToggle();
-  }, [expanded, onToggle, user.login, addDebugLog]);
+  }, [expanded, onToggle, user.login]);
 
   useEffect(() => {
     if (!expanded) return;
     const t0 = performance.now();
     const url = `/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`;
-    addDebugLog(`GET issues for ${user.login}`, 'tracking');
+    logRef.current(`GET issues for ${user.login}`, 'tracking');
     fetchJson<{ issues: Issue[] }>(url)
       .then((data) => {
-        addDebugLog(`Got ${data.issues.length} issues for ${user.login} (${(performance.now() - t0).toFixed(0)}ms)`, 'tracking');
+        logRef.current(`Got ${data.issues.length} issues for ${user.login} (${(performance.now() - t0).toFixed(0)}ms)`, 'tracking');
         setIssues(data.issues);
       })
       .catch((err) => {
-        addDebugLog(`FAILED issues for ${user.login}: ${err instanceof Error ? err.message : err}`, 'tracking', 'error');
+        logRef.current(`FAILED issues for ${user.login}: ${err instanceof Error ? err.message : err}`, 'tracking', 'error');
         setIssues([]);
       })
       .finally(() => setIssuesLoading(false));
-  }, [expanded, user.login, addDebugLog]);
+  }, [expanded, user.login]);
 
   return (
     <>
