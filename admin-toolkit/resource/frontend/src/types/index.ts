@@ -658,6 +658,42 @@ export interface DirTreeLoaderState {
 // COMPARISON TYPES
 // =============================================================================
 
+// Code Environment Comparison types
+export interface CodeEnvCompareGreen {
+  envNames: string[];
+  packageCount: number;
+  pythonVersion: string;
+}
+
+export interface CodeEnvComparePurple {
+  envNames: string[];
+  packageCount: number;
+  pythonVersions: Record<string, string>;
+}
+
+export interface CodeEnvCompareBlue {
+  envNames: string[];
+  packageCount: number;
+  diffCount: number;
+  diffs: Record<string, Record<string, string>>;
+}
+
+export interface CodeEnvCompareYellow {
+  envA: string;
+  envB: string;
+  onlyInA: string[];
+  onlyInB: string[];
+  versionDiffs: Array<{ package: string; versionA: string; versionB: string }>;
+}
+
+export interface CodeEnvCompareResult {
+  green: CodeEnvCompareGreen[];
+  purple: CodeEnvComparePurple[];
+  blue: CodeEnvCompareBlue[];
+  yellow: CodeEnvCompareYellow[];
+  analyzedCount: number;
+}
+
 export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'project-cleaner' | 'plugins';
 
 export interface PluginCompareRow {

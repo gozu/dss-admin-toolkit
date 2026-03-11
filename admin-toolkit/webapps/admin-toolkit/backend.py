@@ -4815,6 +4815,198 @@ def api_code_envs_progress_alias():
     return api_code_envs_progress()
 
 
+# ── Code env comparison helpers ─────────────────────────────────────────────
+
+def _parse_spec_packages(spec: Any) -> Dict[str, str]:
+    """Parse a spec package list into {normalized_name: version_spec}."""
+    packages: Dict[str, str] = {}
+    if not spec:
+        return packages
+    lines = spec if isinstance(spec, list) else str(spec).strip().split('\n')
+    for line in lines:
+        line = str(line).strip()
+        if not line or line.startswith('#') or line.startswith('-'):
+            continue
+        m = re.match(r'^([A-Za-z0-9_.\-]+)(?:\[.*?\])?\s*(.*)', line)
+        if m:
+            name = re.sub(r'[-_.]+', '_', m.group(1)).lower()
+            version = m.group(2).strip()
+            packages[name] = version
+    return packages
+
+
+def _compare_code_envs_logic(
+    envs: List[Tuple[str, str, Dict[str, str]]],
+    max_diff: int = 3,
+) -> Dict[str, Any]:
+    """Classify environment relationships. Returns JSON-serializable result."""
+    from collections import defaultdict
+    from itertools import combinations
+
+    pyver_map = {name: pyver for name, pyver, _ in envs}
+
+    # Bucket by package-name fingerprint
+    name_buckets: Dict[frozenset, List[Tuple[str, Dict[str, str]]]] = defaultdict(list)
+    for name, pyver, packages in envs:
+        key = frozenset(packages.keys())
+        name_buckets[key].append((name, packages))
+
+    green_groups: List[Dict[str, Any]] = []
+    purple_groups: List[Dict[str, Any]] = []
+    blue_groups: List[Dict[str, Any]] = []
+
+    for pkg_names, members in name_buckets.items():
+        if len(members) < 2:
+            continue
+
+        version_buckets: Dict[frozenset, List[str]] = defaultdict(list)
+        for env_name, packages in members:
+            vkey = frozenset(packages.items())
+            version_buckets[vkey].append(env_name)
+
+        for vkey, env_names in version_buckets.items():
+            if len(env_names) < 2:
+                continue
+            py_sub: Dict[str, List[str]] = defaultdict(list)
+            for en in env_names:
+                py_sub[pyver_map[en]].append(en)
+
+            # GREEN: same packages, same versions, same python
+            for pv, names in py_sub.items():
+                if len(names) >= 2:
+                    green_groups.append({
+                        'envNames': sorted(names),
+                        'packageCount': len(dict(vkey)),
+                        'pythonVersion': pv,
+                    })
+
+            # PURPLE: same packages, same versions, different python
+            if len(py_sub) >= 2:
+                all_names = sorted(env_names)
+                pv_info = {en: pyver_map[en] for en in all_names}
+                purple_groups.append({
+                    'envNames': all_names,
+                    'packageCount': len(dict(vkey)),
+                    'pythonVersions': pv_info,
+                })
+
+        # BLUE: same package set, version diffs exist
+        if len(version_buckets) >= 2:
+            member_names = sorted(m[0] for m in members)
+            diff_table: Dict[str, Dict[str, str]] = {}
+            member_dict = {n: p for n, p in members}
+            for pkg in sorted(pkg_names):
+                versions = {n: member_dict[n].get(pkg, '') for n in member_names}
+                if len(set(versions.values())) > 1:
+                    diff_table[pkg] = versions
+            if diff_table:
+                total_pkgs = len(next(iter(member_dict.values())))
+                blue_groups.append({
+                    'envNames': member_names,
+                    'packageCount': total_pkgs,
+                    'diffCount': len(diff_table),
+                    'diffs': diff_table,
+                })
+
+    # YELLOW: near-matches across different buckets
+    yellow_pairs: List[Dict[str, Any]] = []
+    bucket_keys = list(name_buckets.keys())
+
+    for i, j in combinations(range(len(bucket_keys)), 2):
+        ka, kb = bucket_keys[i], bucket_keys[j]
+        sym_diff = ka ^ kb
+        if not sym_diff or len(sym_diff) > max_diff:
+            continue
+
+        only_a_pkgs = sorted(ka - kb)
+        only_b_pkgs = sorted(kb - ka)
+        common = ka & kb
+
+        for env_a, pkgs_a in name_buckets[ka]:
+            for env_b, pkgs_b in name_buckets[kb]:
+                vdiffs = []
+                for pkg in sorted(common):
+                    va, vb = pkgs_a.get(pkg, ''), pkgs_b.get(pkg, '')
+                    if va != vb:
+                        vdiffs.append({'package': pkg, 'versionA': va, 'versionB': vb})
+                yellow_pairs.append({
+                    'envA': env_a,
+                    'envB': env_b,
+                    'onlyInA': only_a_pkgs,
+                    'onlyInB': only_b_pkgs,
+                    'versionDiffs': vdiffs,
+                })
+
+    green_groups.sort(key=lambda g: g['envNames'][0])
+    purple_groups.sort(key=lambda g: g['envNames'][0])
+    blue_groups.sort(key=lambda g: g['envNames'][0])
+    yellow_pairs.sort(key=lambda p: (p['envA'], p['envB']))
+
+    return {
+        'green': green_groups,
+        'purple': purple_groups,
+        'blue': blue_groups,
+        'yellow': yellow_pairs,
+        'analyzedCount': len(envs),
+    }
+
+
+@app.route('/api/code-envs/compare')
+def api_code_envs_compare():
+    max_diff = 3
+    try:
+        max_diff = max(1, int(request.args.get('maxDiff', '3')))
+    except Exception:
+        pass
+
+    def loader():
+        client = dataiku.api_client()
+        env_listings = client.list_code_envs()
+        _SKIP = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
+        envs: List[Tuple[str, str, Dict[str, str]]] = []
+
+        def fetch_one(env_listing: Dict[str, Any]) -> Optional[Tuple[str, str, Dict[str, str]]]:
+            name = env_listing.get('envName') or env_listing.get('name')
+            lang = (env_listing.get('envLang') or env_listing.get('language') or 'PYTHON').upper()
+            if not name or lang != 'PYTHON':
+                return None
+            try:
+                c = _thread_client()
+                env_obj = c.get_code_env(lang, name)
+                raw = _safe_get_raw(env_obj.get_settings())
+                if str(raw.get('deploymentMode') or '').upper() in _SKIP:
+                    return None
+                packages = _parse_spec_packages(raw.get('specPackageList', ''))
+                pyver_raw = (
+                    raw.get('desc', {}).get('pythonInterpreter')
+                    or raw.get('pythonInterpreter')
+                    or ''
+                )
+                ver = str(pyver_raw).replace('PYTHON', '')
+                if len(ver) == 2:
+                    pyver = f'{ver[0]}.{ver[1]}'
+                elif len(ver) >= 3:
+                    pyver = f'{ver[0]}.{ver[1:]}'
+                else:
+                    pyver = str(pyver_raw) or 'unknown'
+                return (name, pyver, packages)
+            except Exception:
+                return None
+
+        workers = min(16, len(env_listings))
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {pool.submit(fetch_one, e): e for e in env_listings}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    envs.append(result)
+
+        return _compare_code_envs_logic(envs, max_diff)
+
+    data = _cache_get('code_envs_compare', _BACKEND_SETTINGS.get('cache_ttl_code_envs', 5), loader)
+    return jsonify(data)
+
+
 @app.route('/api/project-footprint')
 def api_project_footprint():
     client = dataiku.api_client()
