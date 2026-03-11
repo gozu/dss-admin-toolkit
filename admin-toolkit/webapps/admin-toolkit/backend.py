@@ -123,8 +123,11 @@ def _get_tracking_db():
                 _log.info("[tracking:get_db]   no webappruns dir found, fallback to /tmp")
             db_path = os.path.join(db_dir, 'tracking.db')
             _log.info("[tracking:get_db] opening DB at %s", db_path)
-            _tracking_db_instance = TrackingDB(db_path)
-            _tracking_db_instance._get_conn()  # init schema
+            # Create and fully initialize BEFORE assigning to the global.
+            # This prevents other threads from seeing a half-initialized instance.
+            db = TrackingDB(db_path)
+            db._get_conn()  # init schema + migrations
+            _tracking_db_instance = db  # atomic — now visible to other threads
             _log.info("[tracking:get_db] DB initialized successfully at %s", db_path)
         except Exception as exc:
             _log.warning("[tracking:get_db] init FAILED: %s", exc, exc_info=True)
