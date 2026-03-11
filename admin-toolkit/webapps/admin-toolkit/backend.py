@@ -6952,29 +6952,33 @@ def api_tracking_issues():
     if db is None:
         app.logger.error("[tracking:issues] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
-    instance_id = request.args.get('instance_id') or _tracking_instance_id()
-    status = request.args.get('status')
-    campaign_id = request.args.get('campaign_id')
-    owner_login = request.args.get('owner_login')
-    limit = request.args.get('limit', 100, type=int)
-    offset = request.args.get('offset', 0, type=int)
-    app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
-                    instance_id, status, campaign_id, owner_login, limit, offset)
-    issues = db.list_issues(
-        instance_id=instance_id,
-        status=status,
-        campaign_id=campaign_id,
-        owner_login=owner_login,
-        limit=limit,
-        offset=offset,
-    )
-    disabled = db.get_disabled_campaigns()
-    before_filter = len(issues) if issues else 0
-    if disabled:
-        issues = [i for i in issues if i.get('campaign_id') not in disabled]
-    app.logger.info("[tracking:issues] returning %d issues (before filter: %d) in %.1fms",
-                    len(issues), before_filter, (_time.time() - _t0) * 1000)
-    return jsonify({'issues': issues, 'count': len(issues)})
+    try:
+        instance_id = request.args.get('instance_id') or _tracking_instance_id()
+        status = request.args.get('status')
+        campaign_id = request.args.get('campaign_id')
+        owner_login = request.args.get('owner_login')
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
+                        instance_id, status, campaign_id, owner_login, limit, offset)
+        issues = db.list_issues(
+            instance_id=instance_id,
+            status=status,
+            campaign_id=campaign_id,
+            owner_login=owner_login,
+            limit=limit,
+            offset=offset,
+        )
+        disabled = db.get_disabled_campaigns()
+        before_filter = len(issues) if issues else 0
+        if disabled:
+            issues = [i for i in issues if i.get('campaign_id') not in disabled]
+        app.logger.info("[tracking:issues] returning %d issues (before filter: %d) in %.1fms",
+                        len(issues), before_filter, (_time.time() - _t0) * 1000)
+        return jsonify({'issues': issues, 'count': len(issues)})
+    except Exception as exc:
+        app.logger.error("[tracking:issues] UNHANDLED: %s", exc, exc_info=True)
+        return jsonify({'error': 'tracking/issues failed: %s' % exc}), 500
 
 
 @app.route('/api/tracking/issues/<int:issue_id>')
@@ -6997,25 +7001,76 @@ def api_tracking_users_all():
     if db is None:
         app.logger.error("[tracking:users] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
-    instance_id = request.args.get('instance_id')
-    app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
-    rows = db.list_all_user_compliance(instance_id)
-    app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
-    disabled = db.get_disabled_campaigns()
-    app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
-    users = {}
-    skipped = 0
-    for r in rows:
-        if disabled and r.get('campaign_id') in disabled:
-            skipped += 1
-            continue
-        login = r['owner_login']
-        if login not in users:
-            users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
-        users[login]['campaigns'].append(r)
-    app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
-                    len(users), skipped, (_time.time() - _t0) * 1000)
-    return jsonify({'users': list(users.values())})
+    try:
+        instance_id = request.args.get('instance_id')
+        app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
+        rows = db.list_all_user_compliance(instance_id)
+        app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
+        disabled = db.get_disabled_campaigns()
+        app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
+        users = {}
+        skipped = 0
+        for r in rows:
+            if disabled and r.get('campaign_id') in disabled:
+                skipped += 1
+                continue
+            login = r['owner_login']
+            if login not in users:
+                users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
+            users[login]['campaigns'].append(r)
+        app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
+                        len(users), skipped, (_time.time() - _t0) * 1000)
+        return jsonify({'users': list(users.values())})
+    except Exception as exc:
+        app.logger.error("[tracking:users] UNHANDLED EXCEPTION: %s", exc, exc_info=True)
+        return jsonify({'error': 'tracking/users failed: %s' % exc}), 500
+
+
+@app.route('/api/tracking/debug')
+def api_tracking_debug():
+    """Diagnostic endpoint: check DB path, tables, views, row counts."""
+    info = {
+        'tracking_available': _tracking_available,
+        'db_instance': type(_tracking_db_instance).__name__ if _tracking_db_instance else None,
+    }
+    db = _get_tracking_db()
+    if db is None:
+        info['error'] = 'DB is None'
+        return jsonify(info), 501
+    try:
+        conn = db._get_conn()
+        info['db_path'] = db._db_path
+        info['db_path_exists'] = os.path.exists(db._db_path)
+        info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
+        # List all tables and views
+        tables = conn.execute(
+            "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
+        ).fetchall()
+        info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
+        # Row counts for key tables
+        for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
+                     'campaign_settings', 'campaign_exemptions']:
+            try:
+                cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                info['count_%s' % tbl] = cnt
+            except Exception as e:
+                info['count_%s' % tbl] = 'ERROR: %s' % e
+        # Test the compliance view
+        try:
+            vrows = conn.execute('SELECT COUNT(*) FROM v_user_compliance').fetchone()[0]
+            info['count_v_user_compliance'] = vrows
+        except Exception as e:
+            info['count_v_user_compliance'] = 'ERROR: %s' % e
+        # Schema version
+        try:
+            info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+        except Exception as e:
+            info['schema_version'] = 'ERROR: %s' % e
+    except Exception as exc:
+        info['error'] = str(exc)
+        import traceback
+        info['traceback'] = traceback.format_exc()
+    return jsonify(info)
 
 
 @app.route('/api/tracking/users/<login>')
@@ -7023,8 +7078,12 @@ def api_tracking_user_compliance(login):
     db = _get_tracking_db()
     if db is None:
         return jsonify({'error': 'Tracking not available'}), 501
-    rows = db.get_user_compliance(login)
-    return jsonify({'login': login, 'campaigns': rows})
+    try:
+        rows = db.get_user_compliance(login)
+        return jsonify({'login': login, 'campaigns': rows})
+    except Exception as exc:
+        app.logger.error("[tracking:user/%s] UNHANDLED: %s", login, exc, exc_info=True)
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/tracking/issues/<int:issue_id>/notes', methods=['POST'])

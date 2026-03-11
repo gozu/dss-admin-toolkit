@@ -208,6 +208,11 @@ export function TrackingView() {
         const status = (err as { status?: number }).status ?? '?';
         const body = (err as { bodySnippet?: string }).bodySnippet ?? '';
         log(`GET /api/tracking/users FAILED (${ms}ms) status=${status} body=${body}`, 'error');
+        // Auto-probe debug endpoint to diagnose DB state
+        log('Probing /api/tracking/debug for DB diagnostics...');
+        fetchJson<Record<string, unknown>>('/api/tracking/debug')
+          .then((dbg) => log(`DB debug: ${JSON.stringify(dbg).slice(0, 500)}`))
+          .catch((dbgErr) => log(`DB debug probe also failed: ${dbgErr instanceof Error ? dbgErr.message : dbgErr}`, 'error'));
         setError(err instanceof Error ? err.message : 'Failed to load tracking data');
       });
   }, [log]);
