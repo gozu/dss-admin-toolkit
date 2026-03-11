@@ -1,33 +1,36 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJson } from '../utils/api';
 import type { CodeEnvCompareResult } from '../types';
 
 type SectionKey = 'green' | 'purple' | 'blue' | 'yellow';
 
-const SECTION_META: Record<SectionKey, { label: string; description: string; color: string; badgeClass: string }> = {
+const SECTION_META: Record<
+  SectionKey,
+  { label: string; hint: string; color: string; badgeBg: string }
+> = {
   green: {
     label: 'Exact Duplicates',
-    description: 'Same packages, same versions, same Python',
+    hint: 'Identical packages, versions, and Python — safe to consolidate',
     color: 'var(--neon-green)',
-    badgeClass: 'bg-[var(--neon-green)]/10 text-[var(--neon-green)] border-[var(--neon-green)]/30',
+    badgeBg: 'bg-[var(--neon-green)]',
   },
   purple: {
-    label: 'Different Python Version',
-    description: 'Same packages and versions, different Python interpreter',
+    label: 'Different Python Only',
+    hint: 'Identical packages and versions — only the Python interpreter differs',
     color: 'var(--neon-purple)',
-    badgeClass: 'bg-[var(--neon-purple)]/10 text-[var(--neon-purple)] border-[var(--neon-purple)]/30',
+    badgeBg: 'bg-[var(--neon-purple)]',
   },
   blue: {
     label: 'Version Mismatches',
-    description: 'Same packages, at least one version difference',
+    hint: 'Same package set — one or more version differences',
     color: 'var(--neon-cyan)',
-    badgeClass: 'bg-[var(--neon-cyan)]/10 text-[var(--neon-cyan)] border-[var(--neon-cyan)]/30',
+    badgeBg: 'bg-[var(--neon-cyan)]',
   },
   yellow: {
     label: 'Near Duplicates',
-    description: '1–3 package difference',
+    hint: 'Almost identical — differ by 1–3 packages',
     color: 'var(--neon-amber)',
-    badgeClass: 'bg-[var(--neon-amber)]/10 text-[var(--neon-amber)] border-[var(--neon-amber)]/30',
+    badgeBg: 'bg-[var(--neon-amber)]',
   },
 };
 
@@ -62,111 +65,151 @@ export function CodeEnvCompareTable() {
   const toggle = (key: SectionKey) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
 
+  // Compute env counts per category
+  const stats = useMemo(() => {
+    if (!data) return null;
+    const greenEnvs = new Set(data.green.flatMap((g) => g.envNames));
+    const purpleEnvs = new Set(data.purple.flatMap((g) => g.envNames));
+    const blueEnvs = new Set(data.blue.flatMap((g) => g.envNames));
+    const yellowEnvs = new Set(
+      data.yellow.flatMap((p) => [p.envA, p.envB]),
+    );
+    const allAffected = new Set([...greenEnvs, ...purpleEnvs, ...blueEnvs, ...yellowEnvs]);
+    return {
+      green: { groups: data.green.length, envs: greenEnvs.size },
+      purple: { groups: data.purple.length, envs: purpleEnvs.size },
+      blue: { groups: data.blue.length, envs: blueEnvs.size },
+      yellow: { groups: data.yellow.length, envs: yellowEnvs.size },
+      totalAffected: allAffected.size,
+    };
+  }, [data]);
+
   const totalGroups =
     (data?.green.length || 0) +
     (data?.purple.length || 0) +
     (data?.blue.length || 0) +
     (data?.yellow.length || 0);
 
+  // ── Shell states ──
+
   if (error) {
     return (
-      <div className="bg-[var(--bg-surface)] rounded-xl shadow-md overflow-hidden border border-[var(--border-glass)]">
-        <div className="px-4 py-3 border-b border-[var(--border-glass)]">
-          <h4 className="text-lg font-semibold text-[var(--text-primary)]">
-            Code Env Comparison
-          </h4>
-        </div>
+      <Shell>
         <div className="p-4 text-sm text-[var(--neon-red)]">{error}</div>
-      </div>
+      </Shell>
     );
   }
 
   if (loading && !data) {
     return (
-      <div className="bg-[var(--bg-surface)] rounded-xl shadow-md overflow-hidden border border-[var(--border-glass)]">
-        <div className="px-4 py-3 border-b border-[var(--border-glass)]">
-          <h4 className="text-lg font-semibold text-[var(--text-primary)]">
-            Code Env Comparison
-          </h4>
+      <Shell>
+        <div className="p-6 flex items-center gap-3 text-sm text-[var(--text-secondary)]">
+          <span className="inline-block h-4 w-4 rounded-full border-2 border-[var(--neon-cyan)] border-t-transparent animate-spin" />
+          Comparing package lists across code environments...
         </div>
-        <div className="p-4 text-sm text-[var(--text-secondary)]">
-          Comparing code environments...
-        </div>
-      </div>
+      </Shell>
     );
   }
 
   if (!data || totalGroups === 0) {
     return (
-      <div className="bg-[var(--bg-surface)] rounded-xl shadow-md overflow-hidden border border-[var(--border-glass)]">
-        <div className="px-4 py-3 border-b border-[var(--border-glass)]">
-          <h4 className="text-lg font-semibold text-[var(--text-primary)]">
-            Code Env Comparison
-          </h4>
+      <Shell>
+        <div className="p-6 text-center">
+          <div className="text-[var(--neon-green)] text-2xl mb-1">&#10003;</div>
+          <div className="text-sm text-[var(--text-secondary)]">
+            {data
+              ? `${data.analyzedCount} Python environments analyzed — no duplicates or near-duplicates found.`
+              : 'No data available.'}
+          </div>
         </div>
-        <div className="p-4 text-sm text-[var(--text-secondary)]">
-          {data ? `${data.analyzedCount} environments analyzed — no duplicates or near-duplicates found.` : 'No data available.'}
-        </div>
-      </div>
+      </Shell>
     );
   }
 
   return (
     <div className="bg-[var(--bg-surface)] rounded-xl shadow-md overflow-hidden border border-[var(--border-glass)]">
-      <div className="px-4 py-3 border-b border-[var(--border-glass)]">
-        <div className="flex items-center justify-between">
-          <h4 className="text-lg font-semibold text-[var(--text-primary)]">
-            Code Env Comparison
-            <span className="ml-2 text-sm font-normal text-[var(--text-muted)]">
-              ({data.analyzedCount} Python envs analyzed)
-            </span>
-          </h4>
-          <div className="flex items-center gap-2">
-            {data.green.length > 0 && (
-              <span className={`px-2 py-0.5 text-xs font-medium rounded-full border ${SECTION_META.green.badgeClass}`}>
-                {data.green.length} exact
-              </span>
-            )}
-            {data.purple.length > 0 && (
-              <span className={`px-2 py-0.5 text-xs font-medium rounded-full border ${SECTION_META.purple.badgeClass}`}>
-                {data.purple.length} diff py
-              </span>
-            )}
-            {data.blue.length > 0 && (
-              <span className={`px-2 py-0.5 text-xs font-medium rounded-full border ${SECTION_META.blue.badgeClass}`}>
-                {data.blue.length} ver mismatch
-              </span>
-            )}
-            {data.yellow.length > 0 && (
-              <span className={`px-2 py-0.5 text-xs font-medium rounded-full border ${SECTION_META.yellow.badgeClass}`}>
-                {data.yellow.length} near
-              </span>
-            )}
-          </div>
-        </div>
+      {/* Header */}
+      <div className="px-5 py-4 border-b border-[var(--border-glass)]">
+        <h4 className="text-lg font-semibold text-[var(--text-primary)]">
+          Code Env Comparison
+        </h4>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">
+          {data.analyzedCount} Python environments analyzed &middot;{' '}
+          {stats!.totalAffected} involved in duplicates or near-duplicates
+        </p>
       </div>
 
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-5 py-4 border-b border-[var(--border-glass)] bg-[var(--bg-elevated)]/40">
+        {(['green', 'purple', 'blue', 'yellow'] as const).map((key) => {
+          const meta = SECTION_META[key];
+          const s = stats![key];
+          if (s.groups === 0) return null;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => toggle(key)}
+              className="text-left rounded-lg border border-[var(--border-glass)] bg-[var(--bg-surface)] p-3 hover:bg-[var(--bg-glass-hover)] transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: meta.color }}
+                />
+                <span className="text-xs font-medium text-[var(--text-secondary)]">
+                  {meta.label}
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <span
+                  className="text-2xl font-bold tabular-nums"
+                  style={{ color: meta.color }}
+                >
+                  {s.groups}
+                </span>
+                <span className="text-xs text-[var(--text-muted)]">
+                  {s.groups === 1 ? 'group' : 'groups'}
+                </span>
+              </div>
+              <div className="text-[0.7rem] text-[var(--text-muted)] mt-0.5">
+                {s.envs} env{s.envs !== 1 ? 's' : ''} affected
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Sections */}
       <div className="divide-y divide-[var(--border-glass)]">
         {/* GREEN — Exact Duplicates */}
         {data.green.length > 0 && (
           <CollapsibleSection
             sectionKey="green"
             count={data.green.length}
+            envCount={stats!.green.envs}
             expanded={expanded.green}
             onToggle={() => toggle('green')}
           >
-            {data.green.map((group, idx) => (
-              <div key={idx} className="px-4 py-2">
-                <div className="text-xs text-[var(--text-muted)] mb-1">
-                  Group {idx + 1} — {group.packageCount} packages, py{group.pythonVersion}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {group.envNames.map((name) => (
-                    <EnvBadge key={name} name={name} />
-                  ))}
-                </div>
-              </div>
-            ))}
+            <div className="px-5 py-3 space-y-2">
+              {data.green.map((group, idx) => (
+                <GroupCard key={idx} color="var(--neon-green)">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-[var(--text-secondary)]">
+                      {group.packageCount} packages &middot; Python {group.pythonVersion}
+                    </span>
+                    <span className="text-[0.65rem] uppercase tracking-wider font-semibold text-[var(--neon-green)]/70">
+                      {group.envNames.length} identical envs
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.envNames.map((name) => (
+                      <EnvBadge key={name} name={name} />
+                    ))}
+                  </div>
+                </GroupCard>
+              ))}
+            </div>
           </CollapsibleSection>
         )}
 
@@ -175,29 +218,45 @@ export function CodeEnvCompareTable() {
           <CollapsibleSection
             sectionKey="purple"
             count={data.purple.length}
+            envCount={stats!.purple.envs}
             expanded={expanded.purple}
             onToggle={() => toggle('purple')}
           >
-            {data.purple.map((group, idx) => (
-              <div key={idx} className="px-4 py-2">
-                <div className="text-xs text-[var(--text-muted)] mb-1">
-                  Group {idx + 1} — {group.packageCount} packages
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {group.envNames.map((name) => (
-                    <span
-                      key={name}
-                      className="inline-block bg-[var(--bg-elevated)] px-2 py-0.5 rounded font-mono text-xs text-[var(--text-primary)]"
-                    >
-                      {name}
-                      <span className="ml-1 text-[var(--neon-purple)] text-[0.7rem]">
-                        py{group.pythonVersions[name]}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
+            <div className="px-5 py-3 space-y-2">
+              {data.purple.map((group, idx) => {
+                // Group envs by their python version for display
+                const byVersion: Record<string, string[]> = {};
+                for (const name of group.envNames) {
+                  const v = group.pythonVersions[name] || 'unknown';
+                  (byVersion[v] ??= []).push(name);
+                }
+                return (
+                  <GroupCard key={idx} color="var(--neon-purple)">
+                    <div className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+                      {group.packageCount} packages &middot; {group.envNames.length} envs
+                    </div>
+                    <div className="space-y-2">
+                      {Object.entries(byVersion)
+                        .sort(([a], [b]) => a.localeCompare(b))
+                        .map(([ver, names]) => (
+                          <div key={ver}>
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="px-1.5 py-0.5 rounded text-[0.65rem] font-bold bg-[var(--neon-purple)]/15 text-[var(--neon-purple)] border border-[var(--neon-purple)]/25">
+                                Python {ver}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5 ml-0.5">
+                              {names.map((n) => (
+                                <EnvBadge key={n} name={n} />
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </GroupCard>
+                );
+              })}
+            </div>
           </CollapsibleSection>
         )}
 
@@ -206,61 +265,95 @@ export function CodeEnvCompareTable() {
           <CollapsibleSection
             sectionKey="blue"
             count={data.blue.length}
+            envCount={stats!.blue.envs}
             expanded={expanded.blue}
             onToggle={() => toggle('blue')}
           >
-            {data.blue.map((group, idx) => (
-              <div key={idx} className="px-4 py-2">
-                <div className="text-xs text-[var(--text-muted)] mb-1">
-                  Group {idx + 1} — {group.packageCount} packages, {group.diffCount} differ
-                </div>
-                <div className="flex flex-wrap gap-1 mb-2">
-                  {group.envNames.map((name) => (
-                    <EnvBadge key={name} name={name} />
-                  ))}
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-[var(--bg-elevated)]">
-                        <th className="px-3 py-1.5 text-left font-medium text-[var(--text-muted)]">
-                          Package
-                        </th>
-                        {group.envNames.map((name) => (
-                          <th
-                            key={name}
-                            className="px-3 py-1.5 text-left font-medium text-[var(--text-muted)] font-mono"
-                          >
-                            {name}
+            <div className="px-5 py-3 space-y-2">
+              {data.blue.map((group, idx) => (
+                <GroupCard key={idx} color="var(--neon-cyan)">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-medium text-[var(--text-secondary)]">
+                      {group.packageCount} packages &middot; {group.envNames.length} envs
+                    </span>
+                    <span className="text-[0.65rem] text-[var(--neon-amber)]">
+                      {group.diffCount} version{group.diffCount !== 1 ? 's' : ''} differ
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {group.envNames.map((name) => (
+                      <EnvBadge key={name} name={name} />
+                    ))}
+                  </div>
+                  <div className="overflow-x-auto rounded-md border border-[var(--border-glass)]">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-[var(--bg-elevated)]">
+                          <th className="px-3 py-2 text-left font-semibold text-[var(--text-secondary)] whitespace-nowrap">
+                            Package
                           </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[var(--border-glass)]">
-                      {Object.entries(group.diffs)
-                        .sort(([a], [b]) => a.localeCompare(b))
-                        .map(([pkg, versions]) => (
-                          <tr key={pkg} className="hover:bg-[var(--bg-glass-hover)]">
-                            <td className="px-3 py-1 font-mono text-[var(--text-primary)]">
-                              {pkg}
-                            </td>
-                            {group.envNames.map((name) => (
-                              <td
-                                key={name}
-                                className="px-3 py-1 font-mono text-[var(--neon-amber)]"
+                          {group.envNames.map((name) => (
+                            <th
+                              key={name}
+                              className="px-3 py-2 text-left font-semibold text-[var(--text-secondary)] font-mono whitespace-nowrap"
+                            >
+                              {name}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(group.diffs)
+                          .sort(([a], [b]) => a.localeCompare(b))
+                          .map(([pkg, versions], rowIdx) => {
+                            const vals = group.envNames.map((n) => versions[n] || '');
+                            // Find the most common value to dim it
+                            const freq: Record<string, number> = {};
+                            vals.forEach((v) => (freq[v] = (freq[v] || 0) + 1));
+                            const mostCommon = Object.entries(freq).sort(
+                              (a, b) => b[1] - a[1],
+                            )[0]?.[0];
+                            return (
+                              <tr
+                                key={pkg}
+                                className={
+                                  rowIdx % 2 === 0
+                                    ? 'bg-transparent'
+                                    : 'bg-[var(--bg-elevated)]/30'
+                                }
                               >
-                                {versions[name] || (
-                                  <span className="text-[var(--text-muted)]">(none)</span>
-                                )}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ))}
+                                <td className="px-3 py-1.5 font-mono text-[var(--text-primary)] whitespace-nowrap">
+                                  {pkg}
+                                </td>
+                                {group.envNames.map((name) => {
+                                  const v = versions[name] || '';
+                                  const isDiff = v !== mostCommon;
+                                  return (
+                                    <td
+                                      key={name}
+                                      className={`px-3 py-1.5 font-mono whitespace-nowrap ${
+                                        isDiff
+                                          ? 'text-[var(--neon-amber)] font-semibold'
+                                          : 'text-[var(--text-muted)]'
+                                      }`}
+                                    >
+                                      {v || (
+                                        <span className="text-[var(--text-muted)]/50 italic">
+                                          none
+                                        </span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </GroupCard>
+              ))}
+            </div>
           </CollapsibleSection>
         )}
 
@@ -269,43 +362,97 @@ export function CodeEnvCompareTable() {
           <CollapsibleSection
             sectionKey="yellow"
             count={data.yellow.length}
+            envCount={stats!.yellow.envs}
             expanded={expanded.yellow}
             onToggle={() => toggle('yellow')}
           >
-            {data.yellow.map((pair, idx) => (
-              <div key={idx} className="px-4 py-2">
-                <div className="flex items-center gap-1 mb-1">
-                  <EnvBadge name={pair.envA} />
-                  <span className="text-[var(--text-muted)] text-xs mx-1">&harr;</span>
-                  <EnvBadge name={pair.envB} />
-                </div>
-                {pair.onlyInA.length > 0 && (
-                  <div className="text-xs text-[var(--text-muted)] ml-1">
-                    <span className="inline-block bg-[var(--neon-amber)]/10 text-[var(--neon-amber)] px-1.5 py-0.5 rounded text-[0.7rem] mr-1">
-                      only in {pair.envA}
-                    </span>
-                    <span className="font-mono">{pair.onlyInA.join(', ')}</span>
+            <div className="px-5 py-3 space-y-2">
+              {data.yellow.map((pair, idx) => (
+                <GroupCard key={idx} color="var(--neon-amber)">
+                  <div className="flex items-center gap-2 mb-2">
+                    <EnvBadge name={pair.envA} />
+                    <span className="text-[var(--text-muted)] text-sm">&harr;</span>
+                    <EnvBadge name={pair.envB} />
                   </div>
-                )}
-                {pair.onlyInB.length > 0 && (
-                  <div className="text-xs text-[var(--text-muted)] ml-1 mt-0.5">
-                    <span className="inline-block bg-[var(--neon-amber)]/10 text-[var(--neon-amber)] px-1.5 py-0.5 rounded text-[0.7rem] mr-1">
-                      only in {pair.envB}
-                    </span>
-                    <span className="font-mono">{pair.onlyInB.join(', ')}</span>
-                  </div>
-                )}
-                {pair.versionDiffs.length > 0 && (
-                  <div className="mt-1 ml-1 text-xs text-[var(--text-muted)]">
-                    {pair.versionDiffs.map((d) => (
-                      <div key={d.package} className="font-mono">
-                        {d.package}: {d.versionA || '(none)'} vs {d.versionB || '(none)'}
+                  <div className="space-y-1.5">
+                    {pair.onlyInA.length > 0 && (
+                      <div className="flex items-start gap-2 text-xs">
+                        <span className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded bg-[var(--neon-red)]/10 text-[var(--neon-red)] border border-[var(--neon-red)]/20 text-[0.65rem] font-medium">
+                          only {pair.envA}
+                        </span>
+                        <span className="font-mono text-[var(--text-secondary)] leading-relaxed">
+                          {pair.onlyInA.join(', ')}
+                        </span>
                       </div>
-                    ))}
+                    )}
+                    {pair.onlyInB.length > 0 && (
+                      <div className="flex items-start gap-2 text-xs">
+                        <span className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded bg-[var(--neon-cyan)]/10 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/20 text-[0.65rem] font-medium">
+                          only {pair.envB}
+                        </span>
+                        <span className="font-mono text-[var(--text-secondary)] leading-relaxed">
+                          {pair.onlyInB.join(', ')}
+                        </span>
+                      </div>
+                    )}
+                    {pair.versionDiffs.length > 0 && (
+                      <div className="mt-1">
+                        <div className="text-[0.65rem] uppercase tracking-wider text-[var(--text-muted)] mb-1 font-medium">
+                          Version differences
+                        </div>
+                        <div className="overflow-x-auto rounded border border-[var(--border-glass)]">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="bg-[var(--bg-elevated)]">
+                                <th className="px-3 py-1.5 text-left font-semibold text-[var(--text-secondary)]">
+                                  Package
+                                </th>
+                                <th className="px-3 py-1.5 text-left font-semibold text-[var(--text-secondary)] font-mono">
+                                  {pair.envA}
+                                </th>
+                                <th className="px-3 py-1.5 text-left font-semibold text-[var(--text-secondary)] font-mono">
+                                  {pair.envB}
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pair.versionDiffs.map((d, di) => (
+                                <tr
+                                  key={d.package}
+                                  className={
+                                    di % 2 === 0
+                                      ? 'bg-transparent'
+                                      : 'bg-[var(--bg-elevated)]/30'
+                                  }
+                                >
+                                  <td className="px-3 py-1 font-mono text-[var(--text-primary)]">
+                                    {d.package}
+                                  </td>
+                                  <td className="px-3 py-1 font-mono text-[var(--neon-amber)]">
+                                    {d.versionA || (
+                                      <span className="text-[var(--text-muted)]/50 italic">
+                                        none
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-1 font-mono text-[var(--neon-amber)]">
+                                    {d.versionB || (
+                                      <span className="text-[var(--text-muted)]/50 italic">
+                                        none
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
+                </GroupCard>
+              ))}
+            </div>
           </CollapsibleSection>
         )}
       </div>
@@ -313,15 +460,32 @@ export function CodeEnvCompareTable() {
   );
 }
 
+// ── Sub-components ──
+
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="bg-[var(--bg-surface)] rounded-xl shadow-md overflow-hidden border border-[var(--border-glass)]">
+      <div className="px-5 py-4 border-b border-[var(--border-glass)]">
+        <h4 className="text-lg font-semibold text-[var(--text-primary)]">
+          Code Env Comparison
+        </h4>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 function CollapsibleSection({
   sectionKey,
   count,
+  envCount,
   expanded,
   onToggle,
   children,
 }: {
   sectionKey: SectionKey;
   count: number;
+  envCount: number;
   expanded: boolean;
   onToggle: () => void;
   children: React.ReactNode;
@@ -332,32 +496,64 @@ function CollapsibleSection({
       <button
         type="button"
         onClick={onToggle}
-        className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-[var(--bg-glass-hover)] transition-colors text-left cursor-pointer"
+        className="w-full flex items-center gap-2.5 px-5 py-3 hover:bg-[var(--bg-glass-hover)] transition-colors text-left cursor-pointer"
       >
         <span
-          className="text-xs transition-transform duration-200"
-          style={{ transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', color: meta.color }}
+          className="text-[0.6rem] transition-transform duration-200"
+          style={{
+            transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+            color: meta.color,
+          }}
         >
           &#9654;
         </span>
-        <span className="text-sm font-medium" style={{ color: meta.color }}>
+        <span
+          className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ backgroundColor: meta.color }}
+        />
+        <span className="text-sm font-semibold" style={{ color: meta.color }}>
           {meta.label}
         </span>
-        <span className="text-xs text-[var(--text-muted)]">{meta.description}</span>
-        <span className={`ml-auto px-2 py-0.5 text-xs font-medium rounded-full border ${meta.badgeClass}`}>
-          {count}
+        <span className="text-xs text-[var(--text-muted)] hidden sm:inline">
+          &mdash; {meta.hint}
+        </span>
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-[var(--text-muted)]">
+            {envCount} env{envCount !== 1 ? 's' : ''}
+          </span>
+          <span
+            className="px-2 py-0.5 text-xs font-bold rounded-full text-black/80"
+            style={{ backgroundColor: meta.color }}
+          >
+            {count}
+          </span>
         </span>
       </button>
-      {expanded && (
-        <div className="divide-y divide-[var(--border-glass)]/50">{children}</div>
-      )}
+      {expanded && children}
+    </div>
+  );
+}
+
+function GroupCard({
+  color,
+  children,
+}: {
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rounded-lg border border-[var(--border-glass)] bg-[var(--bg-elevated)]/30 p-3 relative"
+      style={{ borderLeftWidth: 3, borderLeftColor: color }}
+    >
+      {children}
     </div>
   );
 }
 
 function EnvBadge({ name }: { name: string }) {
   return (
-    <span className="inline-block bg-[var(--bg-elevated)] px-2 py-0.5 rounded font-mono text-xs text-[var(--text-primary)]">
+    <span className="inline-flex items-center gap-1 bg-[var(--bg-surface)] px-2.5 py-1 rounded-md font-mono text-xs text-[var(--text-primary)] border border-[var(--border-glass)] shadow-sm">
       {name}
     </span>
   );
