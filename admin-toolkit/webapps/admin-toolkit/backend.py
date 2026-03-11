@@ -100,11 +100,11 @@ def _get_tracking_db():
                     initial_dir = os.path.join(os.path.dirname(p), 'initial')
                     if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
                         db_dir = initial_dir
+                    else:
+                        db_dir = p  # fallback to run dir
                     break
             if db_dir is None:
-                logging.getLogger(__name__).error("[tracking] no writable initial dir found in sys.path")
-                _tracking_db_instance = None
-                return None
+                db_dir = '/tmp'
             db_path = os.path.join(db_dir, 'tracking.db')
             _tracking_db_instance = TrackingDB(db_path)
             _tracking_db_instance._get_conn()  # init schema
