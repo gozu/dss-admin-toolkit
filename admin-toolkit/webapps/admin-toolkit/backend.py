@@ -3044,13 +3044,13 @@ def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) ->
     diag = diagnostics if diagnostics is not None else []
     channels: List[Dict[str, str]] = []
 
-    raw_items = client.list_messaging_channels(as_type='objects', channel_family='mail')
+    raw_items = client.list_messaging_channels(channel_family='mail')
     diag.append(f"raw_items={len(raw_items) if isinstance(raw_items, list) else '?'}")
 
     for item in raw_items:
         raw = item.get_raw()
         channel_id = raw.get('id')
-        family = str(raw.get('channelFamily') or '').lower()
+        family = str(raw.get('family') or '').lower()
         channel_type = str(raw.get('type') or '').lower()
         label = raw.get('label') or channel_id
 
