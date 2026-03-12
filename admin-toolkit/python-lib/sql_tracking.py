@@ -44,26 +44,28 @@ class SQLTrackingDB:
     # Connection helpers
     # ------------------------------------------------------------------
 
-    def _get_connection(self):
-        """Get a raw DBAPI2 connection via psycopg2 using Dataiku connection params."""
+    def _get_raw_connection(self):
+        """Obtain a raw DBAPI connection from the Dataiku SQL connection."""
         import dataiku
-        raw = dataiku.api_client().get_connection(self._connection_name).get_settings().get_raw()
-        conn_type = raw.get('type', '')
-        params = raw.get('params', {})
+        conn_info = dataiku.api_client().get_connection(self._connection_name)
+        # Use SQLExecutor2 to get an executor, then get underlying connection
+        from dataiku.core.sql import SQLExecutor2
+        executor = SQLExecutor2(connection=self._connection_name)
+        return executor
 
-        if conn_type != 'PostgreSQL':
-            raise RuntimeError(f"Unsupported connection type '{conn_type}' — only PostgreSQL is supported")
+    def _exec(self, executor, sql: str, params: tuple = ()):
+        """Execute a single statement with bound parameters."""
+        _log.debug("SQL: %s | params=%s", sql[:200], params[:5] if len(params) > 5 else params)
+        return executor.query_to_df(sql, params=list(params)) if 'SELECT' in sql.upper().split()[0:1] else self._exec_write(executor, sql, params)
 
-        import psycopg2
-        conn = psycopg2.connect(
-            host=params.get('host', 'localhost'),
-            port=int(params.get('port', 5432)),
-            dbname=params.get('db', ''),
-            user=params.get('user', ''),
-            password=params.get('password', ''),
-        )
-        conn.autocommit = False
-        return conn
+    def _get_connection(self):
+        """Get a raw DBAPI2 connection for transaction control."""
+        from dataiku.core.sql import SQLExecutor2
+        executor = SQLExecutor2(connection=self._connection_name)
+        # Access the underlying connection for transaction control
+        raw_conn = executor._get_connection()
+        raw_conn.autocommit = False
+        return raw_conn
 
     def _ensure_schema(self, conn):
         """Create schema if it doesn't exist."""
