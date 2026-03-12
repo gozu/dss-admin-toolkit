@@ -40,7 +40,7 @@ WEBAPP_PROJECT_KEY ?= $(shell cat .dss-project-key 2>/dev/null || echo PYTHONAUD
 WEBAPP_ID ?= $(shell cat .dss-webapp-id 2>/dev/null || echo haoMNtw)
 
 # PROD deploy (locked down) wrappers
-SECURE_DIST_DIR ?= /tmp
+SECURE_DIST_DIR ?= /data/dist
 SECURE_PLUGIN_WRAPPER ?= /data/dss-secure-actions/bin/dss_plugin_update_admin-toolkit
 SECURE_RESTART_WRAPPER ?= /data/dss-secure-actions/bin/dss_webapp_restart_DIAG_PARSER_BRANCH1
 SECURE_WEBAPP_ID ?= Gv9CLFn

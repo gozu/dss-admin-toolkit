@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.105",
+    "version": "0.4.106",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -17,7 +17,8 @@
             "name": "tracking_db_connection",
             "label": "SQL Connection",
             "description": "Dataiku SQL connection for tracking storage. Leave empty to use local SQLite (default).",
-            "type": "STRING",
+            "type": "CONNECTION",
+            "connectionType": "SQL",
             "mandatory": false,
             "defaultValue": ""
         },
