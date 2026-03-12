@@ -4408,9 +4408,9 @@ def api_code_envs():
             detail_ratio = min(1.0, float(env_detail_done) / float(detail_total)) if detail_total > 0 else 0.0
             pct = 0.0
             pct += 10.0 if catalog_done else 0.0
-            pct += 55.0 if size_map_done else 0.0
-            pct += 20.0 * usage_ratio
-            pct += 15.0 * detail_ratio
+            pct += 15.0 if size_map_done else 0.0
+            pct += 50.0 * usage_ratio
+            pct += 25.0 * detail_ratio
             if timed_out_or_error:
                 return int(max(0.0, min(100.0, pct)))
             return int(max(0.0, min(99.0, pct)))

@@ -232,7 +232,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   // Backend settings state
   const [backendSettings, setBackendSettings] = useState<BackendSettings>({});
   const [backendDefaults, setBackendDefaults] = useState<BackendSettings>({});
-  const [backendLoading, setBackendLoading] = useState(true);
+  const [backendLoading, setBackendLoading] = useState(false);
   const [backendInputs, setBackendInputs] = useState<Partial<Record<string, string>>>({});
 
   useEffect(() => {
@@ -276,7 +276,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
   // Campaign toggle state
   const [campaignSettings, setCampaignSettings] = useState<Record<string, boolean>>({});
-  const [campaignSettingsLoading, setCampaignSettingsLoading] = useState(true);
+  const [campaignSettingsLoading, setCampaignSettingsLoading] = useState(false);
 
   useEffect(() => {
     fetchJson<{ campaigns: Record<string, boolean> }>('/api/tracking/campaign-settings')
@@ -313,7 +313,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
   // Campaign exemptions state
   const [exemptions, setExemptions] = useState<CampaignExemption[]>([]);
-  const [exemptionsLoading, setExemptionsLoading] = useState(true);
+  const [exemptionsLoading, setExemptionsLoading] = useState(false);
   const [newExemptionCampaign, setNewExemptionCampaign] = useState(CAMPAIGN_IDS[0]);
   const [newExemptionKey, setNewExemptionKey] = useState('');
   const [newExemptionReason, setNewExemptionReason] = useState('');
@@ -372,7 +372,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
   // Tracking backend status state
   const [backendStatus, setBackendStatus] = useState<TrackingBackendStatus | null>(null);
-  const [backendStatusLoading, setBackendStatusLoading] = useState(true);
+  const [backendStatusLoading, setBackendStatusLoading] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [migrationResult, setMigrationResult] = useState<MigrationResult | null>(null);
 

@@ -1768,7 +1768,10 @@ export function ToolsView() {
                 )}
               </>
             ) : (
-              <div className="text-[var(--text-secondary)]">Preparing outreach data...</div>
+              <div className="flex items-center gap-3 text-[var(--text-secondary)]">
+                <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                Preparing outreach data...
+              </div>
             )}
           </div>
         </Container>
