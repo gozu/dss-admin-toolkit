@@ -41,6 +41,38 @@ def _L(val) -> str:
     return "'" + str(val).replace("'", "''") + "'"
 
 
+def _int_val(val) -> str:
+    """Coerce a value to a SQL integer literal. Extracts leading digits from strings like '4 Cores / 8 Threads'."""
+    if val is None:
+        return 'NULL'
+    if isinstance(val, bool):
+        return '1' if val else '0'
+    if isinstance(val, int):
+        return str(val)
+    if isinstance(val, float):
+        if val != val:  # NaN
+            return 'NULL'
+        return str(int(val))
+    import re
+    m = re.search(r'-?\d+', str(val))
+    return m.group(0) if m else 'NULL'
+
+
+def _float_val(val) -> str:
+    """Coerce a value to a SQL float literal."""
+    if val is None:
+        return 'NULL'
+    if isinstance(val, bool):
+        return '1.0' if val else '0.0'
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and (val != val):  # NaN
+            return 'NULL'
+        return str(float(val))
+    import re
+    m = re.search(r'-?\d+\.?\d*', str(val))
+    return m.group(0) if m else 'NULL'
+
+
 class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
@@ -386,16 +418,16 @@ class SQLTrackingDB:
                 f"license_named_users_pct, license_concurrent_users_pct, "
                 f"license_projects_pct, license_connections_pct, "
                 f"license_expiry_date) "
-                f"VALUES ({run_id}, {_L(hm.get('cpu_cores'))}, {_L(hm.get('memory_total_mb'))}, "
-                f"{_L(hm.get('memory_used_mb'))}, {_L(hm.get('memory_available_mb'))}, "
-                f"{_L(hm.get('swap_total_mb'))}, {_L(hm.get('swap_used_mb'))}, "
-                f"{_L(hm.get('max_filesystem_pct'))}, {_L(hm.get('max_filesystem_mount'))}, "
-                f"{_L(hm.get('backend_heap_mb'))}, {_L(hm.get('jek_heap_mb'))}, "
-                f"{_L(hm.get('fek_heap_mb'))}, {_L(hm.get('open_files_limit'))}, "
-                f"{_L(hm.get('version_currency_score'))}, {_L(hm.get('system_capacity_score'))}, "
-                f"{_L(hm.get('configuration_score'))}, {_L(hm.get('security_isolation_score'))}, "
-                f"{_L(hm.get('license_named_users_pct'))}, {_L(hm.get('license_concurrent_users_pct'))}, "
-                f"{_L(hm.get('license_projects_pct'))}, {_L(hm.get('license_connections_pct'))}, "
+                f"VALUES ({run_id}, {_int_val(hm.get('cpu_cores'))}, {_int_val(hm.get('memory_total_mb'))}, "
+                f"{_int_val(hm.get('memory_used_mb'))}, {_int_val(hm.get('memory_available_mb'))}, "
+                f"{_int_val(hm.get('swap_total_mb'))}, {_int_val(hm.get('swap_used_mb'))}, "
+                f"{_float_val(hm.get('max_filesystem_pct'))}, {_L(hm.get('max_filesystem_mount'))}, "
+                f"{_int_val(hm.get('backend_heap_mb'))}, {_int_val(hm.get('jek_heap_mb'))}, "
+                f"{_int_val(hm.get('fek_heap_mb'))}, {_int_val(hm.get('open_files_limit'))}, "
+                f"{_float_val(hm.get('version_currency_score'))}, {_float_val(hm.get('system_capacity_score'))}, "
+                f"{_float_val(hm.get('configuration_score'))}, {_float_val(hm.get('security_isolation_score'))}, "
+                f"{_float_val(hm.get('license_named_users_pct'))}, {_float_val(hm.get('license_concurrent_users_pct'))}, "
+                f"{_float_val(hm.get('license_projects_pct'))}, {_float_val(hm.get('license_connections_pct'))}, "
                 f"{_L(hm.get('license_expiry_date'))})"
             )
 
