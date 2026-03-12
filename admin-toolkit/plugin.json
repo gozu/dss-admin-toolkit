@@ -1,10 +1,33 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.103",
+    "version": "0.4.104",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
         "author": "Alex Kaos",
         "icon": "icon-bar-chart"
-    }
+    },
+    "params": [
+        {
+            "name": "sep_tracking",
+            "label": "Tracking Database",
+            "type": "SEPARATOR"
+        },
+        {
+            "name": "tracking_db_connection",
+            "label": "SQL Connection",
+            "description": "Dataiku SQL connection for tracking storage. Leave empty to use local SQLite (default).",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": ""
+        },
+        {
+            "name": "tracking_db_schema",
+            "label": "Schema",
+            "description": "Optional schema/namespace for tracking tables (e.g. 'admin_toolkit').",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": ""
+        }
+    ]
 }

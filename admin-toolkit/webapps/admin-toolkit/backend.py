@@ -77,11 +77,41 @@ try:
 except Exception:
     _tracking_available = False
 
+try:
+    from db_adapter import load_tracking_backend_config, create_tracking_backend
+    _db_adapter_available = True
+except Exception:
+    _db_adapter_available = False
+
 _tracking_db_instance: Optional[Any] = None
 _tracking_db_lock = threading.Lock()
+_tracking_db_dir: Optional[str] = None  # cached SQLite directory
+_migration_lock = threading.Lock()
+_migration_running = False
 
 
-def _get_tracking_db():
+def _resolve_sqlite_dir() -> str:
+    """Resolve the directory for SQLite tracking DB storage."""
+    global _tracking_db_dir
+    if _tracking_db_dir is not None:
+        return _tracking_db_dir
+    _log = logging.getLogger(__name__)
+    db_dir = None
+    for p in sys.path:
+        if 'webappruns' in p and 'run_' in p:
+            initial_dir = os.path.join(os.path.dirname(p), 'initial')
+            if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
+                db_dir = initial_dir
+            else:
+                db_dir = p
+            break
+    if db_dir is None:
+        db_dir = '/tmp'
+    _tracking_db_dir = db_dir
+    return db_dir
+
+
+def _get_tracking_db(force_reload=False):
     global _tracking_db_instance
     _log = logging.getLogger(__name__)
     _log.info("[tracking:get_db] called — _tracking_available=%s, _tracking_db_instance=%s",
@@ -89,46 +119,36 @@ def _get_tracking_db():
     if not _tracking_available:
         _log.warning("[tracking:get_db] tracking module not available, returning None")
         return None
+    if force_reload:
+        _tracking_db_instance = None
     if _tracking_db_instance is not None:
         _log.info("[tracking:get_db] returning cached instance")
         return _tracking_db_instance
     with _tracking_db_lock:
-        if _tracking_db_instance is not None:
+        if _tracking_db_instance is not None and not force_reload:
             _log.info("[tracking:get_db] returning cached instance (after lock)")
             return _tracking_db_instance
         try:
-            # Store tracking DB in the webapp's 'initial' dir, which persists across
-            # backend restarts (unlike the run dir which changes each restart).
-            # Path: .../webappruns/<project>/<webapp>/initial/tracking.db
-            db_dir = None
-            _log.info("[tracking:get_db] scanning sys.path (%d entries) for webappruns dir", len(sys.path))
-            for i, p in enumerate(sys.path):
-                _log.info("[tracking:get_db]   sys.path[%d] = %s (match=%s)",
-                          i, p, 'webappruns' in p and 'run_' in p)
-                if 'webappruns' in p and 'run_' in p:
-                    initial_dir = os.path.join(os.path.dirname(p), 'initial')
-                    is_dir = os.path.isdir(initial_dir)
-                    is_writable = os.access(initial_dir, os.W_OK) if is_dir else False
-                    _log.info("[tracking:get_db]   initial_dir=%s exists=%s writable=%s",
-                              initial_dir, is_dir, is_writable)
-                    if is_dir and is_writable:
-                        db_dir = initial_dir
-                        _log.info("[tracking:get_db]   using initial dir: %s", db_dir)
-                    else:
-                        db_dir = p  # fallback to run dir
-                        _log.info("[tracking:get_db]   fallback to run dir: %s", db_dir)
-                    break
-            if db_dir is None:
-                db_dir = '/tmp'
-                _log.info("[tracking:get_db]   no webappruns dir found, fallback to /tmp")
+            db_dir = _resolve_sqlite_dir()
             db_path = os.path.join(db_dir, 'tracking.db')
-            _log.info("[tracking:get_db] opening DB at %s", db_path)
-            # Create and fully initialize BEFORE assigning to the global.
-            # This prevents other threads from seeing a half-initialized instance.
+
+            # Check if a SQL connection backend is configured
+            if _db_adapter_available:
+                config = load_tracking_backend_config()
+                if config.connection_name:
+                    _log.info("[tracking:get_db] SQL backend configured: connection=%s schema=%s",
+                              config.connection_name, config.schema_name)
+                    db = create_tracking_backend(config, db_path)
+                    _tracking_db_instance = db
+                    _log.info("[tracking:get_db] SQL backend initialized")
+                    return _tracking_db_instance
+
+            # Default: SQLite backend
+            _log.info("[tracking:get_db] opening SQLite DB at %s", db_path)
             db = TrackingDB(db_path)
             db._get_conn()  # init schema + migrations
-            _tracking_db_instance = db  # atomic — now visible to other threads
-            _log.info("[tracking:get_db] DB initialized successfully at %s", db_path)
+            _tracking_db_instance = db
+            _log.info("[tracking:get_db] SQLite DB initialized successfully at %s", db_path)
         except Exception as exc:
             _log.warning("[tracking:get_db] init FAILED: %s", exc, exc_info=True)
             _tracking_db_instance = None
@@ -7041,39 +7061,244 @@ def api_tracking_debug():
         info['error'] = 'DB is None'
         return jsonify(info), 501
     try:
-        conn = db._get_conn()
-        info['db_path'] = db._db_path
-        info['db_path_exists'] = os.path.exists(db._db_path)
-        info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
-        # List all tables and views
-        tables = conn.execute(
-            "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
-        ).fetchall()
-        info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
-        # Row counts for key tables
-        for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
-                     'campaign_settings', 'campaign_exemptions']:
+        # Detect backend type and dispatch accordingly
+        from sql_tracking import SQLTrackingDB
+        if isinstance(db, SQLTrackingDB):
+            info['backend'] = 'sql'
+            info.update(db.get_table_info())
+        else:
+            info['backend'] = 'sqlite'
+            conn = db._get_conn()
+            info['db_path'] = db._db_path
+            info['db_path_exists'] = os.path.exists(db._db_path)
+            info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
+            tables = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
+            ).fetchall()
+            info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
+            for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
+                         'campaign_settings', 'campaign_exemptions']:
+                try:
+                    cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                    info['count_%s' % tbl] = cnt
+                except Exception as e:
+                    info['count_%s' % tbl] = 'ERROR: %s' % e
             try:
-                cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
-                info['count_%s' % tbl] = cnt
+                vrows = conn.execute('SELECT COUNT(*) FROM v_user_compliance').fetchone()[0]
+                info['count_v_user_compliance'] = vrows
             except Exception as e:
-                info['count_%s' % tbl] = 'ERROR: %s' % e
-        # Test the compliance view
+                info['count_v_user_compliance'] = 'ERROR: %s' % e
+            try:
+                info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+            except Exception as e:
+                info['schema_version'] = 'ERROR: %s' % e
+    except ImportError:
+        # sql_tracking not available — use original SQLite-only path
         try:
-            vrows = conn.execute('SELECT COUNT(*) FROM v_user_compliance').fetchone()[0]
-            info['count_v_user_compliance'] = vrows
-        except Exception as e:
-            info['count_v_user_compliance'] = 'ERROR: %s' % e
-        # Schema version
-        try:
-            info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
-        except Exception as e:
-            info['schema_version'] = 'ERROR: %s' % e
+            conn = db._get_conn()
+            info['backend'] = 'sqlite'
+            info['db_path'] = db._db_path
+            info['db_path_exists'] = os.path.exists(db._db_path)
+            info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
+            tables = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
+            ).fetchall()
+            info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
+            for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
+                         'campaign_settings', 'campaign_exemptions']:
+                try:
+                    cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                    info['count_%s' % tbl] = cnt
+                except Exception as e:
+                    info['count_%s' % tbl] = 'ERROR: %s' % e
+            try:
+                info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+            except Exception as e:
+                info['schema_version'] = 'ERROR: %s' % e
+        except Exception as exc:
+            info['error'] = str(exc)
     except Exception as exc:
         info['error'] = str(exc)
         import traceback
         info['traceback'] = traceback.format_exc()
     return jsonify(info)
+
+
+@app.route('/api/tracking/backend-status')
+def api_tracking_backend_status():
+    """Return the effective tracking backend configuration and state."""
+    status = {
+        'tracking_available': _tracking_available,
+        'db_adapter_available': _db_adapter_available,
+        'effective_backend': 'unknown',
+        'connection_name': None,
+        'schema_name': None,
+        'sqlite_path': None,
+        'sqlite_exists': False,
+        'sqlite_has_data': False,
+        'sqlite_row_counts': {},
+        'migration_running': _migration_running,
+    }
+    try:
+        # Read plugin config
+        if _db_adapter_available:
+            config = load_tracking_backend_config()
+            status['connection_name'] = config.connection_name
+            status['schema_name'] = config.schema_name
+
+        # Check SQLite state
+        db_dir = _resolve_sqlite_dir()
+        sqlite_path = os.path.join(db_dir, 'tracking.db')
+        status['sqlite_path'] = sqlite_path
+        status['sqlite_exists'] = os.path.exists(sqlite_path)
+        if status['sqlite_exists']:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(sqlite_path, timeout=5)
+                conn.row_factory = sqlite3.Row
+                for tbl in ['runs', 'issues', 'findings']:
+                    try:
+                        cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                        status['sqlite_row_counts'][tbl] = cnt
+                        if cnt > 0:
+                            status['sqlite_has_data'] = True
+                    except Exception:
+                        pass
+                conn.close()
+            except Exception:
+                pass
+
+        # Determine effective backend
+        db = _get_tracking_db()
+        if db is not None:
+            try:
+                from sql_tracking import SQLTrackingDB
+                if isinstance(db, SQLTrackingDB):
+                    status['effective_backend'] = 'sql'
+                else:
+                    status['effective_backend'] = 'sqlite'
+            except ImportError:
+                status['effective_backend'] = 'sqlite'
+        else:
+            status['effective_backend'] = 'unavailable'
+
+    except Exception as exc:
+        status['error'] = str(exc)
+    return jsonify(status)
+
+
+@app.route('/api/tracking/migrate-to-sql', methods=['POST'])
+def api_tracking_migrate_to_sql():
+    """Migrate tracking data from local SQLite to the configured SQL connection."""
+    global _migration_running, _tracking_db_instance
+    _log = logging.getLogger(__name__)
+
+    if not _db_adapter_available:
+        return jsonify({'error': 'db_adapter module not available'}), 501
+
+    config = load_tracking_backend_config()
+    if not config.connection_name:
+        return jsonify({'error': 'No SQL connection configured in plugin settings'}), 400
+
+    db_dir = _resolve_sqlite_dir()
+    sqlite_path = os.path.join(db_dir, 'tracking.db')
+    if not os.path.exists(sqlite_path):
+        return jsonify({'error': 'No local SQLite database found at %s' % sqlite_path}), 404
+
+    if not _migration_lock.acquire(blocking=False):
+        return jsonify({'error': 'Migration already in progress'}), 409
+    try:
+        _migration_running = True
+        progress_endpoint = 'migrate_to_sql'
+        progress_run_id = _start_progress(progress_endpoint)
+
+        import sqlite3
+        from sql_tracking import SQLTrackingDB
+
+        # 1. Open source SQLite
+        src = sqlite3.connect(sqlite_path, timeout=30)
+        src.row_factory = sqlite3.Row
+        _append_progress_event(progress_endpoint, progress_run_id,
+                               {'message': 'Opened SQLite source'})
+
+        # 2. Create target SQL backend
+        target = SQLTrackingDB(config.connection_name, config.schema_name)
+        target._init_tables()
+        _append_progress_event(progress_endpoint, progress_run_id,
+                               {'message': 'SQL target tables created'})
+
+        # 3. Migrate tables in FK-dependency order
+        migration_order = [
+            'schema_version', 'instances', 'runs', 'run_health_metrics',
+            'run_campaign_summaries', 'run_sections', 'findings', 'issues',
+            'outreach_emails', 'outreach_email_issues', 'known_users',
+            'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
+        ]
+        results = {}
+        for table in migration_order:
+            try:
+                rows = src.execute('SELECT * FROM %s' % table).fetchall()
+                row_dicts = [dict(r) for r in rows]
+                inserted = target.insert_migration_rows(table, row_dicts)
+                results[table] = {'source_rows': len(row_dicts), 'inserted': inserted}
+                _append_progress_event(progress_endpoint, progress_run_id,
+                                       {'message': 'Migrated %s: %d/%d rows' % (table, inserted, len(row_dicts))})
+            except Exception as exc:
+                results[table] = {'error': str(exc)}
+                _log.warning("[migration] Failed on table %s: %s", table, exc, exc_info=True)
+                _append_progress_event(progress_endpoint, progress_run_id,
+                                       {'message': 'Warning: %s failed: %s' % (table, exc), 'level': 'warn'})
+
+        src.close()
+
+        # 4. Reset sequences
+        try:
+            target.reset_sequences()
+            _append_progress_event(progress_endpoint, progress_run_id,
+                                   {'message': 'Sequences reset'})
+        except Exception as exc:
+            _log.warning("[migration] Sequence reset failed: %s", exc)
+
+        # 5. Validate row counts
+        target_counts = target.get_row_counts()
+        validation = {}
+        all_ok = True
+        for table, info in results.items():
+            if 'error' in info:
+                validation[table] = 'SKIPPED (error during migration)'
+                all_ok = False
+                continue
+            target_cnt = target_counts.get(table, 0)
+            source_cnt = info['source_rows']
+            if target_cnt >= source_cnt:
+                validation[table] = 'OK (%d rows)' % target_cnt
+            else:
+                validation[table] = 'MISMATCH: source=%d target=%d' % (source_cnt, target_cnt)
+                all_ok = False
+
+        # 6. Switch backend if validation passed
+        if all_ok:
+            _tracking_db_instance = target
+            _finish_progress(progress_endpoint, progress_run_id, 'completed',
+                             summary={'message': 'Migration completed successfully'})
+        else:
+            _finish_progress(progress_endpoint, progress_run_id, 'completed',
+                             summary={'message': 'Migration completed with warnings — backend NOT switched automatically'})
+
+        return jsonify({
+            'ok': all_ok,
+            'results': results,
+            'validation': validation,
+            'backend_switched': all_ok,
+        })
+
+    except Exception as exc:
+        _log.error("[migration] FAILED: %s", exc, exc_info=True)
+        _finish_progress(progress_endpoint, progress_run_id, 'error', error=str(exc))
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        _migration_running = False
+        _migration_lock.release()
 
 
 @app.route('/api/tracking/users/<login>')
