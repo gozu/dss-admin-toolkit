@@ -6881,6 +6881,18 @@ def api_tools_email_send():
 
 # ── Tracking API endpoints ──
 
+import math as _math
+
+def _sanitize(obj):
+    """Replace NaN/Inf floats with None so jsonify produces valid JSON."""
+    if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
 
 def _tracking_instance_id() -> str:
     """Resolve the current instance_id from cached overview data."""
@@ -7001,7 +7013,7 @@ def api_tracking_issues():
             issues = [i for i in issues if i.get('campaign_id') not in disabled]
         app.logger.info("[tracking:issues] returning %d issues (before filter: %d) in %.1fms",
                         len(issues), before_filter, (_time.time() - _t0) * 1000)
-        return jsonify({'issues': issues, 'count': len(issues)})
+        return jsonify({'issues': _sanitize(issues), 'count': len(issues)})
     except Exception as exc:
         app.logger.error("[tracking:issues] UNHANDLED: %s", exc, exc_info=True)
         return jsonify({'error': 'tracking/issues failed: %s' % exc}), 500
@@ -7034,15 +7046,6 @@ def api_tracking_users_all():
         app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
         disabled = db.get_disabled_campaigns()
         app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
-        import math as _math
-        def _sanitize(obj):
-            if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
-                return None
-            if isinstance(obj, dict):
-                return {k: _sanitize(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_sanitize(v) for v in obj]
-            return obj
         users = {}
         skipped = 0
         for r in rows:
