@@ -7025,7 +7025,7 @@ def api_tracking_users_all():
         app.logger.error("[tracking:users] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
     try:
-        instance_id = request.args.get('instance_id')
+        instance_id = request.args.get('instance_id') or _tracking_instance_id()
         app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
         rows = db.list_all_user_compliance(instance_id)
         app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
