@@ -83,7 +83,7 @@ The results from this section of the Project Flow are:
     6. Click SAVE.
 5. Repeat step above as necessary
 
-![credentials_parameter][credentials] 
+![credentials_parameter](https://github.com/user-attachments/assets/6993494d-e3a6-490f-9429-add4d01b048c)
 
 ### Project
 #### Collect Flow Zone
@@ -96,7 +96,7 @@ The results from this section of the Project Flow are:
 9. Select all Nodes and the Master License.
 10. Click SAVE then RUN.
 
-![collect_recipe][collect] 
+![collect_recipe](https://github.com/user-attachments/assets/cfd6fdd7-a738-47ef-9814-9ecf3ad38bb9)
 
 11. Return to the Flow and select "current" dataset, then "Push to editable" Recipe (in Other Recipes)
 12. Under the "New editable dataset name", name it "desired". Then CREATE RECIPE.
@@ -106,7 +106,7 @@ The results from this section of the Project Flow are:
 17. As a best practice, select "desired" dataset and under Flow Zones "Share" the dataset into a new Flow Zone called "Distribute"
 18. Rename the "Default" Flow Zone to "Collect".
 
-![collect_zone][collect_flow]
+![collect_zone](https://github.com/user-attachments/assets/0f184faa-5bde-4c19-96e1-0df37b536e7f)
 
 #### Distribute Flow Zone
 19. Now comes the fun part!  Edit your Editable Dataset "desired" to include which allocation of licenses you want, per Profile, per Node.
@@ -126,7 +126,7 @@ The results from this section of the Project Flow are:
 25. After you are fully satisfied, return to the "Distribute" Recipe and uncheck "Dry Run".
 26. SAVE, RUN, and relax!
 
-![final_flow][distribute_flow]
+![final_flow](https://github.com/user-attachments/assets/efb7cd06-f415-411f-9a27-061a1a6659c0)
 
 In conclusion, thank you for your continued support of Dataiku. We wish you all well in managing your Sublicense allocations henceforth.
 
