@@ -7031,6 +7031,15 @@ def api_tracking_users_all():
         app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
         disabled = db.get_disabled_campaigns()
         app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
+        import math as _math
+        def _sanitize(obj):
+            if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+                return None
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_sanitize(v) for v in obj]
+            return obj
         users = {}
         skipped = 0
         for r in rows:
@@ -7040,7 +7049,7 @@ def api_tracking_users_all():
             login = r['owner_login']
             if login not in users:
                 users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
-            users[login]['campaigns'].append(r)
+            users[login]['campaigns'].append(_sanitize(r))
         app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
                         len(users), skipped, (_time.time() - _t0) * 1000)
         return jsonify({'users': list(users.values())})
