@@ -6984,13 +6984,6 @@ def api_tracking_issues():
         offset = request.args.get('offset', 0, type=int)
         app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
                         instance_id, status, campaign_id, owner_login, limit, offset)
-        # Debug: also try without instance_id to see if it's the filter causing 0 results
-        all_issues = db.list_issues(instance_id=None, owner_login=owner_login, limit=limit)
-        app.logger.info("[tracking:issues] DEBUG: without instance_id filter, owner=%s has %d issues", owner_login, len(all_issues) if all_issues else 0)
-        if all_issues:
-            sample = all_issues[0]
-            app.logger.info("[tracking:issues] DEBUG: sample issue instance_id=%s, resolved instance_id=%s",
-                            sample.get('instance_id'), instance_id)
         issues = db.list_issues(
             instance_id=instance_id,
             status=status,
