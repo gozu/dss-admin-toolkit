@@ -6976,12 +6976,15 @@ def api_tracking_issues():
         app.logger.error("[tracking:issues] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
     try:
-        instance_id = request.args.get('instance_id') or _tracking_instance_id()
+        instance_id_raw = request.args.get('instance_id')
         status = request.args.get('status')
         campaign_id = request.args.get('campaign_id')
         owner_login = request.args.get('owner_login')
         limit = request.args.get('limit', 100, type=int)
         offset = request.args.get('offset', 0, type=int)
+        # When fetching issues for a specific user, skip instance_id filter
+        # to stay consistent with the user compliance view
+        instance_id = instance_id_raw or (None if owner_login else _tracking_instance_id())
         app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
                         instance_id, status, campaign_id, owner_login, limit, offset)
         issues = db.list_issues(
