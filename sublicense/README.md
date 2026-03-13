@@ -126,7 +126,7 @@ The results from this section of the Project Flow are:
 25. After you are fully satisfied, return to the "Distribute" Recipe and uncheck "Dry Run".
 26. SAVE, RUN, and relax!
 
-![final_flow](https://github.com/user-attachments/assets/efb7cd06-f415-411f-9a27-061a1a6659c0)
+![final_flow](https://github.com/user-attachments/assets/cc8b77ea-d467-4e0c-9a12-6a26a31763d3)
 
 In conclusion, thank you for your continued support of Dataiku. We wish you all well in managing your Sublicense allocations henceforth.
 
