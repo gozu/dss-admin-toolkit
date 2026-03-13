@@ -32,7 +32,7 @@ df_as_dict = [
 ]
 
 # Add up current total usage
-subtotal_df = df.groupby(lambda _: 'Grand Total').sum().drop('NodeID', axis=1)
+subtotal_df = df.groupby(lambda _: 'Grand Total').sum()#.drop('NodeID', axis=1)
 subtotal_dict = subtotal_df.to_dict(orient='records')[0]
 subtotal_dict['Metric'] = 'Current'
 
