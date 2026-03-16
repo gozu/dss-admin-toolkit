@@ -40,26 +40,48 @@ function defaultSort(rows: ProjectRow[]): ProjectRow[] {
   return [...rows].sort((a, b) => b.daysInactive - a.daysInactive);
 }
 
+// ── Module-level cache so data survives remounts ──
+
+let _cachedProjects: ProjectRow[] | null = null;
+let _cachePromise: Promise<ProjectRow[]> | null = null;
+
+function fetchInactiveProjects(): Promise<ProjectRow[]> {
+  if (_cachedProjects) return Promise.resolve(_cachedProjects);
+  if (_cachePromise) return _cachePromise;
+  _cachePromise = fetchJson<{ projects: ProjectRow[] }>('/api/tools/inactive-projects')
+    .then((res) => {
+      _cachedProjects = res.projects;
+      _cachePromise = null;
+      return res.projects;
+    })
+    .catch((err) => {
+      _cachePromise = null;
+      throw err;
+    });
+  return _cachePromise;
+}
+
+/** Clear the cache (e.g., after a delete operation) */
+export function clearInactiveProjectsCache() {
+  _cachedProjects = null;
+  _cachePromise = null;
+}
+
 // ── Component ──
 
 export function InactiveProjectCleaner() {
-  // Fetch inactive projects from dedicated fast endpoint
-  const [rows, setRows] = useState<ProjectRow[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // Fetch inactive projects — uses module-level cache to survive remounts
+  const [rows, setRows] = useState<ProjectRow[]>(_cachedProjects ?? []);
+  const [isLoading, setIsLoading] = useState(!_cachedProjects);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (_cachedProjects) return; // already have data
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetchJson<{ projects: ProjectRow[] }>('/api/tools/inactive-projects');
-        if (!cancelled) setRows(res.projects);
-      } catch (err) {
-        if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    })();
+    fetchInactiveProjects()
+      .then((projects) => { if (!cancelled) setRows(projects); })
+      .catch((err) => { if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err)); })
+      .finally(() => { if (!cancelled) setIsLoading(false); });
     return () => { cancelled = true; };
   }, []);
 

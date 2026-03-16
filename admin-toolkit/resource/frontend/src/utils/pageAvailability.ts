@@ -36,12 +36,14 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'logs':
       return d.formattedLogErrors !== undefined ? 'ready' : 'loading';
 
-    // Phase 3 — heavy data
+    // Phase 3 — heavy data (must wait for analysis to complete, not just list to load)
     case 'projects':
-      return Array.isArray(d.projects) ? 'ready' : 'loading';
+      return Array.isArray(d.projects) && d.analysisLoading?.active === false ? 'ready' : 'loading';
     case 'code-envs':
     case 'code-env-cleaner':
-      return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 ? 'ready' : 'loading';
+      return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
+        ? 'ready'
+        : 'loading';
     case 'outreach':
       return (
         Array.isArray(d.codeEnvs) &&
@@ -49,7 +51,8 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
         Array.isArray(d.projects) &&
         d.projects.length > 0 &&
         Array.isArray(d.users) &&
-        d.users.length > 0
+        d.users.length > 0 &&
+        d.analysisLoading?.active === false
       )
         ? 'ready'
         : 'loading';
