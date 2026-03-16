@@ -254,6 +254,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
       if (level !== 'info') return true;
       // Suppress all per-project/per-env info-level events
       if (event.projectKey) return false;
+      // Suppress per-env usage check lines (too spammy: 238 lines)
+      const step = (event.step || '').replace(/[-\s]/g, '_').toLowerCase();
+      if (step === 'code_env_usage_check') return false;
       return true;
     };
     const basicProjectsEnabled = (() => {
@@ -1313,6 +1316,13 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             }
           } else {
             log(`Failed /api/logs/errors: ${settledError(logsRes)}`, 'warn');
+            currentParsedData = {
+              ...currentParsedData,
+              formattedLogErrors: 'Failed to load log errors (endpoint timed out or unavailable)',
+              rawLogErrors: [],
+              logStats: { 'Total Lines': 0, 'Unique Errors': 0, 'Displayed Errors': 0 },
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
           }
         };
 
