@@ -45,6 +45,16 @@ function defaultSort(rows: ProjectRow[]): ProjectRow[] {
 let _cachedProjects: ProjectRow[] | null = null;
 let _cachePromise: Promise<ProjectRow[]> | null = null;
 
+/** Prefetch inactive projects so data is ready before the user navigates to Project Cleaner */
+export function prefetchInactiveProjects(): void {
+  fetchInactiveProjects().catch(() => {/* swallow — will retry on mount */});
+}
+
+/** Returns true if inactive projects data has been fetched and cached */
+export function hasInactiveProjectsCache(): boolean {
+  return _cachedProjects !== null;
+}
+
 function fetchInactiveProjects(): Promise<ProjectRow[]> {
   if (_cachedProjects) return Promise.resolve(_cachedProjects);
   if (_cachePromise) return _cachePromise;

@@ -1,4 +1,5 @@
 import type { ParsedData, PageId } from '../types';
+import { hasInactiveProjectsCache } from '../components/InactiveProjectCleaner';
 
 export type PageAvailability = 'ready' | 'loading' | 'independent';
 
@@ -18,7 +19,8 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'settings':
     case 'tracking': // independent DB
     case 'directory': // on-demand via apiDirTree
-    case 'project-cleaner': // fetches /api/tools/inactive-projects itself
+    case 'project-cleaner':
+      return hasInactiveProjectsCache() ? 'ready' : 'loading';
     case 'plugins': // PluginComparator fetches its own data
       return 'independent';
 

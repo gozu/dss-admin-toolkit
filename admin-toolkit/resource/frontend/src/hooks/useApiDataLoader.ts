@@ -15,6 +15,7 @@ import type {
   PluginInfo,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
+import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
 import { useProgressInterpolation } from './useProgressInterpolation';
 
 interface OverviewResponse extends Partial<ParsedData> {
@@ -1324,6 +1325,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
         log('Deferred /api/dir-tree until Directory page is opened');
+        prefetchInactiveProjects(); // warm cache for Project Cleaner
         const lowGate = Promise.allSettled([runProjects(), runLogs()]);
 
         await heavyGate;
