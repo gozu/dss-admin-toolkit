@@ -217,38 +217,17 @@ export function TrackingView() {
       });
   }, [log]);
 
-  // On mount: load stale data immediately, then trigger background refresh
+  // On mount: load existing data from DB (no auto-refresh to avoid connection pool exhaustion)
   useEffect(() => {
     let cancelled = false;
     log('=== TrackingView MOUNTED ===');
-    log('Step 1: loading existing user data from DB...');
-    // Show existing data fast
+    log('Loading existing user data from DB...');
     loadUsers().finally(() => {
       if (!cancelled) {
-        log('Step 1 complete, loading spinner dismissed');
+        log('User data loaded, spinner dismissed');
         setLoading(false);
       }
     });
-    // Then trigger a background refresh (re-scans DSS for resolved issues)
-    // and reload user data when it completes
-    const refreshT0 = performance.now();
-    log('Step 2: POST /api/tracking/refresh (background DSS scan)...');
-    fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then((result) => {
-        const secs = ((performance.now() - refreshT0) / 1000).toFixed(1);
-        const info = JSON.stringify(result).slice(0, 200);
-        log(`Step 2 refresh OK (${secs}s): ${info}`);
-        if (!cancelled) {
-          log('Step 3: reloading users after refresh...');
-          return loadUsers();
-        }
-      })
-      .catch((err) => {
-        const secs = ((performance.now() - refreshT0) / 1000).toFixed(1);
-        const status = (err as { status?: number }).status ?? '?';
-        const body = (err as { bodySnippet?: string }).bodySnippet ?? '';
-        log(`Step 2 refresh FAILED (${secs}s) status=${status} body=${body}`, 'error');
-      });
     return () => { cancelled = true; };
   }, [loadUsers]);
 

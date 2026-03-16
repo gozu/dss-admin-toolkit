@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
+import { getPageAvailability, type PageAvailability } from '../../utils/pageAvailability';
 
 /* ------------------------------------------------------------------ */
 /*  Icons (20x20, viewBox 0 0 24 24, stroke=currentColor, sw=1.5)    */
@@ -145,39 +146,46 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'summary', label: 'Summary' },
       { id: 'issues', label: 'Issues', badge: 'issues' },
+      { id: 'settings', label: 'Settings' },
     ],
   },
   {
-    title: 'INFRASTRUCTURE',
+    title: 'SYSTEM',
     items: [
       { id: 'filesystem', label: 'Filesystem' },
       { id: 'memory', label: 'Memory' },
-      { id: 'directory', label: 'Dir Usage' },
     ],
   },
   {
-    title: 'INSIGHTS',
+    title: 'MONITORING',
     items: [
-      { id: 'projects', label: 'Projects' },
-      { id: 'code-envs', label: 'Code Envs' },
       { id: 'connections', label: 'Connections' },
       { id: 'runtime-config', label: 'Runtime' },
+      { id: 'logs', label: 'Errors', badge: 'logs' },
+      { id: 'plugins', label: 'Plugin Sync' },
+    ],
+  },
+  {
+    title: 'PROJECTS',
+    items: [
+      { id: 'projects', label: 'Projects' },
+      { id: 'project-cleaner', label: 'Project Cleaner' },
+    ],
+  },
+  {
+    title: 'CODE ENVIRONMENTS',
+    items: [
+      { id: 'code-envs', label: 'Code Envs' },
+      { id: 'code-env-cleaner', label: 'CodEnv Cleaner' },
     ],
   },
   {
     title: 'TOOLS',
     items: [
       { id: 'outreach', label: 'Outreach' },
-      { id: 'code-env-cleaner', label: 'CodEnv Cleaner' },
-      { id: 'project-cleaner', label: 'Project Cleaner' },
-      { id: 'plugins', label: 'Plugin Sync' },
       { id: 'tracking', label: 'Compliance' },
-      { id: 'settings', label: 'Settings' },
+      { id: 'directory', label: 'Dir Usage' },
     ],
-  },
-  {
-    title: 'LOGS',
-    items: [{ id: 'logs', label: 'Errors' }],
   },
 ];
 
@@ -209,6 +217,41 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
     }
   };
   const { activePage, parsedData } = state;
+
+  // Track previous availability to detect loading → ready transitions
+  const prevAvailRef = useRef<Partial<Record<PageId, PageAvailability>>>({});
+  const [lightUpPages, setLightUpPages] = useState<Set<PageId>>(new Set());
+
+  useEffect(() => {
+    const prev = prevAvailRef.current;
+    const newlyReady: PageId[] = [];
+    for (const section of NAV_SECTIONS) {
+      for (const item of section.items) {
+        const avail = getPageAvailability(parsedData, item.id);
+        if (prev[item.id] === 'loading' && (avail === 'ready' || avail === 'independent')) {
+          newlyReady.push(item.id);
+        }
+        prev[item.id] = avail;
+      }
+    }
+    if (newlyReady.length > 0) {
+      setLightUpPages((s) => {
+        const next = new Set(s);
+        for (const id of newlyReady) next.add(id);
+        return next;
+      });
+      // Remove the light-up class after animation completes
+      const timer = setTimeout(() => {
+        setLightUpPages((s) => {
+          const next = new Set(s);
+          for (const id of newlyReady) next.delete(id);
+          return next;
+        });
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [parsedData]);
+
   // Badge counts
   const issuesBadge = parsedData.disabledFeatures
     ? Object.keys(parsedData.disabledFeatures).length
@@ -224,6 +267,9 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
   function renderNavItem(item: NavItem) {
     const isActive = activePage === item.id;
     const badgeCount = getBadgeCount(item.badge);
+    const avail = getPageAvailability(parsedData, item.id);
+    const isDimmed = avail === 'loading';
+    const isLightUp = lightUpPages.has(item.id);
 
     return (
       <button
@@ -234,11 +280,12 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
           setActivePage(item.id);
         }}
         title={collapsed ? item.label : undefined}
-        className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-colors ${
+        className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-all duration-500 ${
           isActive
             ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-        } ${collapsed ? 'justify-center px-0' : ''}`}
+        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : ''}`}
+        style={isLightUp ? { animation: 'sidebar-ready 600ms ease-out' } : undefined}
       >
         {/* Active indicator bar */}
         {isActive && (

@@ -39,7 +39,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     # Concurrency
     'parallel_workers_default': 8,
     'parallel_workers_max': 32,
-    'code_env_detail_workers': 16,
+    'code_env_detail_workers': 8,
     # Timeouts
     'code_env_timeout_ms': 600000,
     'project_footprint_timeout_ms': 600000,
@@ -1636,6 +1636,12 @@ def _thread_client() -> Any:
     client = getattr(_THREAD_LOCAL, 'dss_client', None)
     if client is None:
         client = dataiku.api_client()
+        # Increase connection pool to handle concurrent worker threads
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        if hasattr(client, '_session'):
+            client._session.mount('http://', adapter)
+            client._session.mount('https://', adapter)
         setattr(_THREAD_LOCAL, 'dss_client', client)
     return client
 
@@ -3329,7 +3335,7 @@ def _build_project_footprint_map_with_deadline(
         return footprint_map
 
     # Run direct per-project footprint calls with a fixed parallelism budget.
-    max_workers = min(5, len(wanted_keys))
+    max_workers = min(8, len(wanted_keys))
     app.logger.info("[footprint-map] mode=per-project wanted=%s workers=%s", len(wanted_keys), max_workers)
     _notify_progress(
         progress_cb,
@@ -6908,8 +6914,21 @@ def _tracking_instance_id() -> str:
     return 'unknown'
 
 
+_tracking_refresh_lock = threading.Lock()
+
+
 @app.route('/api/tracking/refresh', methods=['POST'])
 def api_tracking_refresh():
+    if not _tracking_refresh_lock.acquire(blocking=False):
+        app.logger.info("[tracking:refresh] already running, skipping duplicate")
+        return jsonify({'ok': True, 'skipped': True, 'reason': 'refresh already in progress'})
+    try:
+        return _do_tracking_refresh()
+    finally:
+        _tracking_refresh_lock.release()
+
+
+def _do_tracking_refresh():
     import time as _time
     _t0 = _time.time()
     app.logger.info("[tracking:refresh] === REFRESH STARTED ===")
