@@ -40,7 +40,9 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
 
     // Phase 3 — heavy data (must wait for analysis to complete, not just list to load)
     case 'projects':
-      return Array.isArray(d.projects) && d.analysisLoading?.active === false ? 'ready' : 'loading';
+      return Array.isArray(d.projectFootprint) && d.projectFootprint.length > 0 && d.analysisLoading?.active === false
+        ? 'ready'
+        : 'loading';
     case 'code-envs':
     case 'code-env-cleaner':
       return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
