@@ -50,8 +50,8 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return (
         Array.isArray(d.codeEnvs) &&
         d.codeEnvs.length > 0 &&
-        Array.isArray(d.projects) &&
-        d.projects.length > 0 &&
+        Array.isArray(d.projectFootprint) &&
+        d.projectFootprint.length > 0 &&
         Array.isArray(d.users) &&
         d.users.length > 0 &&
         d.analysisLoading?.active === false
