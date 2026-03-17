@@ -3,7 +3,7 @@ SQL-connection-backed tracking database for diagnostic run persistence,
 issue lifecycle management, and outreach audit trail.
 
 Uses Dataiku SQLExecutor2.query_to_df() exclusively — no raw connections,
-no cursors, no psycopg2.
+no cursors, no psycopg2.  Database-agnostic: no PostgreSQL-specific syntax.
 """
 
 import json
@@ -21,10 +21,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def _q(schema: Optional[str], table: str) -> str:
-    """Qualify a table name with an optional schema prefix."""
-    if schema:
-        return f"{schema}.{table}"
+def _q(prefix: Optional[str], table: str) -> str:
+    """Prefix a table name (e.g. 'adtk' + 'runs' → 'adtk_runs')."""
+    if prefix:
+        return f"{prefix}_{table}"
     return table
 
 
@@ -73,15 +73,24 @@ def _float_val(val) -> str:
     return m.group(0) if m else 'NULL'
 
 
+# All tracking table base names (unprefixed)
+_ALL_TABLES = [
+    'schema_version', 'instances', 'runs', 'run_health_metrics',
+    'run_campaign_summaries', 'run_sections', 'findings', 'issues',
+    'outreach_emails', 'outreach_email_issues', 'known_users',
+    'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
+]
+
+
 class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
     _TARGET_SCHEMA_VERSION = 4
 
-    def __init__(self, connection_name: str, schema_name: Optional[str] = None):
+    def __init__(self, connection_name: str, table_prefix: Optional[str] = None):
         self._connection_name = connection_name
-        self._schema = schema_name
+        self._prefix = table_prefix
         self._lock = threading.Lock()
         self._initialized = False
 
@@ -106,6 +115,24 @@ class SQLTrackingDB:
         rows = self._read(executor, sql)
         return rows[0] if rows else None
 
+    def _t(self, table: str) -> str:
+        """Shortcut: prefix table name."""
+        return _q(self._prefix, table)
+
+    def _idx(self, name: str) -> str:
+        """Prefix an index name."""
+        if self._prefix:
+            return f"{self._prefix}_{name}"
+        return name
+
+    def _next_id(self, executor, table: str, column: str) -> int:
+        """Generate next integer ID via SELECT MAX(col)+1."""
+        row = self._read_one(
+            executor,
+            f"SELECT COALESCE(MAX({column}), 0) + 1 AS next_id FROM {self._t(table)}",
+        )
+        return int(row['next_id']) if row else 1
+
     # ------------------------------------------------------------------
     # Schema initialization
     # ------------------------------------------------------------------
@@ -119,14 +146,8 @@ class SQLTrackingDB:
                 return
             executor = self._get_executor()
             ddl = self._get_ddl_statements()
-            if self._schema:
-                ddl.insert(0, f"CREATE SCHEMA IF NOT EXISTS {self._schema}")
             executor.query_to_df("SELECT 1", pre_queries=ddl, post_queries=['COMMIT'])
             self._initialized = True
-
-    def _t(self, table: str) -> str:
-        """Shortcut: qualify table name."""
-        return _q(self._schema, table)
 
     def _get_ddl_statements(self) -> List[str]:
         """Return list of CREATE TABLE/INDEX statements."""
@@ -145,7 +166,7 @@ class SQLTrackingDB:
                 last_seen_at    TEXT NOT NULL
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('runs')} (
-                run_id              SERIAL PRIMARY KEY,
+                run_id              INTEGER PRIMARY KEY,
                 instance_id         TEXT NOT NULL REFERENCES {self._t('instances')}(instance_id),
                 run_at              TEXT NOT NULL,
                 dss_version         TEXT,
@@ -202,7 +223,7 @@ class SQLTrackingDB:
                 PRIMARY KEY (run_id, section_key)
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('findings')} (
-                finding_id      SERIAL PRIMARY KEY,
+                finding_id      INTEGER PRIMARY KEY,
                 run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
                 campaign_id     TEXT NOT NULL,
                 entity_type     TEXT NOT NULL,
@@ -213,11 +234,11 @@ class SQLTrackingDB:
                 metrics_json    TEXT,
                 UNIQUE(run_id, campaign_id, entity_type, entity_key)
             )""",
-            f"CREATE INDEX IF NOT EXISTS idx_findings_run_campaign ON {self._t('findings')}(run_id, campaign_id)",
-            f"CREATE INDEX IF NOT EXISTS idx_findings_entity ON {self._t('findings')}(campaign_id, entity_type, entity_key)",
-            f"CREATE INDEX IF NOT EXISTS idx_findings_owner ON {self._t('findings')}(owner_login)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_findings_run_campaign')} ON {self._t('findings')}(run_id, campaign_id)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_findings_entity')} ON {self._t('findings')}(campaign_id, entity_type, entity_key)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_findings_owner')} ON {self._t('findings')}(owner_login)",
             f"""CREATE TABLE IF NOT EXISTS {self._t('issues')} (
-                issue_id            SERIAL PRIMARY KEY,
+                issue_id            INTEGER PRIMARY KEY,
                 instance_id         TEXT NOT NULL REFERENCES {self._t('instances')}(instance_id),
                 campaign_id         TEXT NOT NULL,
                 entity_type         TEXT NOT NULL,
@@ -239,11 +260,11 @@ class SQLTrackingDB:
                 metrics_json        TEXT,
                 UNIQUE(instance_id, campaign_id, entity_type, entity_key)
             )""",
-            f"CREATE INDEX IF NOT EXISTS idx_issues_status ON {self._t('issues')}(instance_id, status)",
-            f"CREATE INDEX IF NOT EXISTS idx_issues_owner ON {self._t('issues')}(owner_login, status)",
-            f"CREATE INDEX IF NOT EXISTS idx_issues_campaign ON {self._t('issues')}(instance_id, campaign_id, status)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_issues_status')} ON {self._t('issues')}(instance_id, status)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_issues_owner')} ON {self._t('issues')}(owner_login, status)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_issues_campaign')} ON {self._t('issues')}(instance_id, campaign_id, status)",
             f"""CREATE TABLE IF NOT EXISTS {self._t('outreach_emails')} (
-                email_id        SERIAL PRIMARY KEY,
+                email_id        INTEGER PRIMARY KEY,
                 run_id          INTEGER REFERENCES {self._t('runs')}(run_id),
                 campaign_id     TEXT NOT NULL,
                 recipient_login TEXT NOT NULL,
@@ -255,15 +276,15 @@ class SQLTrackingDB:
                 channel_id      TEXT,
                 sent_by         TEXT
             )""",
-            f"CREATE INDEX IF NOT EXISTS idx_emails_recipient ON {self._t('outreach_emails')}(recipient_login, campaign_id)",
-            f"CREATE INDEX IF NOT EXISTS idx_emails_run ON {self._t('outreach_emails')}(run_id)",
-            f"CREATE INDEX IF NOT EXISTS idx_emails_sent_at ON {self._t('outreach_emails')}(sent_at)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_emails_recipient')} ON {self._t('outreach_emails')}(recipient_login, campaign_id)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_emails_run')} ON {self._t('outreach_emails')}(run_id)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_emails_sent_at')} ON {self._t('outreach_emails')}(sent_at)",
             f"""CREATE TABLE IF NOT EXISTS {self._t('outreach_email_issues')} (
                 email_id    INTEGER NOT NULL REFERENCES {self._t('outreach_emails')}(email_id),
                 issue_id    INTEGER NOT NULL REFERENCES {self._t('issues')}(issue_id),
                 PRIMARY KEY (email_id, issue_id)
             )""",
-            f"CREATE INDEX IF NOT EXISTS idx_email_issues_issue ON {self._t('outreach_email_issues')}(issue_id)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_email_issues_issue')} ON {self._t('outreach_email_issues')}(issue_id)",
             f"""CREATE TABLE IF NOT EXISTS {self._t('known_users')} (
                 instance_id     TEXT NOT NULL REFERENCES {self._t('instances')}(instance_id),
                 login           TEXT NOT NULL,
@@ -285,13 +306,13 @@ class SQLTrackingDB:
                 PRIMARY KEY (instance_id, project_key)
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('issue_notes')} (
-                note_id     SERIAL PRIMARY KEY,
+                note_id     INTEGER PRIMARY KEY,
                 issue_id    INTEGER NOT NULL REFERENCES {self._t('issues')}(issue_id),
                 created_at  TEXT NOT NULL,
                 created_by  TEXT,
                 note        TEXT NOT NULL
             )""",
-            f"CREATE INDEX IF NOT EXISTS idx_notes_issue ON {self._t('issue_notes')}(issue_id)",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_notes_issue')} ON {self._t('issue_notes')}(issue_id)",
             # V3 table
             f"""CREATE TABLE IF NOT EXISTS {self._t('campaign_settings')} (
                 campaign_id TEXT PRIMARY KEY,
@@ -300,7 +321,7 @@ class SQLTrackingDB:
             )""",
             # V4 table
             f"""CREATE TABLE IF NOT EXISTS {self._t('campaign_exemptions')} (
-                exemption_id  SERIAL PRIMARY KEY,
+                exemption_id  INTEGER PRIMARY KEY,
                 campaign_id   TEXT NOT NULL,
                 entity_type   TEXT NOT NULL DEFAULT 'project',
                 entity_key    TEXT NOT NULL,
@@ -308,10 +329,11 @@ class SQLTrackingDB:
                 created_at    TEXT NOT NULL,
                 UNIQUE(campaign_id, entity_type, entity_key)
             )""",
-            # Record schema version
+            # Record schema version (skip if already recorded)
             f"INSERT INTO {self._t('schema_version')} (version, applied_at) "
-            f"VALUES ({self._TARGET_SCHEMA_VERSION}, {_L(_now_iso())}) "
-            f"ON CONFLICT (version) DO NOTHING",
+            f"SELECT {self._TARGET_SCHEMA_VERSION}, {_L(_now_iso())} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {self._t('schema_version')} "
+            f"WHERE version = {self._TARGET_SCHEMA_VERSION})",
         ]
 
     # ------------------------------------------------------------------
@@ -325,13 +347,14 @@ class SQLTrackingDB:
         info: Dict[str, Any] = {
             'backend': 'sql',
             'connection_name': self._connection_name,
-            'schema': self._schema,
+            'table_prefix': self._prefix,
         }
-        schema_filter = self._schema or 'public'
+        table_names = [self._t(t) for t in _ALL_TABLES]
+        names_sql = ','.join(_L(n) for n in table_names)
         rows = self._read(
             executor,
             f"SELECT table_type, table_name FROM information_schema.tables "
-            f"WHERE table_schema = {_L(schema_filter)} ORDER BY table_type, table_name",
+            f"WHERE table_name IN ({names_sql}) ORDER BY table_type, table_name",
         )
         info['objects'] = [{'type': r['table_type'], 'name': r['table_name']} for r in rows]
         for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
@@ -371,34 +394,37 @@ class SQLTrackingDB:
         now = _now_iso()
         executor = self._get_executor()
 
-        # --- Call 1: UPSERT instance + INSERT run → get run_id ---
-        upsert_instance = (
-            f"INSERT INTO {self._t('instances')} "
+        # --- Call 1: Upsert instance + INSERT run (with Python-generated ID) ---
+        t_inst = self._t('instances')
+        run_id = self._next_id(executor, 'runs', 'run_id')
+        call1_pre: List[str] = [
+            # Update existing instance
+            f"UPDATE {t_inst} SET "
+            f"instance_url = {_L(instance_url)}, "
+            f"install_id = COALESCE({_L(install_id)}, install_id), "
+            f"node_id = COALESCE({_L(node_id)}, node_id), "
+            f"last_seen_at = {_L(now)} "
+            f"WHERE instance_id = {_L(instance_id)}",
+            # Insert if not exists
+            f"INSERT INTO {t_inst} "
             f"(instance_id, instance_url, install_id, node_id, first_seen_at, last_seen_at) "
-            f"VALUES ({_L(instance_id)}, {_L(instance_url)}, {_L(install_id)}, {_L(node_id)}, {_L(now)}, {_L(now)}) "
-            f"ON CONFLICT (instance_id) DO UPDATE SET "
-            f"instance_url = EXCLUDED.instance_url, "
-            f"install_id = COALESCE(EXCLUDED.install_id, {self._t('instances')}.install_id), "
-            f"node_id = COALESCE(EXCLUDED.node_id, {self._t('instances')}.node_id), "
-            f"last_seen_at = EXCLUDED.last_seen_at"
-        )
-        insert_run = (
+            f"SELECT {_L(instance_id)}, {_L(instance_url)}, {_L(install_id)}, {_L(node_id)}, {_L(now)}, {_L(now)} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {t_inst} WHERE instance_id = {_L(instance_id)})",
+            # Insert run with explicit ID
             f"INSERT INTO {self._t('runs')} "
-            f"(instance_id, run_at, dss_version, python_version, "
+            f"(run_id, instance_id, run_at, dss_version, python_version, "
             f"health_score, health_status, user_count, enabled_user_count, "
             f"project_count, code_env_count, plugin_count, connection_count, "
             f"cluster_count, coverage_status) "
-            f"VALUES ({_L(instance_id)}, {_L(now)}, "
+            f"VALUES ({run_id}, {_L(instance_id)}, {_L(now)}, "
             f"{_L(run_data.get('dss_version'))}, {_L(run_data.get('python_version'))}, "
             f"{_L(run_data.get('health_score'))}, {_L(run_data.get('health_status'))}, "
             f"{_L(run_data.get('user_count'))}, {_L(run_data.get('enabled_user_count'))}, "
             f"{_L(run_data.get('project_count'))}, {_L(run_data.get('code_env_count'))}, "
             f"{_L(run_data.get('plugin_count'))}, {_L(run_data.get('connection_count'))}, "
-            f"{_L(run_data.get('cluster_count'))}, {_L(run_data.get('coverage_status', 'complete'))}) "
-            f"RETURNING run_id"
-        )
-        df = executor.query_to_df(insert_run, pre_queries=[upsert_instance], post_queries=['COMMIT'])
-        run_id = int(df.iloc[0]['run_id'])
+            f"{_L(run_data.get('cluster_count'))}, {_L(run_data.get('coverage_status', 'complete'))})",
+        ]
+        executor.query_to_df("SELECT 1", pre_queries=call1_pre, post_queries=['COMMIT'])
 
         # --- Call 2: Batch bulk inserts ---
         pre: List[str] = []
@@ -440,18 +466,20 @@ class SQLTrackingDB:
                     f"VALUES ({run_id}, {_L(cs['campaign_id'])}, {_L(cs['finding_count'])}, {_L(cs['recipient_count'])})"
                 )
 
-        # Run sections
+        # Run sections (skip if exists)
+        t_sections = self._t('run_sections')
         for section_key, sec_info in sections.items():
             sec_status = sec_info.get('status', 'success')
             is_complete = 1 if sec_status == 'success' else 0
             pre.append(
-                f"INSERT INTO {self._t('run_sections')} "
+                f"INSERT INTO {t_sections} "
                 f"(run_id, section_key, status, is_complete, error_message) "
-                f"VALUES ({run_id}, {_L(section_key)}, {_L(sec_status)}, {is_complete}, {_L(sec_info.get('error_message'))}) "
-                f"ON CONFLICT (run_id, section_key) DO NOTHING"
+                f"SELECT {run_id}, {_L(section_key)}, {_L(sec_status)}, {is_complete}, {_L(sec_info.get('error_message'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_sections} WHERE run_id = {run_id} AND section_key = {_L(section_key)})"
             )
 
-        # Known users
+        # Known users (upsert: UPDATE existing, INSERT new)
+        t_users = self._t('known_users')
         for user in users:
             login = user.get('login')
             if not login:
@@ -459,39 +487,52 @@ class SQLTrackingDB:
             enabled = 1 if user.get('enabled', True) else 0
             display_name = user.get('display_name') or user.get('displayName')
             user_profile = user.get('user_profile') or user.get('userProfile')
+            email = user.get('email')
             pre.append(
-                f"INSERT INTO {self._t('known_users')} "
+                f"UPDATE {t_users} SET "
+                f"email = COALESCE({_L(email)}, email), "
+                f"display_name = COALESCE({_L(display_name)}, display_name), "
+                f"user_profile = COALESCE({_L(user_profile)}, user_profile), "
+                f"enabled = {enabled}, "
+                f"last_seen_run = {run_id} "
+                f"WHERE instance_id = {_L(instance_id)} AND login = {_L(login)}"
+            )
+            pre.append(
+                f"INSERT INTO {t_users} "
                 f"(instance_id, login, email, display_name, user_profile, enabled, first_seen_run, last_seen_run) "
-                f"VALUES ({_L(instance_id)}, {_L(login)}, {_L(user.get('email'))}, "
-                f"{_L(display_name)}, {_L(user_profile)}, {enabled}, {run_id}, {run_id}) "
-                f"ON CONFLICT (instance_id, login) DO UPDATE SET "
-                f"email = COALESCE(EXCLUDED.email, {self._t('known_users')}.email), "
-                f"display_name = COALESCE(EXCLUDED.display_name, {self._t('known_users')}.display_name), "
-                f"user_profile = COALESCE(EXCLUDED.user_profile, {self._t('known_users')}.user_profile), "
-                f"enabled = EXCLUDED.enabled, "
-                f"last_seen_run = EXCLUDED.last_seen_run"
+                f"SELECT {_L(instance_id)}, {_L(login)}, {_L(email)}, "
+                f"{_L(display_name)}, {_L(user_profile)}, {enabled}, {run_id}, {run_id} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_users} WHERE instance_id = {_L(instance_id)} AND login = {_L(login)})"
             )
 
-        # Known projects
+        # Known projects (upsert: UPDATE existing, INSERT new)
+        t_projects = self._t('known_projects')
         for proj in projects:
             pkey = proj.get('project_key') or proj.get('projectKey')
             if not pkey:
                 continue
             owner = proj.get('owner') or proj.get('owner_login')
+            name = proj.get('name')
             pre.append(
-                f"INSERT INTO {self._t('known_projects')} "
+                f"UPDATE {t_projects} SET "
+                f"name = COALESCE({_L(name)}, name), "
+                f"owner_login = COALESCE({_L(owner)}, owner_login), "
+                f"last_seen_run = {run_id} "
+                f"WHERE instance_id = {_L(instance_id)} AND project_key = {_L(pkey)}"
+            )
+            pre.append(
+                f"INSERT INTO {t_projects} "
                 f"(instance_id, project_key, name, owner_login, first_seen_run, last_seen_run) "
-                f"VALUES ({_L(instance_id)}, {_L(pkey)}, {_L(proj.get('name'))}, "
-                f"{_L(owner)}, {run_id}, {run_id}) "
-                f"ON CONFLICT (instance_id, project_key) DO UPDATE SET "
-                f"name = COALESCE(EXCLUDED.name, {self._t('known_projects')}.name), "
-                f"owner_login = COALESCE(EXCLUDED.owner_login, {self._t('known_projects')}.owner_login), "
-                f"last_seen_run = EXCLUDED.last_seen_run"
+                f"SELECT {_L(instance_id)}, {_L(pkey)}, {_L(name)}, "
+                f"{_L(owner)}, {run_id}, {run_id} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_projects} WHERE instance_id = {_L(instance_id)} AND project_key = {_L(pkey)})"
             )
 
-        # Findings
+        # Findings (skip if exists, with pre-generated IDs)
         finding_keys_this_run: Set[Tuple[str, str, str]] = set()
         entities_this_run: Set[Tuple[str, str]] = set()
+        t_findings = self._t('findings')
+        valid_findings: List[Dict[str, Any]] = []
         for f in findings:
             campaign_id = f.get('campaign_id', '')
             entity_type = f.get('entity_type', '')
@@ -499,63 +540,85 @@ class SQLTrackingDB:
             owner_login = f.get('owner_login', '')
             if not campaign_id or not entity_key or not owner_login:
                 continue
+            valid_findings.append(f)
             finding_keys_this_run.add((campaign_id, entity_type, entity_key))
             entities_this_run.add((entity_type, entity_key))
-            metrics = f.get('metrics_json')
-            if isinstance(metrics, dict):
-                metrics = json.dumps(metrics)
-            pre.append(
-                f"INSERT INTO {self._t('findings')} "
-                f"(run_id, campaign_id, entity_type, entity_key, entity_name, owner_login, owner_email, metrics_json) "
-                f"VALUES ({run_id}, {_L(campaign_id)}, {_L(entity_type)}, {_L(entity_key)}, "
-                f"{_L(f.get('entity_name'))}, {_L(owner_login)}, {_L(f.get('owner_email'))}, {_L(metrics)}) "
-                f"ON CONFLICT (run_id, campaign_id, entity_type, entity_key) DO NOTHING"
-            )
+
+        if valid_findings:
+            next_fid = self._next_id(executor, 'findings', 'finding_id')
+            for i, f in enumerate(valid_findings):
+                fid = next_fid + i
+                campaign_id = f.get('campaign_id', '')
+                entity_type = f.get('entity_type', '')
+                entity_key = f.get('entity_key', '')
+                owner_login = f.get('owner_login', '')
+                metrics = f.get('metrics_json')
+                if isinstance(metrics, dict):
+                    metrics = json.dumps(metrics)
+                pre.append(
+                    f"INSERT INTO {t_findings} "
+                    f"(finding_id, run_id, campaign_id, entity_type, entity_key, entity_name, owner_login, owner_email, metrics_json) "
+                    f"SELECT {fid}, {run_id}, {_L(campaign_id)}, {_L(entity_type)}, {_L(entity_key)}, "
+                    f"{_L(f.get('entity_name'))}, {_L(owner_login)}, {_L(f.get('owner_email'))}, {_L(metrics)} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {t_findings} "
+                    f"WHERE run_id = {run_id} AND campaign_id = {_L(campaign_id)} "
+                    f"AND entity_type = {_L(entity_type)} AND entity_key = {_L(entity_key)})"
+                )
 
         if pre:
             executor.query_to_df("SELECT 1", pre_queries=pre, post_queries=['COMMIT'])
 
-        # --- Call 3: Issue lifecycle — ON CONFLICT upsert with CASE ---
+        # --- Call 3: Issue lifecycle — UPDATE existing + INSERT new ---
         issue_stmts: List[str] = []
-        for f in findings:
-            campaign_id = f.get('campaign_id', '')
-            entity_type = f.get('entity_type', '')
-            entity_key = f.get('entity_key', '')
-            owner_login = f.get('owner_login', '')
-            if not campaign_id or not entity_key or not owner_login:
-                continue
-            metrics = f.get('metrics_json')
-            if isinstance(metrics, dict):
-                metrics = json.dumps(metrics)
-            t_issues = self._t('issues')
-            issue_stmts.append(
-                f"INSERT INTO {t_issues} "
-                f"(instance_id, campaign_id, entity_type, entity_key, "
-                f"owner_login, owner_email, status, "
-                f"first_detected_run, first_detected_at, "
-                f"last_detected_run, last_detected_at, "
-                f"entity_name, metrics_json) "
-                f"VALUES ({_L(instance_id)}, {_L(campaign_id)}, {_L(entity_type)}, {_L(entity_key)}, "
-                f"{_L(owner_login)}, {_L(f.get('owner_email'))}, 'open', "
-                f"{run_id}, {_L(now)}, {run_id}, {_L(now)}, "
-                f"{_L(f.get('entity_name'))}, {_L(metrics)}) "
-                f"ON CONFLICT (instance_id, campaign_id, entity_type, entity_key) DO UPDATE SET "
-                f"last_detected_run = EXCLUDED.last_detected_run, "
-                f"last_detected_at = EXCLUDED.last_detected_at, "
-                f"status = CASE "
-                f"WHEN {t_issues}.status = 'resolved' THEN 'regressed' "
-                f"ELSE {t_issues}.status END, "
-                f"times_regressed = CASE "
-                f"WHEN {t_issues}.status = 'resolved' THEN {t_issues}.times_regressed + 1 "
-                f"ELSE {t_issues}.times_regressed END, "
-                f"resolved_run = CASE WHEN {t_issues}.status = 'resolved' THEN NULL ELSE {t_issues}.resolved_run END, "
-                f"resolved_at = CASE WHEN {t_issues}.status = 'resolved' THEN NULL ELSE {t_issues}.resolved_at END, "
-                f"resolution_reason = CASE WHEN {t_issues}.status = 'resolved' THEN NULL ELSE {t_issues}.resolution_reason END, "
-                f"owner_login = EXCLUDED.owner_login, "
-                f"owner_email = EXCLUDED.owner_email, "
-                f"entity_name = EXCLUDED.entity_name, "
-                f"metrics_json = EXCLUDED.metrics_json"
-            )
+        t_issues = self._t('issues')
+        if valid_findings:
+            next_iid = self._next_id(executor, 'issues', 'issue_id')
+            for i, f in enumerate(valid_findings):
+                iid = next_iid + i
+                campaign_id = f.get('campaign_id', '')
+                entity_type = f.get('entity_type', '')
+                entity_key = f.get('entity_key', '')
+                owner_login = f.get('owner_login', '')
+                metrics = f.get('metrics_json')
+                if isinstance(metrics, dict):
+                    metrics = json.dumps(metrics)
+                # Update existing issue
+                issue_stmts.append(
+                    f"UPDATE {t_issues} SET "
+                    f"last_detected_run = {run_id}, "
+                    f"last_detected_at = {_L(now)}, "
+                    f"status = CASE "
+                    f"WHEN status = 'resolved' THEN 'regressed' "
+                    f"ELSE status END, "
+                    f"times_regressed = CASE "
+                    f"WHEN status = 'resolved' THEN times_regressed + 1 "
+                    f"ELSE times_regressed END, "
+                    f"resolved_run = CASE WHEN status = 'resolved' THEN NULL ELSE resolved_run END, "
+                    f"resolved_at = CASE WHEN status = 'resolved' THEN NULL ELSE resolved_at END, "
+                    f"resolution_reason = CASE WHEN status = 'resolved' THEN NULL ELSE resolution_reason END, "
+                    f"owner_login = {_L(owner_login)}, "
+                    f"owner_email = {_L(f.get('owner_email'))}, "
+                    f"entity_name = {_L(f.get('entity_name'))}, "
+                    f"metrics_json = {_L(metrics)} "
+                    f"WHERE instance_id = {_L(instance_id)} AND campaign_id = {_L(campaign_id)} "
+                    f"AND entity_type = {_L(entity_type)} AND entity_key = {_L(entity_key)}"
+                )
+                # Insert new issue if not exists
+                issue_stmts.append(
+                    f"INSERT INTO {t_issues} "
+                    f"(issue_id, instance_id, campaign_id, entity_type, entity_key, "
+                    f"owner_login, owner_email, status, "
+                    f"first_detected_run, first_detected_at, "
+                    f"last_detected_run, last_detected_at, "
+                    f"entity_name, metrics_json) "
+                    f"SELECT {iid}, {_L(instance_id)}, {_L(campaign_id)}, {_L(entity_type)}, {_L(entity_key)}, "
+                    f"{_L(owner_login)}, {_L(f.get('owner_email'))}, 'open', "
+                    f"{run_id}, {_L(now)}, {run_id}, {_L(now)}, "
+                    f"{_L(f.get('entity_name'))}, {_L(metrics)} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {t_issues} "
+                    f"WHERE instance_id = {_L(instance_id)} AND campaign_id = {_L(campaign_id)} "
+                    f"AND entity_type = {_L(entity_type)} AND entity_key = {_L(entity_key)})"
+                )
 
         if issue_stmts:
             executor.query_to_df("SELECT 1", pre_queries=issue_stmts, post_queries=['COMMIT'])
@@ -774,12 +837,16 @@ class SQLTrackingDB:
         self._init_tables()
         executor = self._get_executor()
         now = _now_iso()
-        df = executor.query_to_df(
-            f"INSERT INTO {self._t('issue_notes')} (issue_id, created_at, created_by, note) "
-            f"VALUES ({_L(issue_id)}, {_L(now)}, {_L(created_by)}, {_L(note)}) RETURNING note_id",
+        note_id = self._next_id(executor, 'issue_notes', 'note_id')
+        executor.query_to_df(
+            "SELECT 1",
+            pre_queries=[
+                f"INSERT INTO {self._t('issue_notes')} (note_id, issue_id, created_at, created_by, note) "
+                f"VALUES ({note_id}, {_L(issue_id)}, {_L(now)}, {_L(created_by)}, {_L(note)})"
+            ],
             post_queries=['COMMIT'],
         )
-        return int(df.iloc[0]['note_id'])
+        return note_id
 
     def compare_runs(self, run_id_1: int, run_id_2: int) -> Dict[str, Any]:
         self._init_tables()
@@ -920,10 +987,17 @@ class SQLTrackingDB:
         self._init_tables()
         executor = self._get_executor()
         now = _now_iso()
+        t_cs = self._t('campaign_settings')
+        enabled_val = 1 if enabled else 0
         executor.query_to_df(
-            f"INSERT INTO {self._t('campaign_settings')} (campaign_id, enabled, updated_at) "
-            f"VALUES ({_L(campaign_id)}, {1 if enabled else 0}, {_L(now)}) "
-            f"ON CONFLICT (campaign_id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at",
+            "SELECT 1",
+            pre_queries=[
+                f"UPDATE {t_cs} SET enabled = {enabled_val}, updated_at = {_L(now)} "
+                f"WHERE campaign_id = {_L(campaign_id)}",
+                f"INSERT INTO {t_cs} (campaign_id, enabled, updated_at) "
+                f"SELECT {_L(campaign_id)}, {enabled_val}, {_L(now)} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_cs} WHERE campaign_id = {_L(campaign_id)})",
+            ],
             post_queries=['COMMIT'],
         )
 
@@ -966,17 +1040,23 @@ class SQLTrackingDB:
         self._init_tables()
         executor = self._get_executor()
         now = _now_iso()
+        t_ce = self._t('campaign_exemptions')
+        next_eid = self._next_id(executor, 'campaign_exemptions', 'exemption_id')
         executor.query_to_df(
-            f"INSERT INTO {self._t('campaign_exemptions')} "
-            f"(campaign_id, entity_type, entity_key, reason, created_at) "
-            f"VALUES ({_L(campaign_id)}, 'project', {_L(entity_key)}, {_L(reason)}, {_L(now)}) "
-            f"ON CONFLICT (campaign_id, entity_type, entity_key) DO UPDATE SET "
-            f"reason = EXCLUDED.reason, created_at = EXCLUDED.created_at",
+            "SELECT 1",
+            pre_queries=[
+                f"UPDATE {t_ce} SET reason = {_L(reason)}, created_at = {_L(now)} "
+                f"WHERE campaign_id = {_L(campaign_id)} AND entity_type = 'project' AND entity_key = {_L(entity_key)}",
+                f"INSERT INTO {t_ce} (exemption_id, campaign_id, entity_type, entity_key, reason, created_at) "
+                f"SELECT {next_eid}, {_L(campaign_id)}, 'project', {_L(entity_key)}, {_L(reason)}, {_L(now)} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_ce} "
+                f"WHERE campaign_id = {_L(campaign_id)} AND entity_type = 'project' AND entity_key = {_L(entity_key)})",
+            ],
             post_queries=['COMMIT'],
         )
         row = self._read_one(
             executor,
-            f"SELECT * FROM {self._t('campaign_exemptions')} "
+            f"SELECT * FROM {t_ce} "
             f"WHERE campaign_id = {_L(campaign_id)} AND entity_key = {_L(entity_key)}",
         )
         return row if row else {}
@@ -984,11 +1064,20 @@ class SQLTrackingDB:
     def remove_exemption(self, exemption_id: int) -> bool:
         self._init_tables()
         executor = self._get_executor()
-        df = executor.query_to_df(
-            f"DELETE FROM {self._t('campaign_exemptions')} WHERE exemption_id = {_L(exemption_id)} RETURNING exemption_id",
+        row = self._read_one(
+            executor,
+            f"SELECT exemption_id FROM {self._t('campaign_exemptions')} WHERE exemption_id = {_L(exemption_id)}",
+        )
+        if not row:
+            return False
+        executor.query_to_df(
+            "SELECT 1",
+            pre_queries=[
+                f"DELETE FROM {self._t('campaign_exemptions')} WHERE exemption_id = {_L(exemption_id)}"
+            ],
             post_queries=['COMMIT'],
         )
-        return df is not None and not df.empty
+        return True
 
     def resolve_issue_ids_for_preview(
         self,
@@ -1031,23 +1120,27 @@ class SQLTrackingDB:
         executor = self._get_executor()
         now = _now_iso()
 
-        # Call 1: insert email → get email_id
-        df = executor.query_to_df(
-            f"INSERT INTO {self._t('outreach_emails')} "
-            f"(run_id, campaign_id, recipient_login, recipient_email, "
-            f"sent_at, status, error_message, subject, channel_id, sent_by) "
-            f"VALUES ({_L(run_id)}, {_L(campaign_id)}, {_L(recipient_login)}, {_L(recipient_email)}, "
-            f"{_L(now)}, {_L(status)}, {_L(error_message)}, {_L(subject)}, {_L(channel_id)}, {_L(sent_by)}) "
-            f"RETURNING email_id",
+        # Call 1: insert email with Python-generated ID
+        email_id = self._next_id(executor, 'outreach_emails', 'email_id')
+        executor.query_to_df(
+            "SELECT 1",
+            pre_queries=[
+                f"INSERT INTO {self._t('outreach_emails')} "
+                f"(email_id, run_id, campaign_id, recipient_login, recipient_email, "
+                f"sent_at, status, error_message, subject, channel_id, sent_by) "
+                f"VALUES ({email_id}, {_L(run_id)}, {_L(campaign_id)}, {_L(recipient_login)}, {_L(recipient_email)}, "
+                f"{_L(now)}, {_L(status)}, {_L(error_message)}, {_L(subject)}, {_L(channel_id)}, {_L(sent_by)})"
+            ],
             post_queries=['COMMIT'],
         )
-        email_id = int(df.iloc[0]['email_id'])
 
         # Call 2: link issues + update counters
         if linked_issue_ids and status == 'sent':
+            t_oei = self._t('outreach_email_issues')
             pre = [
-                f"INSERT INTO {self._t('outreach_email_issues')} (email_id, issue_id) "
-                f"VALUES ({email_id}, {_L(iid)}) ON CONFLICT DO NOTHING"
+                f"INSERT INTO {t_oei} (email_id, issue_id) "
+                f"SELECT {email_id}, {_L(iid)} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_oei} WHERE email_id = {email_id} AND issue_id = {_L(iid)})"
                 for iid in linked_issue_ids
             ]
             ids_sql = ','.join(str(int(iid)) for iid in linked_issue_ids)
@@ -1075,14 +1168,8 @@ class SQLTrackingDB:
         """Return row counts for all tracking tables."""
         self._init_tables()
         executor = self._get_executor()
-        tables = [
-            'schema_version', 'instances', 'runs', 'run_health_metrics',
-            'run_campaign_summaries', 'run_sections', 'findings', 'issues',
-            'outreach_emails', 'outreach_email_issues', 'known_users',
-            'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
-        ]
         counts = {}
-        for tbl in tables:
+        for tbl in _ALL_TABLES:
             try:
                 row = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {self._t(tbl)}")
                 counts[tbl] = row['cnt'] if row else 0
@@ -1102,31 +1189,11 @@ class SQLTrackingDB:
         for row in rows:
             vals = ', '.join(_L(row.get(c)) for c in cols)
             pre.append(
-                f"INSERT INTO {self._t(table)} ({col_list}) VALUES ({vals}) "
-                f"ON CONFLICT DO NOTHING"
+                f"INSERT INTO {self._t(table)} ({col_list}) VALUES ({vals})"
             )
         executor.query_to_df("SELECT 1", pre_queries=pre, post_queries=['COMMIT'])
         return len(rows)
 
     def reset_sequences(self):
-        """Reset Postgres sequences to MAX(id)+1 after migration."""
-        self._init_tables()
-        executor = self._get_executor()
-        seq_tables = [
-            ('runs', 'run_id'),
-            ('findings', 'finding_id'),
-            ('issues', 'issue_id'),
-            ('outreach_emails', 'email_id'),
-            ('issue_notes', 'note_id'),
-            ('campaign_exemptions', 'exemption_id'),
-        ]
-        pre = []
-        for table, col in seq_tables:
-            seq_name = f"{self._t(table)}_{col}_seq"
-            pre.append(
-                f"SELECT setval('{seq_name}', COALESCE((SELECT MAX({col}) FROM {self._t(table)}), 0) + 1, false)"
-            )
-        try:
-            executor.query_to_df("SELECT 1", pre_queries=pre, post_queries=['COMMIT'])
-        except Exception as exc:
-            _log.warning("Failed to reset sequences (may not be Postgres): %s", exc)
+        """No-op: IDs are now generated in Python via _next_id()."""
+        pass

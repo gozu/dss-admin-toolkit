@@ -10,15 +10,14 @@ import { DEFAULT_AI_SYSTEM_PROMPT, AI_PROMPT_STORAGE_KEY } from './AiLogAnalysis
 import type { CampaignExemption } from '../types';
 
 interface TrackingBackendStatus {
-  tracking_available: boolean;
-  db_adapter_available: boolean;
-  effective_backend: 'sqlite' | 'sql' | 'unavailable' | 'unknown';
+  sql_connection_configured: boolean;
+  sql_connection_healthy: boolean | null;
+  instance_has_compatible_sql: boolean | null;
+  table_prefix: string | null;
+  effective_backend: 'sqlite' | 'sql' | 'unconfigured';
   connection_name: string | null;
-  schema_name: string | null;
-  sqlite_path: string | null;
   sqlite_exists: boolean;
   sqlite_has_data: boolean;
-  sqlite_row_counts: Record<string, number>;
   migration_running: boolean;
   error?: string;
 }
@@ -649,29 +648,27 @@ export function SettingsView({ onBack }: SettingsViewProps) {
                         ? `SQL Connection: ${backendStatus.connection_name}`
                         : backendStatus.effective_backend === 'sqlite'
                         ? 'SQLite (local)'
+                        : backendStatus.effective_backend === 'unconfigured'
+                        ? 'Not configured'
                         : 'Unavailable'}
                     </span>
-                    {backendStatus.schema_name && backendStatus.effective_backend === 'sql' && (
+                    {backendStatus.table_prefix && backendStatus.effective_backend === 'sql' && (
                       <span className="text-xs text-[var(--text-muted)] block mt-0.5">
-                        Schema: {backendStatus.schema_name}
+                        Table Prefix: {backendStatus.table_prefix}
+                      </span>
+                    )}
+                    {backendStatus.sql_connection_healthy === false && (
+                      <span className="text-xs text-[var(--neon-red)] block mt-0.5">
+                        Connection unhealthy
                       </span>
                     )}
                   </div>
                   <div className="p-3 rounded-lg border border-[var(--border-glass)] bg-[var(--bg-glass)]">
                     <span className="text-xs font-medium text-[var(--text-muted)] block mb-1">Local SQLite</span>
                     {backendStatus.sqlite_exists ? (
-                      <>
-                        <span className="text-sm text-[var(--text-primary)]">
-                          {backendStatus.sqlite_has_data ? 'Populated' : 'Empty'}
-                        </span>
-                        {backendStatus.sqlite_has_data && (
-                          <span className="text-xs text-[var(--text-muted)] block mt-0.5">
-                            {Object.entries(backendStatus.sqlite_row_counts)
-                              .map(([t, c]) => `${t}: ${c}`)
-                              .join(', ')}
-                          </span>
-                        )}
-                      </>
+                      <span className="text-sm text-[var(--text-primary)]">
+                        {backendStatus.sqlite_has_data ? 'Has data' : 'Empty'}
+                      </span>
                     ) : (
                       <span className="text-sm text-[var(--text-muted)]">Not found</span>
                     )}

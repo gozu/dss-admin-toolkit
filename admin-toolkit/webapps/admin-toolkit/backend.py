@@ -111,6 +111,74 @@ def _resolve_sqlite_dir() -> str:
     return db_dir
 
 
+_SQL_CONNECTION_TYPES = {
+    'PostgreSQL', 'Greenplum', 'MySQL', 'MariaDB', 'SQLServer', 'Oracle',
+    'Snowflake', 'BigQuery', 'Redshift', 'Teradata', 'Vertica', 'SAPHANA',
+    'Synapse', 'Databricks', 'Athena', 'Trino', 'Presto', 'Exasol',
+    'Netezza', 'DB2', 'SQLite',
+}
+
+
+def _list_compatible_sql_connections() -> list:
+    """Return SQL-type connections available on the instance (cached 300s)."""
+    def _loader():
+        try:
+            client = dataiku.api_client()
+            all_conns = client.list_connections()
+            return [
+                name for name, info in all_conns.items()
+                if isinstance(info, dict) and info.get('type') in _SQL_CONNECTION_TYPES
+            ]
+        except Exception as exc:
+            logging.getLogger(__name__).warning("[tracking] list_connections failed: %s", exc)
+            return None
+    return _cache_get('_sql_connections', 300, _loader)
+
+
+def _resolve_backend_decision() -> Dict[str, Any]:
+    """Shared logic for backend-status and _get_tracking_db(). No side effects."""
+    result: Dict[str, Any] = {
+        'mode': 'unconfigured',
+        'reason': '',
+        'connection_name': None,
+        'table_prefix': None,
+    }
+    try:
+        if not _db_adapter_available:
+            result['reason'] = 'db_adapter module not available'
+            result['mode'] = 'sqlite'
+            return result
+
+        config = load_tracking_backend_config()
+        result['connection_name'] = config.connection_name
+        result['table_prefix'] = config.table_prefix
+
+        if config.connection_name:
+            result['mode'] = 'sql'
+            result['reason'] = 'SQL connection configured'
+            return result
+
+        # No SQL configured — check if instance has compatible SQL connections
+        compat = _list_compatible_sql_connections()
+        if compat is None:
+            result['mode'] = 'unconfigured'
+            result['reason'] = 'Could not list connections'
+            return result
+        if compat:
+            result['mode'] = 'unconfigured'
+            result['reason'] = 'Compatible SQL connections exist but none configured'
+            return result
+
+        # No SQL connections on instance at all — SQLite fallback OK
+        result['mode'] = 'sqlite'
+        result['reason'] = 'No SQL connections on instance; SQLite fallback'
+        return result
+    except Exception as exc:
+        result['mode'] = 'unconfigured'
+        result['reason'] = 'Config read failed: %s' % exc
+        return result
+
+
 def _get_tracking_db(force_reload=False):
     global _tracking_db_instance
     _log = logging.getLogger(__name__)
@@ -129,26 +197,37 @@ def _get_tracking_db(force_reload=False):
             _log.info("[tracking:get_db] returning cached instance (after lock)")
             return _tracking_db_instance
         try:
-            db_dir = _resolve_sqlite_dir()
-            db_path = os.path.join(db_dir, 'tracking.db')
+            decision = _resolve_backend_decision()
+            _log.info("[tracking:get_db] decision: mode=%s reason=%s", decision['mode'], decision['reason'])
 
-            # Check if a SQL connection backend is configured
-            if _db_adapter_available:
+            if decision['mode'] == 'sql':
                 config = load_tracking_backend_config()
-                if config.connection_name:
-                    _log.info("[tracking:get_db] SQL backend configured: connection=%s schema=%s",
-                              config.connection_name, config.schema_name)
+                db_dir = _resolve_sqlite_dir()
+                db_path = os.path.join(db_dir, 'tracking.db')
+                _log.info("[tracking:get_db] SQL backend: connection=%s prefix=%s",
+                          config.connection_name, config.table_prefix)
+                try:
                     db = create_tracking_backend(config, db_path)
                     _tracking_db_instance = db
                     _log.info("[tracking:get_db] SQL backend initialized")
-                    return _tracking_db_instance
+                except Exception as exc:
+                    _log.error("[tracking:get_db] SQL backend FAILED — not falling back to SQLite: %s", exc, exc_info=True)
+                    _tracking_db_instance = None
+                return _tracking_db_instance
 
-            # Default: SQLite backend
-            _log.info("[tracking:get_db] opening SQLite DB at %s", db_path)
+            if decision['mode'] == 'unconfigured':
+                _log.warning("[tracking:get_db] %s — returning None", decision['reason'])
+                _tracking_db_instance = None
+                return None
+
+            # mode == 'sqlite' — fallback only when no SQL connections exist on instance
+            db_dir = _resolve_sqlite_dir()
+            db_path = os.path.join(db_dir, 'tracking.db')
+            _log.info("[tracking:get_db] SQLite fallback at %s", db_path)
             db = TrackingDB(db_path)
-            db._get_conn()  # init schema + migrations
+            db._get_conn()
             _tracking_db_instance = db
-            _log.info("[tracking:get_db] SQLite DB initialized successfully at %s", db_path)
+            _log.info("[tracking:get_db] SQLite DB initialized at %s", db_path)
         except Exception as exc:
             _log.warning("[tracking:get_db] init FAILED: %s", exc, exc_info=True)
             _tracking_db_instance = None
@@ -7160,30 +7239,37 @@ def api_tracking_debug():
 
 @app.route('/api/tracking/backend-status')
 def api_tracking_backend_status():
-    """Return the effective tracking backend configuration and state."""
-    status = {
-        'tracking_available': _tracking_available,
-        'db_adapter_available': _db_adapter_available,
-        'effective_backend': 'unknown',
-        'connection_name': None,
-        'schema_name': None,
-        'sqlite_path': None,
+    """Side-effect-free status check — does NOT instantiate a DB or create files."""
+    decision = _resolve_backend_decision()
+    status: Dict[str, Any] = {
+        'sql_connection_configured': bool(decision['connection_name']),
+        'sql_connection_healthy': None,
+        'instance_has_compatible_sql': None,
+        'table_prefix': decision['table_prefix'],
+        'effective_backend': 'unconfigured',
+        'connection_name': decision['connection_name'],
         'sqlite_exists': False,
         'sqlite_has_data': False,
-        'sqlite_row_counts': {},
         'migration_running': _migration_running,
     }
     try:
-        # Read plugin config
-        if _db_adapter_available:
-            config = load_tracking_backend_config()
-            status['connection_name'] = config.connection_name
-            status['schema_name'] = config.schema_name
+        # Compatible SQL connections on instance
+        compat = _list_compatible_sql_connections()
+        status['instance_has_compatible_sql'] = bool(compat) if compat is not None else None
 
-        # Check SQLite state
+        # SQL connection health check
+        if decision['connection_name']:
+            try:
+                from dataiku.core.sql import SQLExecutor2
+                ex = SQLExecutor2(connection=decision['connection_name'])
+                ex.query_to_df("SELECT 1")
+                status['sql_connection_healthy'] = True
+            except Exception:
+                status['sql_connection_healthy'] = False
+
+        # Check SQLite state (read-only, no creation)
         db_dir = _resolve_sqlite_dir()
         sqlite_path = os.path.join(db_dir, 'tracking.db')
-        status['sqlite_path'] = sqlite_path
         status['sqlite_exists'] = os.path.exists(sqlite_path)
         if status['sqlite_exists']:
             try:
@@ -7193,28 +7279,25 @@ def api_tracking_backend_status():
                 for tbl in ['runs', 'issues', 'findings']:
                     try:
                         cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
-                        status['sqlite_row_counts'][tbl] = cnt
                         if cnt > 0:
                             status['sqlite_has_data'] = True
+                            break
                     except Exception:
                         pass
                 conn.close()
             except Exception:
                 pass
 
-        # Determine effective backend
-        db = _get_tracking_db()
+        # Determine effective backend from the ACTUAL cached singleton
+        db = _tracking_db_instance
         if db is not None:
             try:
                 from sql_tracking import SQLTrackingDB
-                if isinstance(db, SQLTrackingDB):
-                    status['effective_backend'] = 'sql'
-                else:
-                    status['effective_backend'] = 'sqlite'
+                status['effective_backend'] = 'sql' if isinstance(db, SQLTrackingDB) else 'sqlite'
             except ImportError:
                 status['effective_backend'] = 'sqlite'
         else:
-            status['effective_backend'] = 'unavailable'
+            status['effective_backend'] = decision['mode']
 
     except Exception as exc:
         status['error'] = str(exc)
@@ -7256,7 +7339,7 @@ def api_tracking_migrate_to_sql():
                                {'message': 'Opened SQLite source'})
 
         # 2. Create target SQL backend
-        target = SQLTrackingDB(config.connection_name, config.schema_name)
+        target = SQLTrackingDB(config.connection_name, config.table_prefix)
         target._init_tables()
         _append_progress_event(progress_endpoint, progress_run_id,
                                {'message': 'SQL target tables created'})

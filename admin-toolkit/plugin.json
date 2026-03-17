@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.125",
+    "version": "0.4.126",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -16,16 +16,16 @@
         {
             "name": "tracking_db_connection",
             "label": "SQL Connection",
-            "description": "Dataiku SQL connection for tracking storage. Leave empty to use local SQLite (default).",
+            "description": "SQL connection for persistent tracking storage (recommended). Without this, data is lost on webapp restart.",
             "type": "CONNECTION",
             "connectionType": "SQL",
             "mandatory": false,
             "defaultValue": ""
         },
         {
-            "name": "tracking_db_schema",
-            "label": "Schema",
-            "description": "Optional schema/namespace for tracking tables (e.g. 'admin_toolkit').",
+            "name": "tracking_table_prefix",
+            "label": "Table Name Prefix",
+            "description": "Prefix for tracking table names (e.g. 'adtk' \u2192 adtk_runs). Leave empty for no prefix.",
             "type": "STRING",
             "mandatory": false,
             "defaultValue": ""
