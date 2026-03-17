@@ -49,6 +49,71 @@ def load_tracking_backend_config() -> TrackingBackendConfig:
         return TrackingBackendConfig(table_prefix='adtk')
 
 
+_PERF_MAP = {
+    'perf_parallel_workers_default': ('parallel_workers_default', int),
+    'perf_parallel_workers_max': ('parallel_workers_max', int),
+    'perf_code_env_detail_workers': ('code_env_detail_workers', int),
+    'perf_code_env_timeout_ms': ('code_env_timeout_ms', int),
+    'perf_project_footprint_timeout_ms': ('project_footprint_timeout_ms', int),
+    'perf_cache_ttl_overview': ('cache_ttl_overview', int),
+    'perf_cache_ttl_projects': ('cache_ttl_projects', int),
+    'perf_cache_ttl_code_envs': ('cache_ttl_code_envs', int),
+    'perf_codenvclean_thread_max': ('codenvclean_thread_max', int),
+    'perf_tracking_issue_page_size': ('tracking_issue_page_size', int),
+}
+
+_THRESH_MAP = {
+    'thresh_inactive_project_days': ('inactiveProjectDays', int),
+    'thresh_filesystem_warning_pct': ('filesystemWarningPct', int),
+    'thresh_filesystem_critical_pct': ('filesystemCriticalPct', int),
+    'thresh_code_env_count_unhealthy': ('codeEnvCountUnhealthy', int),
+    'thresh_empty_project_bytes': ('emptyProjectBytes', int),
+    'thresh_health_warning_below': ('healthWarningBelow', int),
+    'thresh_health_critical_below': ('healthCriticalBelow', int),
+    'thresh_deprecated_python_prefixes': ('deprecatedPythonPrefixes', str),
+}
+
+
+def _get_plugin_config() -> dict:
+    """Read raw plugin config dict. Returns {} on any error."""
+    try:
+        import dataiku
+        client = dataiku.api_client()
+        raw = client.get_plugin('admin-toolkit').get_settings().get_raw()
+        return raw.get('config', {}) if isinstance(raw, dict) else {}
+    except Exception as exc:
+        _log.debug("Could not read plugin config: %s", exc)
+        return {}
+
+
+def load_plugin_performance_settings() -> dict:
+    """Read perf_* plugin params and return a dict of _BACKEND_SETTINGS keys."""
+    config = _get_plugin_config()
+    result = {}
+    for param_key, (setting_key, cast) in _PERF_MAP.items():
+        val = config.get(param_key)
+        if val is not None and val != '':
+            try:
+                result[setting_key] = cast(val)
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
+def load_plugin_threshold_defaults() -> dict:
+    """Read thresh_* plugin params and return a dict of frontend threshold keys."""
+    config = _get_plugin_config()
+    result = {}
+    for param_key, (thresh_key, cast) in _THRESH_MAP.items():
+        val = config.get(param_key)
+        if val is not None and val != '':
+            try:
+                result[thresh_key] = cast(val)
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
 def create_tracking_backend(config: TrackingBackendConfig, sqlite_path: str):
     """Return the appropriate tracking DB backend.
 

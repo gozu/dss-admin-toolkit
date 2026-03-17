@@ -93,14 +93,28 @@ const STORAGE_KEY = 'diagparser.thresholds';
 
 let listeners: Array<() => void> = [];
 let cached: ThresholdSettings | null = null;
+let serverDefaults: Partial<ThresholdSettings> = {};
+
+// Fetch plugin.json threshold defaults once on module load
+fetch('/api/settings/threshold-defaults')
+  .then((r) => (r.ok ? r.json() : {}))
+  .then((data: Partial<ThresholdSettings>) => {
+    if (Object.keys(data).length > 0) {
+      serverDefaults = data;
+      cached = null;
+      for (const fn of listeners) fn();
+    }
+  })
+  .catch(() => {});
 
 function read(): ThresholdSettings {
   if (cached) return cached;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    cached = raw ? { ...DEFAULT_THRESHOLDS, ...JSON.parse(raw) } : { ...DEFAULT_THRESHOLDS };
+    const stored = raw ? JSON.parse(raw) : {};
+    cached = { ...DEFAULT_THRESHOLDS, ...serverDefaults, ...stored };
   } catch {
-    cached = { ...DEFAULT_THRESHOLDS };
+    cached = { ...DEFAULT_THRESHOLDS, ...serverDefaults };
   }
   return cached as ThresholdSettings;
 }
@@ -135,8 +149,8 @@ export function useThresholds() {
   }, []);
 
   const resetDefaults = useCallback(() => {
-    write({ ...DEFAULT_THRESHOLDS });
+    write({ ...DEFAULT_THRESHOLDS, ...serverDefaults });
   }, []);
 
-  return { thresholds, setThreshold, resetDefaults, defaults: DEFAULT_THRESHOLDS };
+  return { thresholds, setThreshold, resetDefaults, defaults: { ...DEFAULT_THRESHOLDS, ...serverDefaults } };
 }

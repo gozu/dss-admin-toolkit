@@ -70,6 +70,17 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
 }
 _BACKEND_SETTINGS_LOCK = threading.Lock()
 
+# Load plugin.json performance defaults and merge into _BACKEND_SETTINGS
+try:
+    from db_adapter import load_plugin_performance_settings as _load_perf
+    _plugin_perf = _load_perf()
+    if _plugin_perf:
+        _BACKEND_SETTINGS.update(_plugin_perf)
+except Exception:
+    pass
+# Snapshot after plugin merge — used as reset target
+_BACKEND_SETTINGS_DEFAULTS: Dict[str, Any] = dict(_BACKEND_SETTINGS)
+
 # ── Tracking database (optional, graceful fallback) ──
 try:
     from tracking import TrackingDB, extract_findings_from_outreach_data
@@ -8202,7 +8213,7 @@ def api_dir_tree():
 @app.route('/api/settings', methods=['GET'])
 def api_settings_get():
     with _BACKEND_SETTINGS_LOCK:
-        return jsonify(dict(_BACKEND_SETTINGS))
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
 
 
 @app.route('/api/settings', methods=['PUT'])
@@ -8217,4 +8228,20 @@ def api_settings_put():
                 except (ValueError, TypeError):
                     pass
     with _BACKEND_SETTINGS_LOCK:
-        return jsonify(dict(_BACKEND_SETTINGS))
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
+
+
+@app.route('/api/settings/reset', methods=['POST'])
+def api_settings_reset():
+    with _BACKEND_SETTINGS_LOCK:
+        _BACKEND_SETTINGS.update(_BACKEND_SETTINGS_DEFAULTS)
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
+
+
+@app.route('/api/settings/threshold-defaults', methods=['GET'])
+def api_settings_threshold_defaults():
+    try:
+        from db_adapter import load_plugin_threshold_defaults
+        return jsonify(load_plugin_threshold_defaults())
+    except Exception:
+        return jsonify({})

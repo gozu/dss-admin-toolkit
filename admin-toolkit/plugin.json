@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.126",
+    "version": "0.4.127",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -29,6 +29,160 @@
             "type": "STRING",
             "mandatory": false,
             "defaultValue": ""
+        },
+        {
+            "name": "sep_performance",
+            "label": "Performance",
+            "type": "SEPARATOR"
+        },
+        {
+            "name": "perf_parallel_workers_default",
+            "label": "Default Worker Threads",
+            "description": "Default thread pool size for parallel API calls.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 8
+        },
+        {
+            "name": "perf_parallel_workers_max",
+            "label": "Max Worker Threads",
+            "description": "Maximum worker threads allowed.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 32
+        },
+        {
+            "name": "perf_code_env_detail_workers",
+            "label": "Code Env Detail Workers",
+            "description": "Workers for fetching code env details.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 8
+        },
+        {
+            "name": "perf_code_env_timeout_ms",
+            "label": "Code Env Timeout (ms)",
+            "description": "Backend timeout for code env analysis.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 600000
+        },
+        {
+            "name": "perf_project_footprint_timeout_ms",
+            "label": "Project Footprint Timeout (ms)",
+            "description": "Backend timeout for project footprint scan.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 600000
+        },
+        {
+            "name": "perf_cache_ttl_overview",
+            "label": "Cache TTL: Overview (sec)",
+            "description": "Cache TTL for overview endpoint.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 300
+        },
+        {
+            "name": "perf_cache_ttl_projects",
+            "label": "Cache TTL: Projects (sec)",
+            "description": "Cache TTL for projects endpoint.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 300
+        },
+        {
+            "name": "perf_cache_ttl_code_envs",
+            "label": "Cache TTL: Code Envs (sec)",
+            "description": "Cache TTL for code envs endpoint.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 5
+        },
+        {
+            "name": "perf_codenvclean_thread_max",
+            "label": "Codenvclean Max Threads",
+            "description": "Maximum threads for code env cleanup tool.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 20
+        },
+        {
+            "name": "perf_tracking_issue_page_size",
+            "label": "Issue Fetch Page Size",
+            "description": "Number of issues fetched per page.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 500
+        },
+        {
+            "name": "sep_thresholds",
+            "label": "Threshold Defaults",
+            "type": "SEPARATOR"
+        },
+        {
+            "name": "thresh_inactive_project_days",
+            "label": "Inactive Project Days",
+            "description": "Projects inactive longer than this are flagged.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 180
+        },
+        {
+            "name": "thresh_filesystem_warning_pct",
+            "label": "Filesystem Warning %",
+            "description": "Filesystem usage above this triggers a warning.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 70
+        },
+        {
+            "name": "thresh_filesystem_critical_pct",
+            "label": "Filesystem Critical %",
+            "description": "Filesystem usage above this triggers a critical alert.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 90
+        },
+        {
+            "name": "thresh_code_env_count_unhealthy",
+            "label": "Code Env Count Unhealthy",
+            "description": "Projects with more code envs than this are flagged unhealthy.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1
+        },
+        {
+            "name": "thresh_empty_project_bytes",
+            "label": "Empty Project Size (bytes)",
+            "description": "Projects larger than this are not considered empty.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1048576
+        },
+        {
+            "name": "thresh_health_warning_below",
+            "label": "Health Warning Below",
+            "description": "Overall health score below this triggers a warning.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 80
+        },
+        {
+            "name": "thresh_health_critical_below",
+            "label": "Health Critical Below",
+            "description": "Overall health score below this is critical.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 50
+        },
+        {
+            "name": "thresh_deprecated_python_prefixes",
+            "label": "Deprecated Python Prefixes",
+            "description": "Comma-separated version prefixes to flag (e.g. 2.,3.6,3.7).",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": "2.,3.6,3.7"
         }
     ]
 }

@@ -235,13 +235,19 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const [backendInputs, setBackendInputs] = useState<Partial<Record<string, string>>>({});
 
   useEffect(() => {
-    fetchJson<BackendSettings>('/api/settings')
+    fetchJson<{ current: BackendSettings; defaults: BackendSettings }>('/api/settings')
       .then((data) => {
-        setBackendSettings(data);
-        setBackendDefaults(data);
+        setBackendSettings(data.current);
+        setBackendDefaults(data.defaults);
       })
       .catch(() => {})
       .finally(() => setBackendLoading(false));
+  }, []);
+
+  const resetBackendSettings = useCallback(async () => {
+    const data = await fetchJson<{ current: BackendSettings; defaults: BackendSettings }>('/api/settings/reset', { method: 'POST' });
+    setBackendSettings(data.current);
+    setBackendDefaults(data.defaults);
   }, []);
 
   const updateBackendSetting = useCallback((key: string, value: number) => {
@@ -471,11 +477,19 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
           {/* Backend Settings */}
           <section className="glass-card p-4 space-y-3">
-            <div>
-              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Backend Settings</h3>
-              <p className="text-sm text-[var(--text-muted)]">
-                Configure server-side concurrency, cache TTLs, and timeouts. Changes are sent to the backend immediately.
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-[var(--text-primary)]">Backend Settings</h3>
+                <p className="text-sm text-[var(--text-muted)]">
+                  Configure server-side concurrency, cache TTLs, and timeouts. Changes are sent to the backend immediately.
+                </p>
+              </div>
+              <button
+                onClick={resetBackendSettings}
+                className="px-3 py-1.5 rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] text-[var(--text-secondary)] transition-colors text-sm"
+              >
+                Reset to Defaults
+              </button>
             </div>
             {backendLoading ? (
               <div className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]">
