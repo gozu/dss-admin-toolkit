@@ -694,7 +694,7 @@ export interface CodeEnvCompareResult {
   analyzedCount: number;
 }
 
-export type ToolsTab = 'outreach' | 'code-env-cleaner' | 'project-cleaner' | 'plugins';
+export type ToolsTab = 'outreach' | 'project-cleaner' | 'plugins';
 
 export interface PluginCompareRow {
   id: string;
@@ -712,6 +712,7 @@ export type PageId =
   | 'directory'
   | 'projects'
   | 'code-envs'
+  | 'code-envs-comparison'
   | 'connections'
   | 'runtime-config'
   | 'logs'

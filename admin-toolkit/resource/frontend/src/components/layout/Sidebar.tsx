@@ -58,6 +58,14 @@ const icons: Record<string, ReactNode> = {
       <polyline points="8 6 2 12 8 18" />
     </svg>
   ),
+  'code-envs-comparison': (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+    </svg>
+  ),
   connections: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
       <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
@@ -175,8 +183,9 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'CODE ENVIRONMENTS',
     items: [
-      { id: 'code-envs', label: 'Code Envs' },
-      { id: 'code-env-cleaner', label: 'CodEnv Cleaner' },
+      { id: 'code-envs', label: 'Insights' },
+      { id: 'code-envs-comparison', label: 'Comparison' },
+      { id: 'code-env-cleaner', label: 'Cleaner' },
     ],
   },
   {

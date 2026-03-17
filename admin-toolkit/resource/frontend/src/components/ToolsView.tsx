@@ -23,9 +23,6 @@ import type {
   ProjectFootprintRow,
 } from '../types';
 
-const CodeEnvCleaner = lazy(() =>
-  import('./CodeEnvCleaner').then((m) => ({ default: m.CodeEnvCleaner })),
-);
 const PluginComparator = lazy(() =>
   import('./PluginComparator').then((m) => ({ default: m.PluginComparator })),
 );
@@ -1977,17 +1974,6 @@ export function ToolsView() {
                   </div>
                 </div>
               </>
-            )}
-
-            {/* CodEnv Cleaner */}
-            {activePage === 'code-env-cleaner' && (
-              <Suspense
-                fallback={
-                  <div className="glass-card p-6 text-[var(--text-secondary)]">Loading...</div>
-                }
-              >
-                <CodeEnvCleaner />
-              </Suspense>
             )}
 
             {/* Project Cleaner */}

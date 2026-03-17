@@ -10,7 +10,8 @@ import { FilesystemPage } from '../pages/FilesystemPage';
 import { MemoryPage } from '../pages/MemoryPage';
 import { DirectoryPage } from '../pages/DirectoryPage';
 import { ProjectsPage } from '../pages/ProjectsPage';
-import { CodeEnvsPage } from '../pages/CodeEnvsPage';
+import { CodeEnvsInsightsPage } from '../pages/CodeEnvsPage';
+import { CodeEnvsComparisonPage } from '../pages/CodeEnvsComparisonPage';
 import { ConnectionsPage } from '../pages/ConnectionsPage';
 import { RuntimeConfigPage } from '../pages/RuntimeConfigPage';
 import { LogsPage } from '../pages/LogsPage';
@@ -22,6 +23,9 @@ const TrackingView = lazy(() =>
 );
 const SettingsView = lazy(() =>
   import('../SettingsView').then((m) => ({ default: m.SettingsView })),
+);
+const CodeEnvCleanerLazy = lazy(() =>
+  import('../CodeEnvCleaner').then((m) => ({ default: m.CodeEnvCleaner })),
 );
 
 function LoadingSpinner() {
@@ -58,15 +62,18 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
     case 'projects':
       return <ProjectsPage />;
     case 'code-envs':
-      return <CodeEnvsPage />;
+      return <CodeEnvsInsightsPage />;
+    case 'code-envs-comparison':
+      return <CodeEnvsComparisonPage />;
     case 'connections':
       return <ConnectionsPage />;
     case 'runtime-config':
       return <RuntimeConfigPage />;
     case 'logs':
       return <LogsPage />;
-    case 'outreach':
     case 'code-env-cleaner':
+      return <CodeEnvCleanerLazy />;
+    case 'outreach':
     case 'project-cleaner':
     case 'plugins':
       return <ToolsView />;

@@ -44,6 +44,7 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
         ? 'ready'
         : 'loading';
     case 'code-envs':
+    case 'code-envs-comparison':
     case 'code-env-cleaner':
       return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
         ? 'ready'

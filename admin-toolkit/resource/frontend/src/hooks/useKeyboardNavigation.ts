@@ -20,6 +20,7 @@ const PAGE_ORDER: PageId[] = [
   'projects',
   'project-cleaner',
   'code-envs',
+  'code-envs-comparison',
   'code-env-cleaner',
   'outreach',
   'tracking',
