@@ -153,9 +153,9 @@ export function AiLogAnalysis({ rawLogErrors }: AiLogAnalysisProps) {
   }, [unlocked]);
 
   useEffect(() => {
-    fetchJson<Record<string, number>>('/api/settings')
+    fetchJson<{ current: Record<string, number>; defaults: Record<string, number> }>('/api/settings')
       .then((data) => {
-        if (data.fe_timeout_llm_analysis) setLlmTimeout(data.fe_timeout_llm_analysis);
+        if (data.current.fe_timeout_llm_analysis) setLlmTimeout(data.current.fe_timeout_llm_analysis);
       })
       .catch(() => {});
   }, []);

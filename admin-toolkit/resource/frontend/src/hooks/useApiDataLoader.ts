@@ -520,7 +520,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         // Fetch backend settings for configurable timeouts
         let beSettings: Record<string, number> = {};
         try {
-          beSettings = await fetchJson<Record<string, number>>('/api/settings');
+          beSettings = await fetchJson<{ current: Record<string, number>; defaults: Record<string, number> }>('/api/settings').then((d) => d.current);
           log('Backend settings loaded');
         } catch { log('Backend settings fetch failed, using defaults', 'warn'); }
 
