@@ -13,6 +13,7 @@ import type {
   ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
+  CodeEnvCompareResult,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
 import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
@@ -840,6 +841,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               phase: 'done',
               message: 'Code env analysis completed',
             });
+            fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+              .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+              .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
             codeEnvsInterpolator.setBackendProgress(100);
             codeEnvsLastProgressRef.current = 100;
             codeEnvsInterpolationEnabledRef.current = false;
@@ -911,6 +915,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'done',
                 message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
               });
+              fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+                .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+                .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
               dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
@@ -920,6 +927,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'error',
                 message: 'Code env analysis failed',
               });
+              dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } });
             }
             log(`Failed /api/code-envs: ${settledError(codeEnvsRes)}`, 'warn');
           }

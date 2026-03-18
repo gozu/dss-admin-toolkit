@@ -482,6 +482,7 @@ export interface ParsedData {
   codeEnvsExpectedCount?: number;
   provisionalCodeEnvs?: ProvisionalCodeEnv[];
   codeEnvsLoading?: LoadingProgressState;
+  codeEnvsCompare?: CodeEnvCompareResult | null;
   analysisLoading?: LoadingProgressState;
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
