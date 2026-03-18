@@ -1738,7 +1738,10 @@ def _instance_id() -> str:
 
 
 def _sdk_fetch(cache_key: str, ttl_seconds: int, fetch_fn, deadline_ts=None):
-    return _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
+    t0 = time.time()
+    result = _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
+    app.logger.info("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
+    return result
 
 
 def _notify_progress(
@@ -3255,11 +3258,13 @@ _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 
 
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
+    t_total = time.time()
     projects = _sdk_fetch(
         'list_projects',
         _BACKEND_SETTINGS['cache_ttl_projects'],
         lambda: _bench_call('list_projects', client.list_projects) or [],
     )
+    app.logger.info("[perf:catalog] list_projects elapsed=%.0fms count=%d", (time.time() - t_total) * 1000, len(projects))
     out: List[Dict[str, str]] = []
     keys: List[str] = []
     for project in projects:
@@ -3292,7 +3297,7 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
             return (project_key, None)
 
     if keys:
-        workers = min(16, len(keys))
+        workers = min(8, len(keys))
         ts_map: Dict[str, Optional[int]] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_fetch_git_ts, k): k for k in keys}
@@ -3303,7 +3308,9 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
             ts = ts_map.get(entry['key'])
             if ts is not None:
                 entry['lastModifiedOn'] = ts
+        app.logger.info("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d", (time.time() - t_total) * 1000, len(keys), workers)
 
+    app.logger.info("[perf:catalog] total elapsed=%.0fms", (time.time() - t_total) * 1000)
     out.sort(key=lambda item: item.get('key') or '')
     return out
 
@@ -4805,6 +4812,7 @@ def api_code_envs():
                 limit_label,
                 time.time() - started,
             )
+            app.logger.info("[perf:ce] phase1_catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
             # Phase 2: size_map in background; usage_scan on the main path
             footprint_pool = ThreadPoolExecutor(max_workers=1)
@@ -4825,6 +4833,7 @@ def api_code_envs():
                     progress_event,
                 )
                 record_step('collect_project_code_env_usage', step_started, calls=catalog['selected_count'])
+            app.logger.info("[perf:ce] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
             # Collect size_map result; do not block past remaining deadline
             size_by_env: Dict[str, int] = {}
@@ -4843,6 +4852,7 @@ def api_code_envs():
                 progress_meta['sizeMapDone'] = True
                 _update_progress_summary(False)
             app.logger.info("[code-envs] sizeMap=%s elapsed=%.2fs", len(size_by_env), time.time() - started)
+            app.logger.info("[perf:ce] global_footprint elapsed=%.0fms sizes=%d", elapsed_ms(), len(size_by_env))
 
             # Phase 3: list + filter envs, then fetch details
             envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {}
@@ -4867,6 +4877,7 @@ def api_code_envs():
                     lambda: client.list_code_envs() or [],
                 ) or []) if isinstance(env, dict)]
                 record_step('list_code_envs', step_started, calls=1)
+                app.logger.info("[perf:ce] list_code_envs elapsed=%.0fms count=%d", elapsed_ms(), len(envs))
 
             _SKIP_DEPLOYMENT_MODES = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
             total_env_count = len(envs)
@@ -4895,6 +4906,7 @@ def api_code_envs():
                 for _u in bulk_usages_raw:
                     _k = (str(_u.get('envLang', '')).upper(), str(_u.get('envName', '')))
                     usages_by_env_details.setdefault(_k, []).append(_u)
+                app.logger.info("[perf:ce] list_code_env_usages bulk elapsed=%.0fms count=%d", elapsed_ms(), len(bulk_usages_raw))
                 env_details = _task_ce_env_details(
                     client,
                     envs,
@@ -4907,6 +4919,7 @@ def api_code_envs():
                     usages_by_env=usages_by_env_details,
                 )
                 record_step('load_code_env_details', step_started, calls=progress_meta['envDetailsDone'])
+                app.logger.info("[perf:ce] env_details elapsed=%.0fms envs=%d workers=%d", elapsed_ms(), len(env_details), min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), max(1, len(envs))))
             app.logger.info("[code-envs] details=%s elapsed=%.2fs", len(env_details), time.time() - started)
 
             # Phase 4: aggregate rows
@@ -4930,6 +4943,7 @@ def api_code_envs():
 
             code_envs.sort(key=lambda item: (_coerce_int(item.get('sizeBytes'), 0), str(item.get('name') or '')), reverse=True)
             app.logger.info("[code-envs] done rows=%s elapsed=%.2fs", len(code_envs), time.time() - started)
+            app.logger.info("[perf:ce] total elapsed=%.0fms", elapsed_ms())
             add_event('code_envs_done', f"code envs done rows={len(code_envs)} timedOut={timed_out}")
 
             api_calls = []
@@ -5209,7 +5223,7 @@ def api_code_envs_compare():
             except Exception:
                 return None
 
-        workers = min(16, len(env_listings))
+        workers = min(8, len(env_listings))
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {pool.submit(fetch_one, e): e for e in env_listings}
             for future in as_completed(futures):
@@ -5601,6 +5615,7 @@ def api_project_footprint():
             progress_meta['selectedProjects'] = catalog_result['selected_count']
             progress_meta['catalogDone'] = True
             _update_progress_summary(False)
+            app.logger.info("[perf:pf] catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog_result['selected_count'])
 
             project_keys: List[str] = catalog_result['project_keys']
             project_info: Dict[str, Dict[str, str]] = catalog_result['project_info']
@@ -5632,6 +5647,8 @@ def api_project_footprint():
                     usage_data = f_usage.result()
                 record_step('load_project_footprint_map', step_start_fp, calls=len(project_keys))
                 record_step('collect_project_code_env_usage', step_start_fp, calls=len(project_keys))
+            app.logger.info("[perf:pf] footprint_fetch elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
+            app.logger.info("[perf:pf] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
 
             # Phase 3: aggregate (main thread)
             agg_result: Dict[str, Any] = {'project_rows': [], 'project_risks': [], 'total_gb_values': []}
@@ -5646,6 +5663,7 @@ def api_project_footprint():
                     add_event,
                 )
                 record_step('aggregate_project_rows', step_start, calls=len(agg_result['project_rows']))
+            app.logger.info("[perf:pf] aggregate elapsed=%.0fms rows=%d", elapsed_ms(), len(agg_result['project_rows']))
 
             project_rows: List[Dict[str, Any]] = agg_result['project_rows']
             total_gb_values: List[float] = agg_result['total_gb_values']
@@ -5669,6 +5687,7 @@ def api_project_footprint():
                     'qps': round(qps, 2),
                 })
 
+            app.logger.info("[perf:pf] total elapsed=%.0fms", elapsed_ms())
             benchmark_summary = {
                 'enabled': True,
                 'projectLimit': len(project_keys),
@@ -8187,6 +8206,43 @@ def api_llms():
         return jsonify({'llms': completion_llms})
     except Exception as e:
         return jsonify({'error': str(e), 'llms': []}), 500
+
+
+@app.route('/api/debug/perf')
+def api_debug_perf():
+    """Return performance debug data without triggering any scans."""
+    try:
+        cache = _get_sdk_cache()
+        cache_keys = cache.get_cache_keys() if hasattr(cache, 'get_cache_keys') else []
+        sdk_stats = cache.get_stats() if hasattr(cache, 'get_stats') else {}
+    except Exception:
+        cache_keys = []
+        sdk_stats = {}
+    with _BACKEND_SETTINGS_LOCK:
+        settings = dict(_BACKEND_SETTINGS)
+    ce_benchmark = None
+    pf_benchmark = None
+    with _CACHE_LOCK:
+        ce_entry = _CACHE.get('code_envs')
+        if isinstance(ce_entry, dict):
+            ce_data = ce_entry.get('data')
+            if isinstance(ce_data, dict):
+                ce_benchmark = ce_data.get('benchmark')
+        pf_entry = _CACHE.get('project_footprint')
+        if isinstance(pf_entry, dict):
+            pf_data = pf_entry.get('data')
+            if isinstance(pf_data, dict):
+                pf_benchmark = pf_data.get('summary', {}).get('benchmark')
+    with _PROGRESS_LOCK:
+        progress_runs = {k: {'runId': v.get('runId'), 'summary': v.get('summary')} for k, v in _PROGRESS.items()}
+    return jsonify({
+        'cache_keys': cache_keys,
+        'sdk_cache_stats': sdk_stats,
+        'backend_settings': settings,
+        'last_code_envs_benchmark': ce_benchmark,
+        'last_project_footprint_benchmark': pf_benchmark,
+        'progress_runs': progress_runs,
+    })
 
 
 @app.route('/api/logs/raw-tail')
