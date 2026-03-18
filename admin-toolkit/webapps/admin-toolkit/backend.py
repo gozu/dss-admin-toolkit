@@ -1855,31 +1855,6 @@ def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
     return {'name': 'dss_data', 'path': '/dss-data'}
 
 
-def _read_license_via_client_api(client: Any) -> Optional[Dict[str, Any]]:
-    candidate_methods = [
-        'get_license',
-        'get_license_info',
-        'get_licensing',
-        'get_licensing_info',
-    ]
-    for method_name in candidate_methods:
-        if not hasattr(client, method_name):
-            continue
-        try:
-            raw = getattr(client, method_name)()
-            if hasattr(raw, 'get_raw'):
-                raw = raw.get_raw()
-            if isinstance(raw, dict):
-                return raw
-        except Exception:
-            continue
-
-    for path in ('/admin/license', '/admin/license-info', '/public/api/admin/license'):
-        response = _client_perform_json(client, 'GET', path)
-        if isinstance(response, dict):
-            return response
-
-    return None
 
 
 
@@ -3557,8 +3532,9 @@ def _check_env_usages(
     env_listing: Dict[str, Any],
     project_info: Dict[str, Dict[str, str]],
     size_by_env: Dict[str, int],
+    usages_by_env: Dict[Tuple[str, str], List[Dict]],
 ) -> Optional[Dict[str, Any]]:
-    """Fetch usages for a single code env via the Dataiku API.
+    """Look up usages for a single code env from the pre-fetched bulk dict.
 
     Returns a dict with env metadata and normalized usages, or None if the env
     should be skipped (e.g. plugin-managed or missing name).
@@ -3577,24 +3553,8 @@ def _check_env_usages(
         return None
 
     owner = _extract_code_env_owner(env_listing, {})
-    usages: List[Any] = []
-    client = _thread_client()
-    try:
-        raw_usages = _bench_call(
-            'list_code_env_usages',
-            _client_perform_json,
-            client,
-            'GET',
-            "/admin/code-envs/%s/%s/usages" % (str(env_lang_raw).upper(), env_name),
-        )
-        if isinstance(raw_usages, list):
-            usages = raw_usages
-        elif hasattr(client, 'get_code_env'):
-            env_obj = _bench_call('get_code_env', client.get_code_env, normalized_lang.upper(), env_name)
-            usages = _bench_call('list_code_env_usages', env_obj.list_usages) if hasattr(env_obj, 'list_usages') else []
-    except Exception as exc:
-        app.logger.warning("[code-env-usage] failed to check %s: %s", env_key, exc)
-        usages = []
+    env_key_tuple = (normalized_lang.upper(), env_name)
+    usages: List[Any] = usages_by_env.get(env_key_tuple, [])
 
     normalized_usages: List[Dict[str, Any]] = []
     for raw_usage in usages:
@@ -3624,11 +3584,10 @@ def _check_env_usages(
 
 def _fetch_code_env_details(
     client: Any, lang_upper: str, env_name: str,
-    fetch_settings: bool = True, fetch_usages: bool = True,
+    fetch_settings: bool = True,
 ) -> Tuple[Dict[str, Any], List[Any]]:
-    """Fetch code env settings and usages. Returns (settings_raw, usages)."""
+    """Fetch code env settings. Returns (settings_raw, [])."""
     settings_raw: Dict[str, Any] = {}
-    usages: List[Any] = []
     env_obj = None
     if fetch_settings and hasattr(client, 'get_code_env'):
         try:
@@ -3640,13 +3599,7 @@ def _fetch_code_env_details(
             settings_raw = _safe_get_raw(env_obj.get_settings())
         except Exception:
             settings_raw = {}
-        if fetch_usages:
-            try:
-                if hasattr(env_obj, 'list_usages'):
-                    usages = _bench_call('list_code_env_usages', env_obj.list_usages) or []
-            except Exception:
-                usages = []
-    return settings_raw, usages
+    return settings_raw, []
 
 
 def _load_code_env_full_details(
@@ -3654,6 +3607,7 @@ def _load_code_env_full_details(
     project_info: Dict[str, Dict[str, str]],
     size_by_env: Dict[str, int],
     include_usages: bool = True,
+    usages_by_env: Optional[Dict[Tuple[str, str], List[Dict]]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(env_listing, dict):
         return None
@@ -3670,13 +3624,16 @@ def _load_code_env_full_details(
     size_bytes = _coerce_int(size_by_env.get(size_key), 0)
     owner = _extract_code_env_owner(env_listing, {})
 
-    # Fast path for large instances: avoid fetching settings/usages unless needed.
+    # Fast path for large instances: avoid fetching settings unless needed.
     should_fetch = include_usages or (not version) or owner == 'Unknown'
     client = _thread_client()
-    settings_raw, usages = _fetch_code_env_details(
+    settings_raw, _ = _fetch_code_env_details(
         client, language.upper(), name,
-        fetch_settings=should_fetch, fetch_usages=include_usages,
+        fetch_settings=should_fetch,
     )
+    usages: List[Any] = []
+    if include_usages and usages_by_env is not None:
+        usages = usages_by_env.get((language.upper(), name), [])
     if settings_raw:
         owner = _extract_code_env_owner(env_listing, settings_raw)
     normalized_usages: List[Dict[str, Any]] = []
@@ -3759,24 +3716,28 @@ def _collect_project_code_env_usage(
     )
 
     envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
-    workers = min(_parallel_workers(16), len(envs))
     total = len(envs)
+
+    bulk_usages_raw = client.list_code_env_usages() or []
+    usages_by_env: Dict[Tuple[str, str], List[Dict]] = {}
+    for u in bulk_usages_raw:
+        k = (str(u.get('envLang', '')).upper(), str(u.get('envName', '')))
+        usages_by_env.setdefault(k, []).append(u)
+
     _notify_progress(
         progress_cb,
         'code_env_usage_scan_start',
-        f"checking {total} code envs with {workers} threads",
+        f"checking {total} code envs",
     )
 
     env_payloads: List[Dict[str, Any]] = []
     checked = [0]
-    checked_lock = threading.Lock()
 
     def _check_and_report(env: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        payload = _check_env_usages(env, project_info, size_by_env)
+        payload = _check_env_usages(env, project_info, size_by_env, usages_by_env)
         env_name = env.get('envName') or env.get('name') or '?'
-        with checked_lock:
-            checked[0] += 1
-            idx = checked[0]
+        checked[0] += 1
+        idx = checked[0]
         if payload is None:
             _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — skipped (plugin/internal)")
         else:
@@ -3785,23 +3746,10 @@ def _collect_project_code_env_usage(
             _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — {status}")
         return payload
 
-    if workers <= 1:
-        for env in envs:
-            payload = _check_and_report(env)
-            if payload:
-                env_payloads.append(payload)
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_check_and_report, env): env for env in envs}
-            for future in as_completed(list(futures.keys())):
-                try:
-                    payload = future.result()
-                except Exception as exc:
-                    app.logger.warning("[code-env-usage] env check failed: %s", exc)
-                    _notify_progress(progress_cb, 'code_env_usage_check_error', f"env check failed: {exc}", 'warn')
-                    continue
-                if payload:
-                    env_payloads.append(payload)
+    for env in envs:
+        payload = _check_and_report(env)
+        if payload:
+            env_payloads.append(payload)
 
     envs_by_project: Dict[str, set] = {k: set() for k in project_info.keys()}
     usage_breakdown_by_project: Dict[str, Dict[str, int]] = {k: {} for k in project_info.keys()}
@@ -4343,13 +4291,12 @@ def api_license():
     dip_home = _dip_home()
 
     def loader():
-        license_data = _safe_read_json(os.path.join(dip_home, 'config', 'license.json'))
-        source = 'file'
-        if not license_data:
-            license_data = _read_license_via_client_api(client)
-            source = 'api'
-        parsed = _parse_license(license_data)
-        parsed['licenseSource'] = source if license_data else 'none'
+        status = client.get_licensing_status()
+        raw = status if isinstance(status, dict) else status.get_raw()
+        license_content = raw.get('base', {}).get('licenseContent', {})
+        parsed = _parse_license(license_content)
+        parsed['licenseSource'] = 'api'
+        parsed['licensingStatus'] = raw
         return _ensure_license_fallback(parsed, dip_home)
 
     data = _cache_get('license', _BACKEND_SETTINGS['cache_ttl_license'], loader)
@@ -4378,8 +4325,6 @@ def api_projects():
             name = project.get('name') or key
             owner = project.get('ownerLogin') or project.get('owner') or project.get('ownerName') or 'Unknown'
 
-            settings: Dict[str, Any] = {}
-            summary: Dict[str, Any] = {}
             perms_raw: Any = None
 
             try:
@@ -4389,31 +4334,12 @@ def api_projects():
 
             if project_obj is not None:
                 try:
-                    raw_settings = project_obj.get_settings().get_raw()
-                    if isinstance(raw_settings, dict):
-                        settings = raw_settings
-                except Exception as exc:
-                    app.logger.warning("[projects] %s settings fetch failed: %s", key, exc)
-                try:
-                    raw_summary = project_obj.get_summary()
-                    if isinstance(raw_summary, dict):
-                        summary = raw_summary
-                except Exception as exc:
-                    app.logger.warning("[projects] %s summary fetch failed: %s", key, exc)
-                try:
                     perms_raw = project_obj.get_permissions()
                 except Exception as exc:
                     app.logger.warning("[projects] %s permissions fetch failed: %s", key, exc)
 
-            name_override = summary.get('name')
-            if name_override:
-                name = name_override
-
-            owner_override = summary.get('ownerLogin')
-            if owner_override:
-                owner = owner_override
-
-            version_number = _extract_project_version_number(project if isinstance(project, dict) else {}, summary, settings)
+            listing = project if isinstance(project, dict) else {}
+            version_number = _extract_project_version_number(listing, listing, {})
             permissions = _normalize_project_permissions(perms_raw)
 
             if key == 'PYTHONAUDIT_TEST' or (version_number == 0 and len(permissions) == 0):
@@ -4422,12 +4348,11 @@ def api_projects():
                 if isinstance(perms_raw, dict):
                     perms_raw_keys = sorted(list(perms_raw.keys()))
                 app.logger.info(
-                    "[projects] %s version=%s perms=%s listingVersion=%s summaryVersion=%s permsRawType=%s permsRawKeys=%s",
+                    "[projects] %s version=%s perms=%s listingVersion=%s permsRawType=%s permsRawKeys=%s",
                     key,
                     version_number,
                     len(permissions),
-                    _extract_nested_int(project if isinstance(project, dict) else {}, 'versionTag.versionNumber'),
-                    _extract_nested_int(summary, 'versionTag.versionNumber'),
+                    _extract_nested_int(listing, 'versionTag.versionNumber'),
                     perms_raw_type,
                     perms_raw_keys,
                 )
@@ -4546,6 +4471,7 @@ def _task_ce_env_details(
     deadline_ts: float,
     add_event: Callable,
     append_partial_row: Callable,
+    usages_by_env: Optional[Dict[Tuple[str, str], List[Dict]]] = None,
 ) -> List[Dict[str, Any]]:
     env_details: List[Dict[str, Any]] = []
     max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), max(1, len(envs)))
@@ -4560,7 +4486,7 @@ def _task_ce_env_details(
             env_key = _env_key_from_listing(env)
             env_started = time.time()
             add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-            detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True)
+            detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True, usages_by_env=usages_by_env)
             if detail:
                 env_details.append(detail)
                 row = detail.get('row')
@@ -4579,7 +4505,7 @@ def _task_ce_env_details(
                 env_key = _env_key_from_listing(env)
                 add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
                 env_started_at[env_key] = time.time()
-                future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True)
+                future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True, usages_by_env)
                 future_to_env[future] = env
 
             timed_out_futures = False
@@ -4872,6 +4798,11 @@ def api_code_envs():
             env_details: List[Dict[str, Any]] = []
             if envs and not deadline_reached('load_code_env_details'):
                 step_started = time.time()
+                bulk_usages_raw = client.list_code_env_usages() or []
+                usages_by_env_details: Dict[Tuple[str, str], List[Dict]] = {}
+                for _u in bulk_usages_raw:
+                    _k = (str(_u.get('envLang', '')).upper(), str(_u.get('envName', '')))
+                    usages_by_env_details.setdefault(_k, []).append(_u)
                 env_details = _task_ce_env_details(
                     client,
                     envs,
@@ -4881,6 +4812,7 @@ def api_code_envs():
                     deadline,
                     add_event,
                     lambda row: _append_progress_partial_row('code_envs', progress_run_id, row),
+                    usages_by_env=usages_by_env_details,
                 )
                 record_step('load_code_env_details', step_started, calls=progress_meta['envDetailsDone'])
             app.logger.info("[code-envs] details=%s elapsed=%.2fs", len(env_details), time.time() - started)
