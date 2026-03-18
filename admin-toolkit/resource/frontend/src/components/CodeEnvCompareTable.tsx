@@ -28,7 +28,7 @@ const SECTION_META: Record<
   },
   yellow: {
     label: 'Near Duplicates',
-    hint: 'Almost identical — differ by 1–3 packages',
+    hint: 'Almost identical — differ by exactly 1 package',
     color: 'var(--neon-amber)',
     badgeBg: 'bg-[var(--neon-amber)]',
   },

@@ -5145,9 +5145,9 @@ def _compare_code_envs_logic(
 
 @app.route('/api/code-envs/compare')
 def api_code_envs_compare():
-    max_diff = 3
+    max_diff = 1
     try:
-        max_diff = max(1, int(request.args.get('maxDiff', '3')))
+        max_diff = max(1, int(request.args.get('maxDiff', '1')))
     except Exception:
         pass
 
