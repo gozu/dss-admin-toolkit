@@ -1737,6 +1737,10 @@ def _instance_id() -> str:
     return 'unknown'
 
 
+def _sdk_fetch(cache_key: str, ttl_seconds: int, fetch_fn, deadline_ts=None):
+    return _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
+
+
 def _notify_progress(
     callback: Optional[Callable[..., None]],
     step: str,
@@ -1858,14 +1862,14 @@ def _compute_footprint_payload(
         try:
             footprint_api = _bench_call('get_data_directories_footprint', client.get_data_directories_footprint)
             if scope == 'global':
-                return _get_sdk_cache().get_or_fetch(
-                    _instance_id(), 'global_footprint',
+                return _sdk_fetch(
+                    'global_footprint',
                     _BACKEND_SETTINGS['cache_ttl_projects'],
                     lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_global_only_footprint(wait=True))),
                 )
             if scope == 'project' and project_key:
-                return _get_sdk_cache().get_or_fetch(
-                    _instance_id(), f'project_footprint:{project_key}',
+                return _sdk_fetch(
+                    f'project_footprint:{project_key}',
                     _BACKEND_SETTINGS['cache_ttl_projects'],
                     lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True))),
                 )
@@ -3251,8 +3255,8 @@ _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 
 
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
-    projects = _get_sdk_cache().get_or_fetch(
-        _instance_id(), 'list_projects',
+    projects = _sdk_fetch(
+        'list_projects',
         _BACKEND_SETTINGS['cache_ttl_projects'],
         lambda: _bench_call('list_projects', client.list_projects) or [],
     )
@@ -3276,8 +3280,8 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
     # which does not reflect webapp edits).
     def _fetch_git_ts(project_key: str) -> Tuple[str, Optional[int]]:
         try:
-            log = _get_sdk_cache().get_or_fetch(
-                _instance_id(), f'project_git_log:{project_key}',
+            log = _sdk_fetch(
+                f'project_git_log:{project_key}',
                 _BACKEND_SETTINGS['cache_ttl_projects'],
                 lambda: client.get_project(project_key).get_project_git().log(),
             )
@@ -3642,8 +3646,8 @@ def _fetch_code_env_details(
     settings_raw: Dict[str, Any] = {}
     if fetch_settings and hasattr(client, 'get_code_env'):
         try:
-            settings_raw = _get_sdk_cache().get_or_fetch(
-                _instance_id(), f'code_env_settings:{lang_upper}:{env_name}',
+            settings_raw = _sdk_fetch(
+                f'code_env_settings:{lang_upper}:{env_name}',
                 _BACKEND_SETTINGS['cache_ttl_code_envs'],
                 lambda: _safe_get_raw(_bench_call('get_code_env', client.get_code_env, lang_upper, env_name).get_settings()),
             )
@@ -3765,15 +3769,15 @@ def _collect_project_code_env_usage(
         f"start projects={len(project_info)}",
     )
 
-    envs = [env for env in (_get_sdk_cache().get_or_fetch(
-        _instance_id(), 'list_code_envs',
+    envs = [env for env in (_sdk_fetch(
+        'list_code_envs',
         _BACKEND_SETTINGS['cache_ttl_code_envs'],
         lambda: client.list_code_envs() or [],
     ) or []) if isinstance(env, dict)]
     total = len(envs)
 
-    bulk_usages_raw = _get_sdk_cache().get_or_fetch(
-        _instance_id(), 'list_code_env_usages',
+    bulk_usages_raw = _sdk_fetch(
+        'list_code_env_usages',
         _BACKEND_SETTINGS['cache_ttl_code_envs'],
         lambda: client.list_code_env_usages() or [],
     )
@@ -4261,8 +4265,8 @@ def api_connections():
     client = dataiku.api_client()
 
     def loader():
-        connections = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'list_connections',
+        connections = _sdk_fetch(
+            'list_connections',
             _BACKEND_SETTINGS['cache_ttl_overview'],
             lambda: client.list_connections(),
         )
@@ -4311,13 +4315,13 @@ def api_users():
     client = dataiku.api_client()
 
     def loader():
-        users = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'list_users',
+        users = _sdk_fetch(
+            'list_users',
             _BACKEND_SETTINGS['cache_ttl_users'],
             lambda: client.list_users(),
         )
-        groups = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'list_groups',
+        groups = _sdk_fetch(
+            'list_groups',
             _BACKEND_SETTINGS['cache_ttl_users'],
             lambda: client.list_groups(),
         )
@@ -4364,8 +4368,8 @@ def api_license():
         def _fetch_raw():
             status = client.get_licensing_status()
             return status if isinstance(status, dict) else status.get_raw()
-        raw = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'licensing_status',
+        raw = _sdk_fetch(
+            'licensing_status',
             _BACKEND_SETTINGS['cache_ttl_license'],
             _fetch_raw,
         )
@@ -4393,8 +4397,8 @@ def api_projects():
     def loader():
         started = time.time()
         projects = []
-        raw_projects = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'list_projects',
+        raw_projects = _sdk_fetch(
+            'list_projects',
             _BACKEND_SETTINGS['cache_ttl_projects'],
             lambda: client.list_projects() or [],
         )
@@ -4857,8 +4861,8 @@ def api_code_envs():
             if not deadline_reached('list_code_envs'):
                 step_started = time.time()
                 add_event('list_code_envs', 'listing code envs')
-                envs = [env for env in (_get_sdk_cache().get_or_fetch(
-                    _instance_id(), 'list_code_envs',
+                envs = [env for env in (_sdk_fetch(
+                    'list_code_envs',
                     _BACKEND_SETTINGS['cache_ttl_code_envs'],
                     lambda: client.list_code_envs() or [],
                 ) or []) if isinstance(env, dict)]
@@ -4882,8 +4886,8 @@ def api_code_envs():
             env_details: List[Dict[str, Any]] = []
             if envs and not deadline_reached('load_code_env_details'):
                 step_started = time.time()
-                bulk_usages_raw = _get_sdk_cache().get_or_fetch(
-                    _instance_id(), 'list_code_env_usages',
+                bulk_usages_raw = _sdk_fetch(
+                    'list_code_env_usages',
                     _BACKEND_SETTINGS['cache_ttl_code_envs'],
                     lambda: client.list_code_env_usages() or [],
                 )
@@ -8115,8 +8119,8 @@ def api_plugins():
     def loader():
         plugins = []
         plugin_details = []
-        _all_plugins = _get_sdk_cache().get_or_fetch(
-            _instance_id(), 'list_plugins',
+        _all_plugins = _sdk_fetch(
+            'list_plugins',
             _BACKEND_SETTINGS['cache_ttl_overview'],
             lambda: list(client.list_plugins()),
         )
