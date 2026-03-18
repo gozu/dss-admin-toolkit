@@ -28,6 +28,8 @@ _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 _SHARED_USAGE_SCANS: Dict[str, Dict[str, Any]] = {}
 _SHARED_USAGE_SCANS_LOCK = threading.Lock()
+_SDK_CACHE: Optional[Any] = None
+_INSTANCE_ID_CACHED: Optional[str] = None
 _THREAD_LOCAL = threading.local()
 _PROGRESS: Dict[str, Dict[str, Any]] = {}
 _PROGRESS_LOCK = threading.Lock()
@@ -1700,6 +1702,41 @@ def _bench_call(name: str, fn, *args, **kwargs):
         _record_benchmark_operation(name, (time.time() - started) * 1000.0, 1)
 
 
+def _get_sdk_cache():
+    global _SDK_CACHE
+    if _SDK_CACHE is None:
+        try:
+            from db_adapter import load_tracking_backend_config, create_sdk_cache
+            _SDK_CACHE = create_sdk_cache(load_tracking_backend_config())
+        except Exception:
+            from sdk_cache import SdkApiCache
+            _SDK_CACHE = SdkApiCache(None)
+    return _SDK_CACHE
+
+
+def _instance_id() -> str:
+    global _INSTANCE_ID_CACHED
+    if _INSTANCE_ID_CACHED is not None:
+        return _INSTANCE_ID_CACHED
+    try:
+        install_ini = _safe_read_text(os.path.join(_dip_home(), 'install.ini'))
+        if install_ini:
+            current_section = None
+            for line in install_ini.split('\n'):
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    current_section = line[1:-1].lower()
+                    continue
+                if current_section == 'general' and '=' in line:
+                    key, value = [part.strip() for part in line.split('=', 1)]
+                    if key.lower() == 'installid':
+                        _INSTANCE_ID_CACHED = value
+                        return value
+    except Exception:
+        pass
+    return 'unknown'
+
+
 def _notify_progress(
     callback: Optional[Callable[..., None]],
     step: str,
@@ -1821,9 +1858,17 @@ def _compute_footprint_payload(
         try:
             footprint_api = _bench_call('get_data_directories_footprint', client.get_data_directories_footprint)
             if scope == 'global':
-                return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_global_only_footprint(wait=True)))
+                return _get_sdk_cache().get_or_fetch(
+                    _instance_id(), 'global_footprint',
+                    _BACKEND_SETTINGS['cache_ttl_projects'],
+                    lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_global_only_footprint(wait=True))),
+                )
             if scope == 'project' and project_key:
-                return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True)))
+                return _get_sdk_cache().get_or_fetch(
+                    _instance_id(), f'project_footprint:{project_key}',
+                    _BACKEND_SETTINGS['cache_ttl_projects'],
+                    lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True))),
+                )
             return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_all_dss_footprint(wait=True)))
         except Exception:
             pass
@@ -3206,7 +3251,11 @@ _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 
 
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
-    projects = _bench_call('list_projects', client.list_projects) or []
+    projects = _get_sdk_cache().get_or_fetch(
+        _instance_id(), 'list_projects',
+        _BACKEND_SETTINGS['cache_ttl_projects'],
+        lambda: _bench_call('list_projects', client.list_projects) or [],
+    )
     out: List[Dict[str, str]] = []
     keys: List[str] = []
     for project in projects:
@@ -3227,8 +3276,11 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
     # which does not reflect webapp edits).
     def _fetch_git_ts(project_key: str) -> Tuple[str, Optional[int]]:
         try:
-            project_obj = client.get_project(project_key)
-            log = project_obj.get_project_git().log()
+            log = _get_sdk_cache().get_or_fetch(
+                _instance_id(), f'project_git_log:{project_key}',
+                _BACKEND_SETTINGS['cache_ttl_projects'],
+                lambda: client.get_project(project_key).get_project_git().log(),
+            )
             ts_str = log['entries'][0]['timestamp']
             epoch_ms = int(dtparser.isoparse(ts_str).timestamp() * 1000)
             return (project_key, epoch_ms)
@@ -3588,15 +3640,13 @@ def _fetch_code_env_details(
 ) -> Tuple[Dict[str, Any], List[Any]]:
     """Fetch code env settings. Returns (settings_raw, [])."""
     settings_raw: Dict[str, Any] = {}
-    env_obj = None
     if fetch_settings and hasattr(client, 'get_code_env'):
         try:
-            env_obj = _bench_call('get_code_env', client.get_code_env, lang_upper, env_name)
-        except Exception:
-            env_obj = None
-    if env_obj is not None:
-        try:
-            settings_raw = _safe_get_raw(env_obj.get_settings())
+            settings_raw = _get_sdk_cache().get_or_fetch(
+                _instance_id(), f'code_env_settings:{lang_upper}:{env_name}',
+                _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                lambda: _safe_get_raw(_bench_call('get_code_env', client.get_code_env, lang_upper, env_name).get_settings()),
+            )
         except Exception:
             settings_raw = {}
     return settings_raw, []
@@ -3715,10 +3765,18 @@ def _collect_project_code_env_usage(
         f"start projects={len(project_info)}",
     )
 
-    envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
+    envs = [env for env in (_get_sdk_cache().get_or_fetch(
+        _instance_id(), 'list_code_envs',
+        _BACKEND_SETTINGS['cache_ttl_code_envs'],
+        lambda: client.list_code_envs() or [],
+    ) or []) if isinstance(env, dict)]
     total = len(envs)
 
-    bulk_usages_raw = client.list_code_env_usages() or []
+    bulk_usages_raw = _get_sdk_cache().get_or_fetch(
+        _instance_id(), 'list_code_env_usages',
+        _BACKEND_SETTINGS['cache_ttl_code_envs'],
+        lambda: client.list_code_env_usages() or [],
+    )
     usages_by_env: Dict[Tuple[str, str], List[Dict]] = {}
     for u in bulk_usages_raw:
         k = (str(u.get('envLang', '')).upper(), str(u.get('envName', '')))
@@ -4203,7 +4261,11 @@ def api_connections():
     client = dataiku.api_client()
 
     def loader():
-        connections = client.list_connections()
+        connections = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'list_connections',
+            _BACKEND_SETTINGS['cache_ttl_overview'],
+            lambda: client.list_connections(),
+        )
         connection_counts: Dict[str, int] = {}
         details: List[Dict[str, Any]] = []
 
@@ -4249,8 +4311,16 @@ def api_users():
     client = dataiku.api_client()
 
     def loader():
-        users = client.list_users()
-        groups = client.list_groups()
+        users = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'list_users',
+            _BACKEND_SETTINGS['cache_ttl_users'],
+            lambda: client.list_users(),
+        )
+        groups = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'list_groups',
+            _BACKEND_SETTINGS['cache_ttl_users'],
+            lambda: client.list_groups(),
+        )
 
         enabled_users = [u for u in users if u.get('enabled') is True]
         user_stats: Dict[str, Any] = {
@@ -4291,8 +4361,14 @@ def api_license():
     dip_home = _dip_home()
 
     def loader():
-        status = client.get_licensing_status()
-        raw = status if isinstance(status, dict) else status.get_raw()
+        def _fetch_raw():
+            status = client.get_licensing_status()
+            return status if isinstance(status, dict) else status.get_raw()
+        raw = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'licensing_status',
+            _BACKEND_SETTINGS['cache_ttl_license'],
+            _fetch_raw,
+        )
         license_content = raw.get('base', {}).get('licenseContent', {})
         parsed = _parse_license(license_content)
         parsed['licenseSource'] = 'api'
@@ -4317,7 +4393,11 @@ def api_projects():
     def loader():
         started = time.time()
         projects = []
-        raw_projects = client.list_projects() or []
+        raw_projects = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'list_projects',
+            _BACKEND_SETTINGS['cache_ttl_projects'],
+            lambda: client.list_projects() or [],
+        )
         total = len(raw_projects)
         app.logger.info("[projects] start total=%s", total)
         for idx, project in enumerate(raw_projects, 1):
@@ -4777,7 +4857,11 @@ def api_code_envs():
             if not deadline_reached('list_code_envs'):
                 step_started = time.time()
                 add_event('list_code_envs', 'listing code envs')
-                envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
+                envs = [env for env in (_get_sdk_cache().get_or_fetch(
+                    _instance_id(), 'list_code_envs',
+                    _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                    lambda: client.list_code_envs() or [],
+                ) or []) if isinstance(env, dict)]
                 record_step('list_code_envs', step_started, calls=1)
 
             _SKIP_DEPLOYMENT_MODES = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
@@ -4798,7 +4882,11 @@ def api_code_envs():
             env_details: List[Dict[str, Any]] = []
             if envs and not deadline_reached('load_code_env_details'):
                 step_started = time.time()
-                bulk_usages_raw = client.list_code_env_usages() or []
+                bulk_usages_raw = _get_sdk_cache().get_or_fetch(
+                    _instance_id(), 'list_code_env_usages',
+                    _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                    lambda: client.list_code_env_usages() or [],
+                )
                 usages_by_env_details: Dict[Tuple[str, str], List[Dict]] = {}
                 for _u in bulk_usages_raw:
                     _k = (str(_u.get('envLang', '')).upper(), str(_u.get('envName', '')))
@@ -7671,6 +7759,7 @@ def api_cache_clear():
     with _CACHE_LOCK:
         _CACHE.clear()
     _clear_shared_project_code_env_usage()
+    _get_sdk_cache().invalidate_all(_instance_id())
     return jsonify({'ok': True})
 
 
@@ -8026,7 +8115,12 @@ def api_plugins():
     def loader():
         plugins = []
         plugin_details = []
-        for p in client.list_plugins():
+        _all_plugins = _get_sdk_cache().get_or_fetch(
+            _instance_id(), 'list_plugins',
+            _BACKEND_SETTINGS['cache_ttl_overview'],
+            lambda: list(client.list_plugins()),
+        )
+        for p in _all_plugins:
             if isinstance(p, dict):
                 meta = p.get('meta') or {}
                 pid = p.get('id') or p.get('name') or meta.get('label')

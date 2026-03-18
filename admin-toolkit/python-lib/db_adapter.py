@@ -114,6 +114,11 @@ def load_plugin_threshold_defaults() -> dict:
     return result
 
 
+def create_sdk_cache(config: TrackingBackendConfig) -> 'SdkApiCache':
+    from sdk_cache import SdkApiCache
+    return SdkApiCache(config.connection_name, config.table_prefix)
+
+
 def create_tracking_backend(config: TrackingBackendConfig, sqlite_path: str):
     """Return the appropriate tracking DB backend.
 
