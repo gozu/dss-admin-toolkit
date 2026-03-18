@@ -203,9 +203,16 @@ class SdkApiCache:
         if not items:
             return
         now = time.time()
+        # Populate L1 only for JSON-serializable values
+        serializable: Dict[str, str] = {}
+        for k, v in items.items():
+            try:
+                serializable[k] = json.dumps(v)
+            except Exception:
+                continue
         with self._mem_lock:
-            for k, v in items.items():
-                self._mem[(instance_id, k)] = (now, v)
+            for k in serializable:
+                self._mem[(instance_id, k)] = (now, items[k])
         if not self._conn:
             return
         tbl = _q(self._prefix, 'api_cache')
@@ -223,11 +230,7 @@ class SdkApiCache:
             )
             executor.query_to_df(del_sql)
             values = []
-            for k, v in items.items():
-                try:
-                    rj = json.dumps(v)
-                except Exception:
-                    continue
+            for k, rj in serializable.items():
                 values.append(
                     f"({_L(instance_id)}, {_L(k)}, {_L(now_ms)}, {_L(ttl_seconds)}, {_L(rj)})"
                 )
@@ -260,6 +263,7 @@ class SdkApiCache:
                     with self._stats_lock:
                         self._stats['hits_mem'] += 1
                     return value
+                del self._mem[mem_key]  # evict expired entry
         result = self._sql_get(instance_id, cache_key, ttl_seconds)
         if result is not None:
             with self._stats_lock:
@@ -279,6 +283,7 @@ class SdkApiCache:
                     with self._stats_lock:
                         self._stats['hits_mem'] += 1
                     return value
+                del self._mem[mem_key]  # evict expired entry
         return None
 
     def get_stats(self) -> Dict[str, Any]:
