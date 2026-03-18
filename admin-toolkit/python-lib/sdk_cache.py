@@ -268,6 +268,19 @@ class SdkApiCache:
                 self._mem[mem_key] = (time.time(), result)
         return result
 
+    def get_mem(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
+        """L1 memory-only cache check. No SQL. Returns None on miss."""
+        mem_key = (instance_id, cache_key)
+        with self._mem_lock:
+            entry = self._mem.get(mem_key)
+            if entry is not None:
+                fetched_at, value = entry
+                if (time.time() - fetched_at) < ttl_seconds:
+                    with self._stats_lock:
+                        self._stats['hits_mem'] += 1
+                    return value
+        return None
+
     def get_stats(self) -> Dict[str, Any]:
         with self._stats_lock:
             stats = dict(self._stats)

@@ -3289,11 +3289,12 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
         iid = _instance_id()
         ttl = _BACKEND_SETTINGS['cache_ttl_projects']
 
-        # Phase A: batch-read from L1/SQL cache
+        # Phase A: L1-only cache check (no SQL — avoids 418 SQL SELECTs on cold cache)
         cached_logs: Dict[str, Any] = {}
         uncached_keys: List[str] = []
+        _get_mem = cache.get_mem if hasattr(cache, 'get_mem') else cache.get
         for key in keys:
-            cached = cache.get(iid, f'project_git_log:{key}', ttl)
+            cached = _get_mem(iid, f'project_git_log:{key}', ttl)
             if cached is not None:
                 cached_logs[key] = cached
             else:
@@ -8255,20 +8256,32 @@ def api_debug_perf():
             ce_val = ce_entry.get('value')
             if isinstance(ce_val, dict):
                 ce_benchmark = ce_val.get('summary', {}).get('benchmark')
-        pf_entry = _CACHE.get('project_footprint')
-        if isinstance(pf_entry, dict):
-            pf_val = pf_entry.get('value')
-            if isinstance(pf_val, dict):
-                pf_benchmark = pf_val.get('summary', {}).get('benchmark')
+    # Extract benchmarks from progress (PF doesn't use _cache_get; CE as fallback)
+    progress_summaries: Dict[str, Any] = {}
     with _PROGRESS_LOCK:
-        progress_runs = {k: {'runId': v.get('runId'), 'summary': v.get('summary')} for k, v in _PROGRESS.items()}
+        for k, v in _PROGRESS.items():
+            summary = v.get('summary')
+            if isinstance(summary, dict):
+                # Strip events array to keep response small
+                progress_summaries[k] = {
+                    key: val for key, val in summary.items() if key != 'events'
+                }
+                if k == 'project_footprint' and pf_benchmark is None:
+                    pf_benchmark = summary
+                if k == 'code_envs' and ce_benchmark is None:
+                    ce_benchmark = summary
+    # Strip events from benchmarks to keep response small
+    if isinstance(ce_benchmark, dict):
+        ce_benchmark = {k: v for k, v in ce_benchmark.items() if k != 'events'}
+    if isinstance(pf_benchmark, dict):
+        pf_benchmark = {k: v for k, v in pf_benchmark.items() if k != 'events'}
     return jsonify({
         'cache_keys': cache_keys,
         'sdk_cache_stats': sdk_stats,
         'backend_settings': settings,
         'last_code_envs_benchmark': ce_benchmark,
         'last_project_footprint_benchmark': pf_benchmark,
-        'progress_runs': progress_runs,
+        'progress_summaries': progress_summaries,
     })
 
 
