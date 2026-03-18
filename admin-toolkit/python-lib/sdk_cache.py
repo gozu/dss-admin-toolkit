@@ -249,6 +249,25 @@ class SdkApiCache:
                 self._stats['sql_ms'] += elapsed_ms
             _log.warning("[sdk_cache] set_many failed: %s", exc)
 
+    def get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
+        """Read-only check of L1 + SQL cache. Returns None on miss."""
+        mem_key = (instance_id, cache_key)
+        with self._mem_lock:
+            entry = self._mem.get(mem_key)
+            if entry is not None:
+                fetched_at, value = entry
+                if (time.time() - fetched_at) < ttl_seconds:
+                    with self._stats_lock:
+                        self._stats['hits_mem'] += 1
+                    return value
+        result = self._sql_get(instance_id, cache_key, ttl_seconds)
+        if result is not None:
+            with self._stats_lock:
+                self._stats['hits_sql'] += 1
+            with self._mem_lock:
+                self._mem[mem_key] = (time.time(), result)
+        return result
+
     def get_stats(self) -> Dict[str, Any]:
         with self._stats_lock:
             stats = dict(self._stats)

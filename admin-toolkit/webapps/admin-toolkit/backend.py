@@ -3283,32 +3283,59 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
 
     # Fetch last-modified timestamps from git log in parallel (replaces versionTag
     # which does not reflect webapp edits).
-    def _fetch_git_ts(project_key: str) -> Tuple[str, Optional[int]]:
-        try:
-            log = _sdk_fetch(
-                f'project_git_log:{project_key}',
-                _BACKEND_SETTINGS['cache_ttl_projects'],
-                lambda: client.get_project(project_key).get_project_git().log(),
-            )
-            ts_str = log['entries'][0]['timestamp']
-            epoch_ms = int(dtparser.isoparse(ts_str).timestamp() * 1000)
-            return (project_key, epoch_ms)
-        except Exception:
-            return (project_key, None)
-
+    # Uses batch cache reads + batch writes to minimize SQL round-trips.
     if keys:
-        workers = min(8, len(keys))
+        cache = _get_sdk_cache()
+        iid = _instance_id()
+        ttl = _BACKEND_SETTINGS['cache_ttl_projects']
+
+        # Phase A: batch-read from L1/SQL cache
+        cached_logs: Dict[str, Any] = {}
+        uncached_keys: List[str] = []
+        for key in keys:
+            cached = cache.get(iid, f'project_git_log:{key}', ttl)
+            if cached is not None:
+                cached_logs[key] = cached
+            else:
+                uncached_keys.append(key)
+        app.logger.info("[perf:catalog] git_log cache hit=%d miss=%d", len(cached_logs), len(uncached_keys))
+
+        # Phase B: fetch uncached git logs from API in parallel
+        fetched_logs: Dict[str, Any] = {}
+        if uncached_keys:
+            def _fetch_git_log(project_key: str) -> Tuple[str, Optional[Any]]:
+                try:
+                    local_client = _thread_client()
+                    return (project_key, local_client.get_project(project_key).get_project_git().log())
+                except Exception:
+                    return (project_key, None)
+
+            workers = min(8, len(uncached_keys))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_fetch_git_log, k): k for k in uncached_keys}
+                for future in as_completed(futures):
+                    pk, log = future.result()
+                    if log is not None:
+                        fetched_logs[pk] = log
+
+            # Phase C: batch-write to cache
+            if fetched_logs:
+                cache.set_many(iid, {f'project_git_log:{k}': v for k, v in fetched_logs.items()}, ttl)
+
+        # Extract timestamps from all logs
+        all_logs = {**cached_logs, **fetched_logs}
         ts_map: Dict[str, Optional[int]] = {}
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_fetch_git_ts, k): k for k in keys}
-            for future in as_completed(futures):
-                pkey, epoch_ms = future.result()
-                ts_map[pkey] = epoch_ms
+        for key, log in all_logs.items():
+            try:
+                ts_str = log['entries'][0]['timestamp']
+                ts_map[key] = int(dtparser.isoparse(ts_str).timestamp() * 1000)
+            except Exception:
+                ts_map[key] = None
         for entry in out:
             ts = ts_map.get(entry['key'])
             if ts is not None:
                 entry['lastModifiedOn'] = ts
-        app.logger.info("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d", (time.time() - t_total) * 1000, len(keys), workers)
+        app.logger.info("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d cached=%d fetched=%d", (time.time() - t_total) * 1000, len(keys), min(8, len(uncached_keys)) if uncached_keys else 0, len(cached_logs), len(fetched_logs))
 
     app.logger.info("[perf:catalog] total elapsed=%.0fms", (time.time() - t_total) * 1000)
     out.sort(key=lambda item: item.get('key') or '')
@@ -8225,14 +8252,14 @@ def api_debug_perf():
     with _CACHE_LOCK:
         ce_entry = _CACHE.get('code_envs')
         if isinstance(ce_entry, dict):
-            ce_data = ce_entry.get('data')
-            if isinstance(ce_data, dict):
-                ce_benchmark = ce_data.get('benchmark')
+            ce_val = ce_entry.get('value')
+            if isinstance(ce_val, dict):
+                ce_benchmark = ce_val.get('summary', {}).get('benchmark')
         pf_entry = _CACHE.get('project_footprint')
         if isinstance(pf_entry, dict):
-            pf_data = pf_entry.get('data')
-            if isinstance(pf_data, dict):
-                pf_benchmark = pf_data.get('summary', {}).get('benchmark')
+            pf_val = pf_entry.get('value')
+            if isinstance(pf_val, dict):
+                pf_benchmark = pf_val.get('summary', {}).get('benchmark')
     with _PROGRESS_LOCK:
         progress_runs = {k: {'runId': v.get('runId'), 'summary': v.get('summary')} for k, v in _PROGRESS.items()}
     return jsonify({
