@@ -4454,6 +4454,172 @@ def api_projects():
     return jsonify(data)
 
 
+# ── Scan pipeline helpers: /api/code-envs ─────────────────────────────────────
+
+def _env_key_from_listing(env: Dict[str, Any]) -> str:
+    env_name = env.get('envName') or env.get('name') or env.get('id')
+    env_lang_raw = env.get('envLang') or env.get('language') or env.get('type') or 'PYTHON'
+    language = _normalize_language(env_lang_raw)
+    return f"{language}:{env_name}" if env_name else 'unknown'
+
+
+def _task_ce_catalog(
+    client: Any,
+    add_event: Callable,
+    limit_label: str,
+    project_limit: int,
+) -> Dict[str, Any]:
+    add_event('load_project_catalog', 'loading project catalog')
+    project_catalog = _list_projects_catalog(client)
+    selected_catalog: List[Dict[str, str]] = project_catalog[:] if project_limit <= 0 else project_catalog[:project_limit]
+    add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
+    project_info: Dict[str, Dict[str, str]] = {}
+    for project in selected_catalog:
+        key = str(project.get('key') or '').strip()
+        if not key:
+            continue
+        project_info[key] = {
+            'name': str(project.get('name') or key),
+            'owner': str(project.get('owner') or 'Unknown'),
+        }
+    add_event(
+        'project_scope_ready',
+        f"project scope ready selected={len(project_info)} total={len(project_catalog)} limit={limit_label}",
+    )
+    return {
+        'project_catalog': project_catalog,
+        'selected_catalog': selected_catalog,
+        'project_info': project_info,
+        'selected_count': len(project_info),
+    }
+
+
+def _task_ce_size_map(add_event: Callable) -> Dict[str, int]:
+    """Runs in a background thread; acquires its own client via _thread_client()."""
+    client = _thread_client()
+    global_footprint = _compute_footprint_payload(client, 'global', None)
+    size_by_env: Dict[str, int] = {}
+    if isinstance(global_footprint, dict):
+        code_envs_section = global_footprint.get('codeEnvs')
+        if isinstance(code_envs_section, dict):
+            code_env_items = code_envs_section.get('items')
+            if isinstance(code_env_items, list):
+                for item in code_env_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_name = item.get('name')
+                    item_lang = str(item.get('language') or '').strip().lower()
+                    if not item_name or not item_lang:
+                        continue
+                    size_key = f"{item_lang}:{item_name}"
+                    size_by_env[size_key] = _coerce_int(item.get('size'), 0)
+    return size_by_env
+
+
+def _task_ce_usage_scan(
+    client: Any,
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    if not project_info:
+        return {}
+    add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
+    return _get_shared_project_code_env_usage(
+        client,
+        project_info,
+        {},
+        include_project_object_scan=True,
+        include_code_env_usage_api=False,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+
+
+def _task_ce_env_details(
+    client: Any,
+    envs: List[Dict[str, Any]],
+    project_info: Dict[str, Dict[str, str]],
+    size_by_env: Dict[str, int],
+    progress_meta: Dict[str, Any],
+    deadline_ts: float,
+    add_event: Callable,
+    append_partial_row: Callable,
+) -> List[Dict[str, Any]]:
+    env_details: List[Dict[str, Any]] = []
+    max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), max(1, len(envs)))
+    progress_meta['envDetailsTotal'] = len(envs)
+    progress_meta['envDetailsDone'] = 0
+    add_event('load_code_env_details', f"loading env details envs={len(envs)} workers={max_workers}")
+    if max_workers <= 1:
+        for env in envs:
+            if time.time() > deadline_ts:
+                add_event('load_code_env_details', 'deadline reached at step=load_code_env_details', 'warn')
+                break
+            env_key = _env_key_from_listing(env)
+            env_started = time.time()
+            add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
+            detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True)
+            if detail:
+                env_details.append(detail)
+                row = detail.get('row')
+                if isinstance(row, dict):
+                    append_partial_row(row)
+                add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - env_started) * 1000.0)
+            else:
+                add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - env_started) * 1000.0)
+    else:
+        future_to_env: Dict[Any, Dict[str, Any]] = {}
+        env_started_at: Dict[str, float] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for env in envs:
+                if time.time() > deadline_ts:
+                    break
+                env_key = _env_key_from_listing(env)
+                add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
+                env_started_at[env_key] = time.time()
+                future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True)
+                future_to_env[future] = env
+
+            timed_out_futures = False
+            remaining = max(0.0, deadline_ts - time.time())
+            try:
+                for future in as_completed(list(future_to_env.keys()), timeout=remaining):
+                    if time.time() > deadline_ts:
+                        timed_out_futures = True
+                        break
+                    env = future_to_env.get(future) or {}
+                    env_key = _env_key_from_listing(env)
+                    started_at = env_started_at.get(env_key, time.time())
+                    try:
+                        detail = future.result()
+                    except Exception as exc:
+                        add_event('code_env_detail_error', f"code env detail failed: {exc}", 'warn', env_key, (time.time() - started_at) * 1000.0)
+                        continue
+                    if detail:
+                        env_details.append(detail)
+                        row = detail.get('row')
+                        if isinstance(row, dict):
+                            append_partial_row(row)
+                        add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - started_at) * 1000.0)
+                    else:
+                        add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - started_at) * 1000.0)
+            except FuturesTimeoutError:
+                timed_out_futures = True
+                add_event('load_code_env_details', 'timeout while waiting for env detail futures', 'warn')
+
+            if timed_out_futures or time.time() > deadline_ts:
+                for future, env in future_to_env.items():
+                    if future.done():
+                        continue
+                    future.cancel()
+                    env_key = _env_key_from_listing(env)
+                    started_at = env_started_at.get(env_key, time.time())
+                    add_event('code_env_detail_timeout', 'cancelled env detail future on deadline', 'warn', env_key, (time.time() - started_at) * 1000.0)
+    return env_details
+
+
 @app.route('/api/code-envs')
 def api_code_envs():
     client = dataiku.api_client()
@@ -4468,8 +4634,6 @@ def api_code_envs():
         code_envs = []
         python_counts: Dict[str, int] = {}
         r_counts: Dict[str, int] = {}
-        size_by_env: Dict[str, int] = {}
-        project_info: Dict[str, Dict[str, str]] = {}
         steps: List[Dict[str, Any]] = []
         op_stats: Dict[str, Dict[str, Any]] = {}
         events: List[Dict[str, Any]] = []
@@ -4477,14 +4641,17 @@ def api_code_envs():
         timeout_at_step: Optional[str] = None
         deadline_pressure_steps: set = set()
         timeout_event_steps: set = set()
-        progress_run_id = _start_progress('code_envs')
-        selected_project_count = 0
-        usage_completed_projects: set = set()
-        env_detail_total = 0
-        env_detail_done = 0
-        catalog_done = False
-        size_map_done = False
         timed_out_or_error = False
+        progress_run_id = _start_progress('code_envs')
+        catalog: Optional[Dict[str, Any]] = None
+        progress_meta: Dict[str, Any] = {
+            'selectedProjects': 0,
+            'projectUsageDone': 0,
+            'envDetailsTotal': 0,
+            'envDetailsDone': 0,
+            'catalogDone': False,
+            'sizeMapDone': False,
+        }
 
         def elapsed_ms() -> float:
             return (time.time() - started) * 1000.0
@@ -4498,13 +4665,13 @@ def api_code_envs():
         def _compute_progress_pct(force_done: bool = False) -> int:
             if force_done:
                 return 100
-            usage_total = max(0, int(selected_project_count))
-            usage_ratio = min(1.0, float(len(usage_completed_projects)) / float(usage_total)) if usage_total > 0 else 1.0
-            detail_total = max(0, int(env_detail_total))
-            detail_ratio = min(1.0, float(env_detail_done) / float(detail_total)) if detail_total > 0 else 0.0
+            usage_total = max(0, int(progress_meta['selectedProjects']))
+            usage_ratio = min(1.0, float(progress_meta['projectUsageDone']) / float(usage_total)) if usage_total > 0 else 1.0
+            detail_total = max(0, int(progress_meta['envDetailsTotal']))
+            detail_ratio = min(1.0, float(progress_meta['envDetailsDone']) / float(detail_total)) if detail_total > 0 else 0.0
             pct = 0.0
-            pct += 10.0 if catalog_done else 0.0
-            pct += 15.0 if size_map_done else 0.0
+            pct += 10.0 if progress_meta['catalogDone'] else 0.0
+            pct += 15.0 if progress_meta['sizeMapDone'] else 0.0
             pct += 50.0 * usage_ratio
             pct += 25.0 * detail_ratio
             if timed_out_or_error:
@@ -4512,13 +4679,13 @@ def api_code_envs():
             return int(max(0.0, min(99.0, pct)))
 
         def _infer_phase() -> str:
-            if not catalog_done:
+            if not progress_meta['catalogDone']:
                 return 'catalog'
-            if not size_map_done:
+            if not progress_meta['sizeMapDone']:
                 return 'size_map'
-            if selected_project_count > 0 and len(usage_completed_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectUsageDone'] < progress_meta['selectedProjects']:
                 return 'usage_scan'
-            if env_detail_total > 0 and env_detail_done < env_detail_total:
+            if progress_meta['envDetailsTotal'] > 0 and progress_meta['envDetailsDone'] < progress_meta['envDetailsTotal']:
                 return 'env_details'
             return 'finalizing'
 
@@ -4529,10 +4696,10 @@ def api_code_envs():
                 {
                     'progressPct': _compute_progress_pct(force_done),
                     'phase': _infer_phase() if not force_done else 'done',
-                    'selectedProjects': int(selected_project_count),
-                    'projectUsageDone': int(len(usage_completed_projects)),
-                    'envDetailsTotal': int(env_detail_total),
-                    'envDetailsDone': int(env_detail_done),
+                    'selectedProjects': int(progress_meta['selectedProjects']),
+                    'projectUsageDone': int(progress_meta['projectUsageDone']),
+                    'envDetailsTotal': int(progress_meta['envDetailsTotal']),
+                    'envDetailsDone': int(progress_meta['envDetailsDone']),
                     'timedOut': bool(timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
@@ -4547,7 +4714,6 @@ def api_code_envs():
             project_key: Optional[str] = None,
             event_elapsed_ms: Optional[float] = None,
         ) -> None:
-            nonlocal env_detail_done
             event: Dict[str, Any] = {
                 'tMs': round(elapsed_ms(), 2),
                 'level': level,
@@ -4561,9 +4727,9 @@ def api_code_envs():
             events.append(event)
             _append_progress_event('code_envs', progress_run_id, event)
             if step == 'project_env_refs_resolved' and project_key:
-                usage_completed_projects.add(project_key)
+                progress_meta['projectUsageDone'] += 1
             if step in ('code_env_detail_ok', 'code_env_detail_error', 'code_env_detail_timeout'):
-                env_detail_done += 1
+                progress_meta['envDetailsDone'] += 1
             _update_progress_summary(False)
 
         def progress_event(**kwargs) -> None:
@@ -4610,120 +4776,73 @@ def api_code_envs():
             entry['calls'] = int(entry.get('calls') or 0) + int(max(0, calls))
             entry['elapsedMs'] = float(entry.get('elapsedMs') or 0.0) + max(0.0, float(elapsed_ms_value))
 
-        def env_key_from_listing(env: Dict[str, Any]) -> str:
-            env_name = env.get('envName') or env.get('name') or env.get('id')
-            env_lang_raw = env.get('envLang') or env.get('language') or env.get('type') or 'PYTHON'
-            language = _normalize_language(env_lang_raw)
-            return f"{language}:{env_name}" if env_name else 'unknown'
-
         previous_recorder = getattr(_THREAD_LOCAL, 'bench_record_op', None)
         setattr(_THREAD_LOCAL, 'bench_record_op', record_op)
         add_event('code_envs_start', f"code env analysis started timeoutMs={timeout_ms} limit={limit_label}")
 
         try:
-            if deadline_reached('load_project_catalog'):
-                project_catalog = []
-            else:
-                step_started = time.time()
-                add_event('load_project_catalog', 'loading project catalog')
-                project_catalog = _list_projects_catalog(client)
-                record_step('load_project_catalog', step_started, calls=1)
-            catalog_done = True
+            # Phase 1: catalog
+            step_started = time.time()
+            catalog = _task_ce_catalog(client, add_event, limit_label, project_limit)
+            record_step('load_project_catalog', step_started, calls=catalog['selected_count'])
+            progress_meta['selectedProjects'] = catalog['selected_count']
+            progress_meta['catalogDone'] = True
             _update_progress_summary(False)
-
-            selected_catalog: List[Dict[str, str]] = []
-            if not deadline_reached('select_projects_by_key'):
-                step_started = time.time()
-                add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
-                selected_catalog = project_catalog[:] if project_limit <= 0 else project_catalog[:project_limit]
-                record_step('select_projects_by_key', step_started, calls=len(selected_catalog))
-                selected_project_count = len(selected_catalog)
-                _update_progress_summary(False)
-
-            for project in selected_catalog:
-                key = str(project.get('key') or '').strip()
-                if not key:
-                    continue
-                project_info[key] = {
-                    'name': str(project.get('name') or key),
-                    'owner': str(project.get('owner') or 'Unknown'),
-                }
             app.logger.info(
                 "[code-envs] projectInfo selected=%s total=%s limit=%s elapsed=%.2fs",
-                len(project_info),
-                len(project_catalog),
+                catalog['selected_count'],
+                len(catalog['project_catalog']),
                 limit_label,
                 time.time() - started,
             )
-            add_event(
-                'project_scope_ready',
-                f"project scope ready selected={len(project_info)} total={len(project_catalog)} limit={limit_label}",
-            )
 
-            # Launch footprint computation in background so project scan can run concurrently.
-            # The project scan does not depend on size_by_env; it only needs it for sizeBytes
-            # decoration which happens later in _load_code_env_full_details.
+            # Phase 2: size_map in background; usage_scan on the main path
+            footprint_pool = ThreadPoolExecutor(max_workers=1)
             footprint_future = None
             footprint_step_started = time.time()
             if not deadline_reached('load_code_env_size_map'):
                 add_event('load_code_env_size_map', 'loading global code env size map')
-
-                def _bg_compute_global_footprint():
-                    return _compute_footprint_payload(_thread_client(), 'global', None)
-
-                footprint_pool = ThreadPoolExecutor(max_workers=1)
-                footprint_future = footprint_pool.submit(_bg_compute_global_footprint)
+                footprint_future = footprint_pool.submit(_task_ce_size_map, add_event)
 
             usage_data: Dict[str, Any] = {}
-            if project_info and not deadline_reached('collect_project_code_env_usage'):
+            if catalog['project_info'] and not deadline_reached('collect_project_code_env_usage'):
                 step_started = time.time()
-                add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
-                usage_data = _get_shared_project_code_env_usage(
+                usage_data = _task_ce_usage_scan(
                     client,
-                    project_info,
-                    size_by_env,
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
+                    catalog['project_info'],
+                    deadline,
+                    add_event,
+                    progress_event,
                 )
-                record_step('collect_project_code_env_usage', step_started, calls=len(project_info))
+                record_step('collect_project_code_env_usage', step_started, calls=catalog['selected_count'])
 
-            # Wait for footprint and populate size_by_env before the env details step.
+            # Collect size_map result; do not block past remaining deadline
+            size_by_env: Dict[str, int] = {}
             if footprint_future is not None:
                 try:
-                    global_footprint = footprint_future.result(timeout=remaining_seconds())
-                    if isinstance(global_footprint, dict):
-                        code_envs_section = global_footprint.get('codeEnvs')
-                        if isinstance(code_envs_section, dict):
-                            code_env_items = code_envs_section.get('items')
-                            if isinstance(code_env_items, list):
-                                for item in code_env_items:
-                                    if not isinstance(item, dict):
-                                        continue
-                                    item_name = item.get('name')
-                                    item_lang = str(item.get('language') or '').strip().lower()
-                                    if not item_name or not item_lang:
-                                        continue
-                                    size_key = f"{item_lang}:{item_name}"
-                                    size_by_env[size_key] = _coerce_int(item.get('size'), 0)
+                    size_by_env = footprint_future.result(timeout=remaining_seconds())
+                    record_step('load_code_env_size_map', footprint_step_started, calls=1)
+                    progress_meta['sizeMapDone'] = True
                 except Exception:
-                    pass
+                    add_event('load_code_env_size_map', 'size map unavailable; continuing without sizes', 'warn')
                 finally:
                     footprint_pool.shutdown(wait=False)
-                record_step('load_code_env_size_map', footprint_step_started, calls=1)
-                size_map_done = True
+                    _update_progress_summary(False)
+            else:
+                footprint_pool.shutdown(wait=False)
+                progress_meta['sizeMapDone'] = True
                 _update_progress_summary(False)
             app.logger.info("[code-envs] sizeMap=%s elapsed=%.2fs", len(size_by_env), time.time() - started)
 
+            # Phase 3: list + filter envs, then fetch details
             envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {}
-            selected_env_keys = set()
+            selected_env_keys: set = set()
             for env_keys in envs_by_project.values():
                 selected_env_keys.update(env_keys or set())
             app.logger.info(
                 "[code-envs] selectedEnvKeys=%s projects=%s elapsed=%.2fs",
                 len(selected_env_keys),
-                len(project_info),
+                len(catalog['project_info']),
                 time.time() - started,
             )
             add_event('selected_env_keys', f"selected env keys count={len(selected_env_keys)}")
@@ -4735,7 +4854,6 @@ def api_code_envs():
                 envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
                 record_step('list_code_envs', step_started, calls=1)
 
-            # Filter out plugin-managed and DSS-internal code envs by default
             _SKIP_DEPLOYMENT_MODES = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
             total_env_count = len(envs)
             skipped_env_count = 0
@@ -4752,85 +4870,22 @@ def api_code_envs():
             app.logger.info("[code-envs] listed=%s", len(envs))
 
             env_details: List[Dict[str, Any]] = []
-            max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), len(envs))
-            env_detail_total = len(envs)
-            env_detail_done = 0
-            _update_progress_summary(False)
             if envs and not deadline_reached('load_code_env_details'):
                 step_started = time.time()
-                add_event('load_code_env_details', f"loading env details envs={len(envs)} workers={max_workers}")
-                if max_workers <= 1:
-                    processed = 0
-                    for env in envs:
-                        if deadline_reached('load_code_env_details'):
-                            break
-                        env_key = env_key_from_listing(env)
-                        env_started = time.time()
-                        add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-                        detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True)
-                        if detail:
-                            env_details.append(detail)
-                            row = detail.get('row')
-                            if isinstance(row, dict):
-                                _append_progress_partial_row('code_envs', progress_run_id, row)
-                            add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - env_started) * 1000.0)
-                        else:
-                            add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - env_started) * 1000.0)
-                        processed += 1
-                    record_step('load_code_env_details', step_started, calls=processed)
-                else:
-                    future_to_env: Dict[Any, Dict[str, Any]] = {}
-                    env_started_at: Dict[str, float] = {}
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        for env in envs:
-                            if deadline_reached('load_code_env_details'):
-                                break
-                            env_key = env_key_from_listing(env)
-                            add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-                            env_started_at[env_key] = time.time()
-                            future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True)
-                            future_to_env[future] = env
+                env_details = _task_ce_env_details(
+                    client,
+                    envs,
+                    catalog['project_info'],
+                    size_by_env,
+                    progress_meta,
+                    deadline,
+                    add_event,
+                    lambda row: _append_progress_partial_row('code_envs', progress_run_id, row),
+                )
+                record_step('load_code_env_details', step_started, calls=progress_meta['envDetailsDone'])
+            app.logger.info("[code-envs] details=%s elapsed=%.2fs", len(env_details), time.time() - started)
 
-                        processed = 0
-                        timed_out_futures = False
-                        try:
-                            for future in as_completed(list(future_to_env.keys()), timeout=remaining_seconds()):
-                                if deadline_reached('load_code_env_details'):
-                                    timed_out_futures = True
-                                    break
-                                env = future_to_env.get(future) or {}
-                                env_key = env_key_from_listing(env)
-                                started_at = env_started_at.get(env_key, started)
-                                try:
-                                    detail = future.result()
-                                except Exception as exc:
-                                    add_event('code_env_detail_error', f"code env detail failed: {exc}", 'warn', env_key, (time.time() - started_at) * 1000.0)
-                                    processed += 1
-                                    continue
-                                if detail:
-                                    env_details.append(detail)
-                                    row = detail.get('row')
-                                    if isinstance(row, dict):
-                                        _append_progress_partial_row('code_envs', progress_run_id, row)
-                                    add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - started_at) * 1000.0)
-                                else:
-                                    add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - started_at) * 1000.0)
-                                processed += 1
-                        except FuturesTimeoutError:
-                            timed_out_futures = True
-                            add_event('load_code_env_details', 'timeout while waiting for env detail futures', 'warn')
-
-                        if timed_out_futures or deadline_reached('load_code_env_details'):
-                            for future, env in future_to_env.items():
-                                if future.done():
-                                    continue
-                                future.cancel()
-                                env_key = env_key_from_listing(env)
-                                started_at = env_started_at.get(env_key, started)
-                                add_event('code_env_detail_timeout', 'cancelled env detail future on deadline', 'warn', env_key, (time.time() - started_at) * 1000.0)
-                        record_step('load_code_env_details', step_started, calls=processed)
-            app.logger.info("[code-envs] details=%s workers=%s elapsed=%.2fs", len(env_details), max_workers, time.time() - started)
-
+            # Phase 4: aggregate rows
             if env_details and not deadline_reached('aggregate_code_env_rows'):
                 step_started = time.time()
                 add_event('aggregate_code_env_rows', f"aggregating rows count={len(env_details)}")
@@ -4867,16 +4922,17 @@ def api_code_envs():
                     'qps': round(qps, 2),
                 })
 
+            selected_count = len(catalog['project_info']) if catalog is not None else 0
             benchmark_summary = {
                 'enabled': True,
-                'projectLimit': len(project_info),
+                'projectLimit': selected_count,
                 'projectSelection': project_selection,
                 'timeoutMs': timeout_ms,
                 'timedOut': bool(timed_out),
                 'timeoutAtStep': timeout_at_step,
                 'totalElapsedMs': round(elapsed_ms(), 2),
                 'remainingMs': remaining_ms(),
-                'selectedProjectCount': len(project_info),
+                'selectedProjectCount': selected_count,
                 'selectedEnvKeyCount': len(selected_env_keys),
                 'steps': steps,
                 'apiCalls': api_calls,
@@ -4908,7 +4964,7 @@ def api_code_envs():
                 status='error',
                 summary={
                     'enabled': True,
-                    'projectLimit': len(project_info),
+                    'projectLimit': progress_meta['selectedProjects'],
                     'projectSelection': project_selection,
                     'timeoutMs': timeout_ms,
                     'timedOut': bool(timed_out),
@@ -5143,6 +5199,217 @@ def api_code_envs_compare():
     return jsonify(data)
 
 
+# ── Scan pipeline helpers: /api/project-footprint ────────────────────────────
+
+def _task_pf_catalog(
+    client: Any,
+    add_event: Callable,
+    limit_label: str,
+    project_limit: int,
+) -> Dict[str, Any]:
+    add_event('load_project_catalog', 'loading project catalog')
+    catalog = _list_projects_catalog(client)
+    total_project_count = len(catalog)
+    selected_catalog: List[Dict[str, str]] = catalog[:] if project_limit <= 0 else catalog[:project_limit]
+    add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
+    project_info: Dict[str, Dict[str, str]] = {
+        str(project.get('key') or ''): {
+            'name': str(project.get('name') or project.get('key') or ''),
+            'owner': str(project.get('owner') or 'Unknown'),
+        }
+        for project in selected_catalog
+        if str(project.get('key') or '').strip()
+    }
+    project_keys = list(project_info.keys())
+    return {
+        'catalog': catalog,
+        'total_project_count': total_project_count,
+        'project_info': project_info,
+        'project_keys': project_keys,
+        'selected_count': len(project_keys),
+    }
+
+
+def _task_pf_footprint(
+    project_keys: List[str],
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    append_partial_row: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    """Runs in a background thread; acquires its own client via _thread_client().
+    Emits partial rows immediately so the frontend can render before usage scan finishes."""
+    if not project_keys:
+        return {}
+    client = _thread_client()
+    add_event('load_project_footprint_map', f"loading project footprint map for {len(project_keys)} projects")
+    project_footprints = _build_project_footprint_map_with_deadline(
+        client,
+        project_keys,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+    for pk in project_keys:
+        meta = project_info.get(pk) or {}
+        pf = project_footprints.get(pk)
+        mdb = _collect_bucket_size_by_name(pf, lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n))
+        mfb = _collect_bucket_size_by_name(pf, lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n))
+        bb = _collect_bucket_size_by_name(pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
+        bc = _collect_bucket_file_count_by_name(pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
+        total = _footprint_size(pf)
+        if total <= 0:
+            total = mdb + mfb + bb
+        append_partial_row({
+            'projectKey': pk,
+            'name': str(meta.get('name') or pk).replace('_', ' '),
+            'owner': meta.get('owner') or 'Unknown',
+            'codeEnvCount': 0,
+            'codeStudioCount': 0,
+            'codeEnvBytes': 0,
+            'managedDatasetsBytes': mdb,
+            'managedFoldersBytes': mfb,
+            'bundleBytes': bb,
+            'bundleCount': bc,
+            'totalBytes': total,
+            'totalGB': total / float(1024 ** 3),
+            'codeEnvHealth': _code_env_health(0),
+        })
+    return project_footprints
+
+
+def _task_pf_usage_scan(
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    """Runs in a background thread; acquires its own client via _thread_client()."""
+    if not project_info:
+        return {}
+    client = _thread_client()
+    add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_info)} projects")
+    return _get_shared_project_code_env_usage(
+        client,
+        project_info,
+        {},
+        include_project_object_scan=True,
+        include_code_env_usage_api=False,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+
+
+def _task_pf_aggregate(
+    project_keys: List[str],
+    project_info: Dict[str, Dict[str, str]],
+    project_footprints: Dict[str, Any],
+    usage_data: Dict[str, Any],
+    deadline_ts: float,
+    add_event: Callable,
+) -> Dict[str, Any]:
+    envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {k: set() for k in project_info.keys()}
+    usage_breakdown_by_project = usage_data.get('usageBreakdownByProject') or {k: {} for k in project_info.keys()}
+    usage_details_by_project = usage_data.get('usageDetailsByProject') or {k: [] for k in project_info.keys()}
+    code_studio_count_by_project = usage_data.get('codeStudioCountByProject') or {}
+
+    project_rows: List[Dict[str, Any]] = []
+    project_risks: List[float] = []
+    total_gb_values: List[float] = []
+
+    add_event('aggregate_project_rows', f"aggregating project rows for {len(project_keys)} projects")
+    raw_rows: List[Dict[str, Any]] = []
+    for project_key in project_keys:
+        if time.time() > deadline_ts:
+            add_event('aggregate_project_rows', 'deadline reached at step=aggregate_project_rows', 'warn')
+            break
+        project_started = time.time()
+        add_event('project_aggregate_start', 'aggregating project row', 'info', project_key)
+        meta = project_info.get(project_key) or {}
+        project_footprint = project_footprints.get(project_key)
+
+        managed_datasets_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n),
+        )
+        managed_folders_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n),
+        )
+        project_env_keys = envs_by_project.get(project_key) or set()
+        code_env_count = len(project_env_keys)
+        bundle_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
+        )
+        bundle_count = _collect_bucket_file_count_by_name(
+            project_footprint,
+            lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
+        )
+        total_bytes = _footprint_size(project_footprint)
+        if total_bytes <= 0:
+            total_bytes = managed_datasets_bytes + managed_folders_bytes + bundle_bytes
+        total_gb = total_bytes / float(1024 ** 3)
+        total_gb_values.append(total_gb)
+
+        raw_row = {
+            'projectKey': project_key,
+            'name': str(meta.get('name') or project_key).replace('_', ' '),
+            'owner': meta.get('owner') or 'Unknown',
+            'codeEnvCount': code_env_count,
+            'codeStudioCount': code_studio_count_by_project.get(project_key, 0),
+            'codeEnvBytes': 0,
+            'managedDatasetsBytes': managed_datasets_bytes,
+            'managedFoldersBytes': managed_folders_bytes,
+            'bundleBytes': bundle_bytes,
+            'bundleCount': bundle_count,
+            'totalBytes': total_bytes,
+            'totalGB': total_gb,
+            'codeEnvHealth': _code_env_health(code_env_count),
+            'usageBreakdown': usage_breakdown_by_project.get(project_key) or {},
+            'usageDetails': usage_details_by_project.get(project_key) or [],
+            'codeEnvKeys': sorted(list(project_env_keys)),
+        }
+        raw_rows.append(raw_row)
+        add_event(
+            'project_aggregate_done',
+            (
+                f"aggregate complete codeEnvCount={code_env_count} "
+                f"total={_format_size_human(total_bytes)} bundles={bundle_count}"
+            ),
+            'info',
+            project_key,
+            event_elapsed_ms=(time.time() - project_started) * 1000.0,
+        )
+
+    avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
+    add_event('compute_health_scores', f"computing health scores for {len(raw_rows)} projects")
+    for row in raw_rows:
+        if time.time() > deadline_ts:
+            break
+        total_gb = _coerce_float(row.get('totalGB'), 0.0)
+        size_index = _project_size_index(total_gb, avg_project_gb)
+        size_health = _project_size_health(total_gb, size_index)
+        code_env_count = _coerce_int(row.get('codeEnvCount'), 0)
+        env_risk = _code_env_risk(code_env_count)
+        project_risk = (0.7 * env_risk) + (0.3 * size_index)
+        project_risks.append(project_risk)
+        row.update({
+            'instanceAvgProjectGB': round(avg_project_gb, 4),
+            'projectSizeIndex': round(size_index, 4),
+            'projectSizeHealth': size_health,
+            'codeEnvRisk': round(env_risk, 4),
+            'projectRisk': round(project_risk, 4),
+        })
+        project_rows.append(row)
+
+    return {
+        'project_rows': project_rows,
+        'project_risks': project_risks,
+        'total_gb_values': total_gb_values,
+    }
+
+
 @app.route('/api/project-footprint')
 def api_project_footprint():
     client = dataiku.api_client()
@@ -5161,13 +5428,16 @@ def api_project_footprint():
         timeout_at_step: Optional[str] = None
         deadline_pressure_steps: set = set()
         timeout_event_steps: set = set()
-        progress_run_id = _start_progress('project_footprint')
-        selected_project_count = 0
-        footprint_done_projects: set = set()
-        usage_done_projects: set = set()
-        aggregate_done_projects: set = set()
-        catalog_done = False
         timed_out_or_error = False
+        progress_run_id = _start_progress('project_footprint')
+        catalog_result: Optional[Dict[str, Any]] = None
+        progress_meta: Dict[str, Any] = {
+            'selectedProjects': 0,
+            'projectFootprintDone': 0,
+            'projectUsageDone': 0,
+            'projectAggregateDone': 0,
+            'catalogDone': False,
+        }
 
         def elapsed_ms() -> float:
             return (time.time() - started) * 1000.0
@@ -5178,14 +5448,14 @@ def api_project_footprint():
         def _compute_progress_pct(force_done: bool = False) -> int:
             if force_done:
                 return 100
-            footprint_total = max(0, int(selected_project_count))
-            usage_total = max(0, int(selected_project_count))
-            aggregate_total = max(0, int(selected_project_count))
-            footprint_ratio = min(1.0, float(len(footprint_done_projects)) / float(footprint_total)) if footprint_total > 0 else 0.0
-            usage_ratio = min(1.0, float(len(usage_done_projects)) / float(usage_total)) if usage_total > 0 else 0.0
-            aggregate_ratio = min(1.0, float(len(aggregate_done_projects)) / float(aggregate_total)) if aggregate_total > 0 else 0.0
+            footprint_total = max(0, int(progress_meta['selectedProjects']))
+            usage_total = max(0, int(progress_meta['selectedProjects']))
+            aggregate_total = max(0, int(progress_meta['selectedProjects']))
+            footprint_ratio = min(1.0, float(progress_meta['projectFootprintDone']) / float(footprint_total)) if footprint_total > 0 else 0.0
+            usage_ratio = min(1.0, float(progress_meta['projectUsageDone']) / float(usage_total)) if usage_total > 0 else 0.0
+            aggregate_ratio = min(1.0, float(progress_meta['projectAggregateDone']) / float(aggregate_total)) if aggregate_total > 0 else 0.0
             pct = 0.0
-            pct += 10.0 if catalog_done else 0.0
+            pct += 10.0 if progress_meta['catalogDone'] else 0.0
             pct += 50.0 * footprint_ratio
             pct += 25.0 * usage_ratio
             pct += 15.0 * aggregate_ratio
@@ -5194,13 +5464,13 @@ def api_project_footprint():
             return int(max(0.0, min(99.0, pct)))
 
         def _infer_phase() -> str:
-            if not catalog_done:
+            if not progress_meta['catalogDone']:
                 return 'catalog'
-            if selected_project_count > 0 and len(footprint_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectFootprintDone'] < progress_meta['selectedProjects']:
                 return 'footprint_fetch'
-            if selected_project_count > 0 and len(usage_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectUsageDone'] < progress_meta['selectedProjects']:
                 return 'usage_scan'
-            if selected_project_count > 0 and len(aggregate_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectAggregateDone'] < progress_meta['selectedProjects']:
                 return 'aggregate'
             return 'finalizing'
 
@@ -5211,10 +5481,10 @@ def api_project_footprint():
                 {
                     'progressPct': _compute_progress_pct(force_done),
                     'phase': _infer_phase() if not force_done else 'done',
-                    'selectedProjects': int(selected_project_count),
-                    'projectFootprintDone': int(len(footprint_done_projects)),
-                    'projectUsageDone': int(len(usage_done_projects)),
-                    'projectAggregateDone': int(len(aggregate_done_projects)),
+                    'selectedProjects': int(progress_meta['selectedProjects']),
+                    'projectFootprintDone': int(progress_meta['projectFootprintDone']),
+                    'projectUsageDone': int(progress_meta['projectUsageDone']),
+                    'projectAggregateDone': int(progress_meta['projectAggregateDone']),
                     'timedOut': bool(benchmark_timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
@@ -5242,11 +5512,11 @@ def api_project_footprint():
             benchmark_events.append(event)
             _append_progress_event('project_footprint', progress_run_id, event)
             if step in ('project_footprint_fetch_ok', 'project_footprint_fetch_error', 'project_footprint_fetch_timeout') and project_key:
-                footprint_done_projects.add(project_key)
+                progress_meta['projectFootprintDone'] += 1
             if step == 'project_env_refs_resolved' and project_key:
-                usage_done_projects.add(project_key)
+                progress_meta['projectUsageDone'] += 1
             if step == 'project_aggregate_done' and project_key:
-                aggregate_done_projects.add(project_key)
+                progress_meta['projectAggregateDone'] += 1
             _update_progress_summary(False)
 
         def progress_event(**kwargs) -> None:
@@ -5296,202 +5566,66 @@ def api_project_footprint():
         previous_recorder = getattr(_THREAD_LOCAL, 'bench_record_op', None)
         setattr(_THREAD_LOCAL, 'bench_record_op', record_op)
 
-        total_project_count = 0
-        selected_catalog: List[Dict[str, str]] = []
-        project_rows: List[Dict[str, Any]] = []
-        project_risks: List[float] = []
-        total_gb_values: List[float] = []
-
         try:
-            project_info: Dict[str, Dict[str, str]] = {}
-            project_keys: List[str] = []
-            project_footprints: Dict[str, Any] = {}
-            usage_data: Dict[str, Any] = {}
-
+            # Phase 1: catalog (main thread)
             if not deadline_reached('load_project_catalog'):
                 step_start = time.time()
-                add_event('load_project_catalog', 'loading project catalog')
-                catalog = _list_projects_catalog(client)
-                total_project_count = len(catalog)
-                record_step('load_project_catalog', step_start, calls=1)
+                catalog_result = _task_pf_catalog(client, add_event, limit_label, project_limit)
+                record_step('load_project_catalog', step_start, calls=catalog_result['selected_count'])
             else:
-                catalog = []
-            catalog_done = True
+                catalog_result = {'catalog': [], 'total_project_count': 0, 'project_info': {}, 'project_keys': [], 'selected_count': 0}
+            progress_meta['selectedProjects'] = catalog_result['selected_count']
+            progress_meta['catalogDone'] = True
             _update_progress_summary(False)
 
-            if not deadline_reached('select_projects_by_key'):
-                step_start = time.time()
-                add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
-                selected_catalog = catalog[:] if project_limit <= 0 else catalog[:project_limit]
-                record_step('select_projects_by_key', step_start, calls=len(selected_catalog))
+            project_keys: List[str] = catalog_result['project_keys']
+            project_info: Dict[str, Dict[str, str]] = catalog_result['project_info']
+            total_project_count: int = catalog_result['total_project_count']
 
-            project_info = {
-                str(project.get('key') or ''): {
-                    'name': str(project.get('name') or project.get('key') or ''),
-                    'owner': str(project.get('owner') or 'Unknown'),
-                }
-                for project in selected_catalog
-                if str(project.get('key') or '').strip()
-            }
-            project_keys = list(project_info.keys())
-            selected_project_count = len(project_keys)
-            _update_progress_summary(False)
-
+            # Phase 2: footprint + usage in parallel (off-thread)
+            project_footprints: Dict[str, Any] = {}
+            usage_data: Dict[str, Any] = {}
             if project_keys and not deadline_reached('load_project_footprint_map'):
-                step_start = time.time()
-                add_event('load_project_footprint_map', f"loading project footprint map for {len(project_keys)} projects")
-                project_footprints = _build_project_footprint_map_with_deadline(
-                    client,
-                    project_keys,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
-                )
-                record_step('load_project_footprint_map', step_start, calls=len(project_keys))
+                step_start_fp = time.time()
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    f_footprint = pool.submit(
+                        _task_pf_footprint,
+                        project_keys,
+                        project_info,
+                        deadline,
+                        add_event,
+                        lambda row: _append_progress_partial_row('project_footprint', progress_run_id, row),
+                        progress_event,
+                    )
+                    f_usage = pool.submit(
+                        _task_pf_usage_scan,
+                        project_info,
+                        deadline,
+                        add_event,
+                        progress_event,
+                    )
+                    project_footprints = f_footprint.result()
+                    usage_data = f_usage.result()
+                record_step('load_project_footprint_map', step_start_fp, calls=len(project_keys))
+                record_step('collect_project_code_env_usage', step_start_fp, calls=len(project_keys))
 
-            # Emit partial rows immediately after footprint fetch so the frontend
-            # can render the table (~10s) while the usage scan runs in the background.
-            # These rows have codeEnvCount=0; the final response replaces them.
-            if project_keys and project_footprints:
-                for _pk in project_keys:
-                    _meta = project_info.get(_pk) or {}
-                    _pf = project_footprints.get(_pk)
-                    _mdb = _collect_bucket_size_by_name(_pf, lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n))
-                    _mfb = _collect_bucket_size_by_name(_pf, lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n))
-                    _bb = _collect_bucket_size_by_name(_pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
-                    _bc = _collect_bucket_file_count_by_name(_pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
-                    _total = _footprint_size(_pf)
-                    if _total <= 0:
-                        _total = _mdb + _mfb + _bb
-                    _append_progress_partial_row('project_footprint', progress_run_id, {
-                        'projectKey': _pk,
-                        'name': str(_meta.get('name') or _pk).replace('_', ' '),
-                        'owner': _meta.get('owner') or 'Unknown',
-                        'codeEnvCount': 0,
-                        'codeStudioCount': 0,
-                        'codeEnvBytes': 0,
-                        'managedDatasetsBytes': _mdb,
-                        'managedFoldersBytes': _mfb,
-                        'bundleBytes': _bb,
-                        'bundleCount': _bc,
-                        'totalBytes': _total,
-                        'totalGB': _total / float(1024 ** 3),
-                        'codeEnvHealth': _code_env_health(0),
-                    })
-
-            if project_keys and not deadline_reached('collect_project_code_env_usage'):
-                step_start = time.time()
-                add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_keys)} projects")
-                usage_data = _get_shared_project_code_env_usage(
-                    client,
-                    project_info,
-                    {},
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
-                )
-                record_step('collect_project_code_env_usage', step_start, calls=len(project_keys))
-
-            envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {k: set() for k in project_info.keys()}
-            usage_breakdown_by_project: Dict[str, Dict[str, int]] = usage_data.get('usageBreakdownByProject') or {k: {} for k in project_info.keys()}
-            usage_details_by_project: Dict[str, List[Dict[str, Any]]] = usage_data.get('usageDetailsByProject') or {k: [] for k in project_info.keys()}
-            code_studio_count_by_project: Dict[str, int] = usage_data.get('codeStudioCountByProject') or {}
-
+            # Phase 3: aggregate (main thread)
+            agg_result: Dict[str, Any] = {'project_rows': [], 'project_risks': [], 'total_gb_values': []}
             if project_keys and not deadline_reached('aggregate_project_rows'):
                 step_start = time.time()
-                add_event('aggregate_project_rows', f"aggregating project rows for {len(project_keys)} projects")
-                processed = 0
-                raw_rows: List[Dict[str, Any]] = []
-                for project_key in project_keys:
-                    if deadline_reached('aggregate_project_rows'):
-                        break
-                    project_started = time.time()
-                    add_event('project_aggregate_start', 'aggregating project row', 'info', project_key)
-                    meta = project_info.get(project_key) or {}
-                    project_footprint = project_footprints.get(project_key)
+                agg_result = _task_pf_aggregate(
+                    project_keys,
+                    project_info,
+                    project_footprints,
+                    usage_data,
+                    deadline,
+                    add_event,
+                )
+                record_step('aggregate_project_rows', step_start, calls=len(agg_result['project_rows']))
 
-                    managed_datasets_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n),
-                    )
-                    managed_folders_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n),
-                    )
-
-                    project_env_keys = envs_by_project.get(project_key) or set()
-                    code_env_count = len(project_env_keys)
-                    bundle_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
-                    )
-                    bundle_count = _collect_bucket_file_count_by_name(
-                        project_footprint,
-                        lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
-                    )
-
-                    total_bytes = _footprint_size(project_footprint)
-                    if total_bytes <= 0:
-                        total_bytes = managed_datasets_bytes + managed_folders_bytes + bundle_bytes
-                    total_gb = total_bytes / float(1024 ** 3)
-                    total_gb_values.append(total_gb)
-
-                    raw_row = {
-                        'projectKey': project_key,
-                        'name': str(meta.get('name') or project_key).replace('_', ' '),
-                        'owner': meta.get('owner') or 'Unknown',
-                        'codeEnvCount': code_env_count,
-                        'codeStudioCount': code_studio_count_by_project.get(project_key, 0),
-                        'codeEnvBytes': 0,
-                        'managedDatasetsBytes': managed_datasets_bytes,
-                        'managedFoldersBytes': managed_folders_bytes,
-                        'bundleBytes': bundle_bytes,
-                        'bundleCount': bundle_count,
-                        'totalBytes': total_bytes,
-                        'totalGB': total_gb,
-                        'codeEnvHealth': _code_env_health(code_env_count),
-                        'usageBreakdown': usage_breakdown_by_project.get(project_key) or {},
-                        'usageDetails': usage_details_by_project.get(project_key) or [],
-                        'codeEnvKeys': sorted(list(project_env_keys)),
-                    }
-                    raw_rows.append(raw_row)
-                    processed += 1
-                    add_event(
-                        'project_aggregate_done',
-                        (
-                            f"aggregate complete codeEnvCount={code_env_count} "
-                            f"total={_format_size_human(total_bytes)} bundles={bundle_count}"
-                        ),
-                        'info',
-                        project_key,
-                        event_elapsed_ms=(time.time() - project_started) * 1000.0,
-                    )
-
-                record_step('aggregate_project_rows', step_start, calls=processed)
-
-                avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
-                if not deadline_reached('compute_health_scores'):
-                    step_start = time.time()
-                    add_event('compute_health_scores', f"computing health scores for {len(raw_rows)} projects")
-                    for row in raw_rows:
-                        if deadline_reached('compute_health_scores'):
-                            break
-                        total_gb = _coerce_float(row.get('totalGB'), 0.0)
-                        size_index = _project_size_index(total_gb, avg_project_gb)
-                        size_health = _project_size_health(total_gb, size_index)
-                        code_env_count = _coerce_int(row.get('codeEnvCount'), 0)
-                        env_risk = _code_env_risk(code_env_count)
-                        project_risk = (0.7 * env_risk) + (0.3 * size_index)
-                        project_risks.append(project_risk)
-                        row.update({
-                            'instanceAvgProjectGB': round(avg_project_gb, 4),
-                            'projectSizeIndex': round(size_index, 4),
-                            'projectSizeHealth': size_health,
-                            'codeEnvRisk': round(env_risk, 4),
-                            'projectRisk': round(project_risk, 4),
-                        })
-                        project_rows.append(row)
-                    record_step('compute_health_scores', step_start, calls=len(project_rows))
+            project_rows: List[Dict[str, Any]] = agg_result['project_rows']
+            total_gb_values: List[float] = agg_result['total_gb_values']
+            project_risks: List[float] = agg_result['project_risks']
 
             project_rows.sort(key=lambda item: _coerce_int(item.get('totalBytes'), 0), reverse=True)
             avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
@@ -5560,15 +5694,15 @@ def api_project_footprint():
                 status='error',
                 summary={
                     'enabled': True,
-                    'projectLimit': selected_project_count,
+                    'projectLimit': progress_meta['selectedProjects'],
                     'projectSelection': project_selection,
                     'timeoutMs': timeout_ms,
                     'timedOut': bool(benchmark_timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
                     'remainingMs': remaining_ms(),
-                    'totalProjectCount': total_project_count,
-                    'selectedProjectCount': selected_project_count,
+                    'totalProjectCount': catalog_result['total_project_count'] if catalog_result else 0,
+                    'selectedProjectCount': progress_meta['selectedProjects'],
                     'steps': steps,
                     'apiCalls': [
                         {
