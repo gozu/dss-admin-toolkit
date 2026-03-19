@@ -1617,7 +1617,7 @@ pre,
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1.25rem;
-  align-content: stretch;
+  align-content: start;
 }
 
 .report-metric {
@@ -1662,6 +1662,7 @@ pre,
   color: rgba(254, 254, 249, 0.85);
   line-height: 1.8;
   font-size: 1.25rem;
+  white-space: pre-line;
   font-family: 'Roboto', sans-serif;
   flex: 1;
   display: flex;

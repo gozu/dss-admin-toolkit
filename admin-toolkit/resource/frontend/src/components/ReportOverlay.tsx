@@ -89,14 +89,12 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
               </div>
             </div>
             <div className="report-exec-content">
-              <div className="report-narrative">
-                {slides?.executive_summary?.overall_status || 'No summary available.'}
-              </div>
+              <NarrativeText text={slides?.executive_summary?.overall_status} />
               <div className="report-findings-grid">
                 {(slides?.executive_summary?.findings || []).slice(0, 3).map((f, i) => (
                   <div key={i} className="report-finding-card">
                     <div className="report-finding-number">{i + 1}</div>
-                    <div>{f}</div>
+                    <div contentEditable suppressContentEditableWarning>{f}</div>
                   </div>
                 ))}
               </div>
@@ -299,7 +297,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
             {(slides?.action_plan?.priorities || []).map((p, i) => (
               <div key={i} className="report-action-row">
                 <div className="report-action-step">{i + 1}</div>
-                <span className="action-text">{p.action}</span>
+                <span className="action-text" contentEditable suppressContentEditableWarning>{p.action}</span>
                 <span className="action-timeline">{p.timeline}</span>
                 <span className={`report-badge report-badge-effort-${p.effort || 'medium'}`}>{p.effort || 'medium'}</span>
               </div>
@@ -370,6 +368,25 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
 interface MetricItem { value: string; label: string; color?: 'success' | 'warning' | 'danger' }
 
+/** Format a string value to max 2 decimal places if it contains a decimal number */
+function fmt2dp(val: string): string {
+  return val.replace(/\d+\.\d{3,}/g, match => parseFloat(match).toFixed(2));
+}
+
+/** Render narrative text with bullet points on separate lines, editable */
+function NarrativeText({ text }: { text?: string }) {
+  const content = text || 'No analysis available for this section.';
+  // Split on bullet character or newlines to ensure each bullet is its own line
+  const lines = content.split(/(?=\u2022)|(?:\n)+/).filter(l => l.trim());
+  return (
+    <div className="report-narrative" contentEditable suppressContentEditableWarning>
+      {lines.map((line, i) => (
+        <div key={i} style={{ marginBottom: i < lines.length - 1 ? '0.5em' : 0 }}>{line.trim()}</div>
+      ))}
+    </div>
+  );
+}
+
 function SlideWatermark() {
   return (
     <div className="report-watermark">
@@ -395,13 +412,13 @@ function DataSlide({ index, slideNum, active, title, metrics, narrative, extras 
         <div className="report-metrics-grid">
           {metrics.map((m, i) => (
             <div key={i} className="report-metric">
-              <div className="report-metric-value" style={m.color ? { color: `var(--${m.color})` } : undefined}>{m.value}</div>
+              <div className="report-metric-value" style={m.color ? { color: `var(--${m.color})` } : undefined}>{fmt2dp(m.value)}</div>
               <div className="report-metric-label">{m.label}</div>
             </div>
           ))}
         </div>
         <div>
-          <div className="report-narrative">{narrative || 'No analysis available for this section.'}</div>
+          <NarrativeText text={narrative} />
           {extras}
         </div>
       </div>
@@ -427,8 +444,8 @@ function RecSlide({ index, slideNum, active, title, badgeClass, badgeText, numbe
           <div key={i} className="report-rec-card">
             <div className={`report-rec-number ${numberClass}`}>{i + 1}</div>
             <div style={{ flex: 1 }}>
-              <h4>{item.title}</h4>
-              <p>{item.description}</p>
+              <h4 contentEditable suppressContentEditableWarning>{item.title}</h4>
+              <p contentEditable suppressContentEditableWarning>{item.description}</p>
               {item.impact && (
                 <div className="report-rec-impact">
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><polyline points="20 6 9 17 4 12" /></svg>
