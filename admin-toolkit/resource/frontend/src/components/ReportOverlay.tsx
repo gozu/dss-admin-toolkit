@@ -185,6 +185,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           metrics={[
             { value: parsedData.javaMemorySettings?.Xmx || parsedData.javaMemoryLimits?.Xmx || '—', label: 'Max Heap (Xmx)' },
             { value: parsedData.javaMemorySettings?.Xms || parsedData.javaMemoryLimits?.Xms || '—', label: 'Init Heap (Xms)' },
+            { value: parsedData.memoryInfo?.total || parsedData.memoryInfo?.['Mem:total'] || '—', label: 'System RAM' },
+            { value: parsedData.memoryInfo?.available || parsedData.memoryInfo?.['Mem:available'] || '—', label: 'Available' },
           ]}
           narrative={slides?.memory?.narrative}
           extras={slides?.memory?.tuning_recs?.length ? (
@@ -198,10 +200,16 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
         {/* ── Slide 10: Connections ────────────────────────────────── */}
         <DataSlide index={9} slideNum="09" active={currentSlide === 9} title="Connections"
-          metrics={[
-            { value: String(parsedData.connectionDetails?.length ?? (Object.values(parsedData.connectionCounts || {}).reduce((a, b) => a + b, 0) || '—')), label: 'Total Connections' },
-            { value: String(Object.keys(parsedData.connectionCounts || {}).length), label: 'Connection Types' },
-          ]}
+          metrics={(() => {
+            const counts = parsedData.connectionCounts || {};
+            const topTypes = Object.entries(counts).sort(([,a],[,b]) => b - a).slice(0, 2);
+            return [
+              { value: String(parsedData.connectionDetails?.length ?? (Object.values(counts).reduce((a, b) => a + b, 0) || '—')), label: 'Total Connections' },
+              { value: String(Object.keys(counts).length), label: 'Connection Types' },
+              ...(topTypes[0] ? [{ value: String(topTypes[0][1]), label: topTypes[0][0] }] : []),
+              ...(topTypes[1] ? [{ value: String(topTypes[1][1]), label: topTypes[1][0] }] : []),
+            ];
+          })()}
           narrative={slides?.connections?.narrative}
         />
 
@@ -210,6 +218,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           metrics={[
             { value: String(Object.keys(parsedData.disabledFeatures || {}).length), label: 'Disabled Features' },
             { value: slides?.issues?.risk_level?.toUpperCase() || '—', label: 'Risk Level' },
+            { value: String(parsedData.pluginDetails?.length ?? parsedData.plugins?.length ?? '—'), label: 'Plugins' },
+            { value: String(parsedData.clusters?.length ?? '0'), label: 'Clusters' },
           ]}
           narrative={slides?.issues?.narrative}
         />
@@ -219,6 +229,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           metrics={[
             { value: String(parsedData.users?.length ?? '—'), label: 'Total Users' },
             { value: String(parsedData.users?.filter(u => u.enabled !== false).length ?? '—'), label: 'Active Users' },
+            { value: String(parsedData.users?.filter(u => u.userProfile === 'DATA_SCIENTIST' || u.userProfile === 'DESIGNER').length ?? '—'), label: 'Designers' },
+            { value: String(parsedData.projects?.length ?? '—'), label: 'Projects' },
           ]}
           narrative={slides?.users?.narrative}
         />
@@ -228,6 +240,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           metrics={[
             { value: String(parsedData.logStats?.['Unique Errors'] ?? '—'), label: 'Unique Errors' },
             { value: String(parsedData.logStats?.['Total Lines'] ?? '—'), label: 'Total Log Lines' },
+            { value: String(parsedData.logStats?.['Displayed Errors'] ?? '—'), label: 'Displayed' },
+            { value: parsedData.rawLogErrors?.length ? String(parsedData.rawLogErrors.length) : '—', label: 'Error Blocks' },
           ]}
           narrative={slides?.logs?.narrative}
           extras={slides?.logs?.patterns?.length ? (
@@ -282,6 +296,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
               <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem', paddingLeft: '1rem' }}>No action items generated.</div>
             )}
           </div>
+          <SlideWatermark />
         </div>
 
         {/* ── Slide 18: Closing ───────────────────────────────────── */}
@@ -343,6 +358,15 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
 interface MetricItem { value: string; label: string }
 
+function SlideWatermark() {
+  return (
+    <div className="report-watermark">
+      <img src={dkulogo} alt="" style={{ width: 14, height: 14, opacity: 0.4 }} />
+      <span>Dataiku Health Check</span>
+    </div>
+  );
+}
+
 function DataSlide({ index, slideNum, active, title, metrics, narrative, extras }: {
   index: number; slideNum: string; active: boolean; title: string;
   metrics: MetricItem[]; narrative?: string; extras?: React.ReactNode;
@@ -367,6 +391,7 @@ function DataSlide({ index, slideNum, active, title, metrics, narrative, extras 
           {extras}
         </div>
       </div>
+      <SlideWatermark />
     </div>
   );
 }
@@ -403,6 +428,7 @@ function RecSlide({ index, slideNum, active, title, badgeClass, badgeText, numbe
           <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem' }}>No recommendations in this category.</div>
         )}
       </div>
+      <SlideWatermark />
     </div>
   );
 }

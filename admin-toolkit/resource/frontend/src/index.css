@@ -1965,6 +1965,30 @@ pre,
   margin-top: 0.75rem;
 }
 
+.report-extras-badges .report-badge {
+  text-transform: none;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.65rem;
+  border-radius: 0.35rem;
+  max-width: 400px;
+}
+
+/* Watermark */
+.report-watermark {
+  position: absolute;
+  bottom: 1rem;
+  right: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  color: var(--text-tertiary);
+  opacity: 0.4;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+
 /* Button pulse */
 @keyframes report-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
