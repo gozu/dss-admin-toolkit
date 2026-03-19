@@ -4842,13 +4842,9 @@ def api_code_envs():
             )
             app.logger.info("[perf:ce] phase1_catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
-            # Phase 2: size_map in background; usage_scan on the main path
-            footprint_pool = ThreadPoolExecutor(max_workers=1)
+            # Phase 2: usage_scan (size_map deferred to /api/code-envs/sizes)
+            footprint_pool = None
             footprint_future = None
-            footprint_step_started = time.time()
-            if not deadline_reached('load_code_env_size_map'):
-                add_event('load_code_env_size_map', 'loading global code env size map')
-                footprint_future = footprint_pool.submit(_task_ce_size_map, add_event)
 
             usage_data: Dict[str, Any] = {}
             if catalog['project_info'] and not deadline_reached('collect_project_code_env_usage'):
@@ -4863,24 +4859,11 @@ def api_code_envs():
                 record_step('collect_project_code_env_usage', step_started, calls=catalog['selected_count'])
             app.logger.info("[perf:ce] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
-            # Collect size_map result; do not block past remaining deadline
+            # Size map deferred — sizes will be 0 until /api/code-envs/sizes is called
             size_by_env: Dict[str, int] = {}
-            if footprint_future is not None:
-                try:
-                    size_by_env = footprint_future.result(timeout=remaining_seconds())
-                    record_step('load_code_env_size_map', footprint_step_started, calls=1)
-                    progress_meta['sizeMapDone'] = True
-                except Exception:
-                    add_event('load_code_env_size_map', 'size map unavailable; continuing without sizes', 'warn')
-                finally:
-                    footprint_pool.shutdown(wait=False)
-                    _update_progress_summary(False)
-            else:
-                footprint_pool.shutdown(wait=False)
-                progress_meta['sizeMapDone'] = True
-                _update_progress_summary(False)
-            app.logger.info("[code-envs] sizeMap=%s elapsed=%.2fs", len(size_by_env), time.time() - started)
-            app.logger.info("[perf:ce] global_footprint elapsed=%.0fms sizes=%d", elapsed_ms(), len(size_by_env))
+            progress_meta['sizeMapDone'] = True
+            _update_progress_summary(False)
+            app.logger.info("[perf:ce] size_map deferred, elapsed=%.0fms", elapsed_ms())
 
             # Phase 3: list + filter envs, then fetch details
             envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {}
@@ -5049,6 +5032,16 @@ def api_code_envs():
 
     data = _cache_get('code_envs', _BACKEND_SETTINGS['cache_ttl_code_envs'], loader)
     return jsonify(data)
+
+
+@app.route('/api/code-envs/sizes')
+def api_code_envs_sizes():
+    """Lazy-load code env sizes via global footprint. Cached for 300s."""
+    def loader():
+        client = dataiku.api_client()
+        return _get_code_env_size_map(client)
+    size_map = _cache_get('code_envs_sizes', _BACKEND_SETTINGS['cache_ttl_projects'], loader)
+    return jsonify({'sizes': size_map})
 
 
 @app.route('/api/code-envs/progress')
@@ -5234,7 +5227,7 @@ def api_code_envs_compare():
 
         return _compare_code_envs_logic(envs, max_diff)
 
-    data = _cache_get('code_envs_compare', _BACKEND_SETTINGS.get('cache_ttl_code_envs', 5), loader)
+    data = _cache_get('code_envs_compare', _BACKEND_SETTINGS.get('cache_ttl_projects', 300), loader)
     return jsonify(data)
 
 

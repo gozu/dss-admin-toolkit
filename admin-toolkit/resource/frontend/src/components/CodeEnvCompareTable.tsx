@@ -34,8 +34,10 @@ const SECTION_META: Record<
   },
 };
 
+let _cachedCompareData: CodeEnvCompareResult | null = null;
+
 export function CodeEnvCompareTable() {
-  const [data, setData] = useState<CodeEnvCompareResult | null>(null);
+  const [data, setData] = useState<CodeEnvCompareResult | null>(_cachedCompareData);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
@@ -50,6 +52,7 @@ export function CodeEnvCompareTable() {
     setError(null);
     try {
       const result = await fetchJson<CodeEnvCompareResult>('/api/code-envs/compare');
+      _cachedCompareData = result;
       setData(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -59,7 +62,7 @@ export function CodeEnvCompareTable() {
   }, []);
 
   useEffect(() => {
-    load();
+    if (!_cachedCompareData) load();
   }, [load]);
 
   const toggle = (key: SectionKey) =>

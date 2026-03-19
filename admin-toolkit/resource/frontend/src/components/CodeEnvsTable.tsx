@@ -8,7 +8,8 @@ import { TetrisGame } from './TetrisGame';
 type ViewMode = 'summary' | 'details';
 
 function formatSizeGb(sizeBytes: number | undefined): string {
-  const gb = (sizeBytes || 0) / (1024 * 1024 * 1024);
+  if (!sizeBytes) return '\u2014';
+  const gb = sizeBytes / (1024 * 1024 * 1024);
   return `${gb.toFixed(2)} GB`;
 }
 
@@ -16,7 +17,16 @@ export function CodeEnvsTable() {
   const { state } = useDiag();
   const { isVisible } = useTableFilter();
   const { parsedData } = state;
-  const codeEnvs = parsedData.codeEnvs || [];
+  const rawCodeEnvs = parsedData.codeEnvs || [];
+  const codeEnvSizes = parsedData.codeEnvSizes;
+  const codeEnvs = useMemo(() => {
+    if (!codeEnvSizes || !rawCodeEnvs.length) return rawCodeEnvs;
+    return rawCodeEnvs.map((env) => {
+      const sizeKey = `${(env.language || 'python').toLowerCase()}:${env.name}`;
+      const size = codeEnvSizes[sizeKey];
+      return size ? { ...env, sizeBytes: size } : env;
+    });
+  }, [rawCodeEnvs, codeEnvSizes]);
   const provisionalCodeEnvs = parsedData.provisionalCodeEnvs || [];
   const loading = parsedData.analysisLoading;
   const isLoading = Boolean(loading?.active);

@@ -844,6 +844,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
               .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
               .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
+            // Lazy-load code env sizes (global footprint is deferred)
+            fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+              .then((r) => {
+                if (r?.sizes && typeof r.sizes === 'object') {
+                  dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                }
+              })
+              .catch(() => { /* sizes optional */ });
             codeEnvsInterpolator.setBackendProgress(100);
             codeEnvsLastProgressRef.current = 100;
             codeEnvsInterpolationEnabledRef.current = false;
@@ -918,6 +926,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
                 .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
                 .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
+              // Lazy-load code env sizes (global footprint is deferred)
+              fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                .then((r) => {
+                  if (r?.sizes && typeof r.sizes === 'object') {
+                    dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                  }
+                })
+                .catch(() => { /* sizes optional */ });
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
               dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });

@@ -479,6 +479,7 @@ export interface ParsedData {
   pluginDetails?: PluginInfo[];
   pluginsCount?: number;
   codeEnvs?: CodeEnv[];
+  codeEnvSizes?: Record<string, number>;
   codeEnvsExpectedCount?: number;
   provisionalCodeEnvs?: ProvisionalCodeEnv[];
   codeEnvsLoading?: LoadingProgressState;
