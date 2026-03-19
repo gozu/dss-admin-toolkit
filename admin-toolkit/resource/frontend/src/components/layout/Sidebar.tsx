@@ -176,16 +176,16 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'PROJECTS',
     items: [
-      { id: 'projects', label: 'Projects' },
-      { id: 'project-cleaner', label: 'Project Cleaner' },
+      { id: 'project-cleaner', label: 'Cleaner' },
+      { id: 'projects', label: 'Insights' },
     ],
   },
   {
     title: 'CODE ENVIRONMENTS',
     items: [
+      { id: 'code-env-cleaner', label: 'Cleaner' },
       { id: 'code-envs', label: 'Insights' },
       { id: 'code-envs-comparison', label: 'Comparison' },
-      { id: 'code-env-cleaner', label: 'Cleaner' },
     ],
   },
   {
