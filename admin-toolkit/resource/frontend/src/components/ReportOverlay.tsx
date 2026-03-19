@@ -42,31 +42,37 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
   const company = parsedData.company || 'Unknown Instance';
   const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const progressPct = ((currentSlide + 1) / totalSlides) * 100;
 
   return createPortal(
     <div className="report-overlay" data-theme={theme} ref={overlayRef}>
       <div className="report-slides-container">
-        {/* Slide 1: Title */}
-        <div className={`report-slide${currentSlide === 0 ? ' active' : ''}`} data-slide-index={0}>
+
+        {/* ── Slide 1: Title ──────────────────────────────────────── */}
+        <div className={`report-slide report-slide-hero${currentSlide === 0 ? ' active' : ''}`} data-slide-index={0}>
           <div className="report-title-center">
-            <img src={dkulogo} alt="Dataiku" id="dku-logo" style={{ width: 64, height: 64 }} />
+            <img src={dkulogo} alt="Dataiku" id="dku-logo" className="report-title-logo" />
             <div className="report-title-company">{company}</div>
+            <div className="report-title-divider" />
             <div className="report-title-sub">Quarterly Health Check</div>
             <div className="report-title-meta">
-              {parsedData.dssVersion && `DSS ${parsedData.dssVersion} · `}{date}
+              {parsedData.dssVersion && `DSS ${parsedData.dssVersion}`}{parsedData.dssVersion ? ' · ' : ''}{date}
             </div>
           </div>
         </div>
 
-        {/* Slide 2: Executive Summary */}
+        {/* ── Slide 2: Executive Summary ──────────────────────────── */}
         <div className={`report-slide${currentSlide === 1 ? ' active' : ''}`} data-slide-index={1}>
-          <div className="report-slide-title">Executive Summary</div>
-          <div className="report-two-col">
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+          <div className="report-slide-header">
+            <div className="report-slide-number">01</div>
+            <div className="report-slide-title">Executive Summary</div>
+          </div>
+          <div className="report-two-col" style={{ flex: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '1rem' }}>
               <div className={`report-health-score ${healthScore.status}`}>
                 {healthScore.overall}
               </div>
-              <div className="report-metric-label">Health Score</div>
+              <div className="report-metric-label" style={{ textAlign: 'center' }}>Health Score</div>
               <div className={`report-badge report-badge-${healthScore.status === 'healthy' ? 'nice' : healthScore.status === 'warning' ? 'important' : 'critical'}`}>
                 {healthScore.status}
               </div>
@@ -79,56 +85,59 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           </div>
           <div className="report-findings-grid">
             {(slides?.executive_summary?.findings || []).slice(0, 3).map((f, i) => (
-              <div key={i} className="report-finding-card">{f}</div>
+              <div key={i} className="report-finding-card">
+                <div className="report-finding-number">{i + 1}</div>
+                <div>{f}</div>
+              </div>
             ))}
           </div>
         </div>
 
-        {/* Slide 3: Instance Overview */}
-        <DataSlide index={2} active={currentSlide === 2} title="Instance Overview"
+        {/* ── Slide 3: Instance Overview ──────────────────────────── */}
+        <DataSlide index={2} slideNum="02" active={currentSlide === 2} title="Instance Overview"
           metrics={[
             { value: parsedData.dssVersion || '—', label: 'DSS Version' },
             { value: parsedData.cpuCores || '—', label: 'CPU Cores' },
-            { value: parsedData.pythonVersion || '—', label: 'Python Version' },
+            { value: parsedData.pythonVersion || '—', label: 'Python' },
             { value: parsedData.osInfo?.split(' ')[0] || '—', label: 'OS' },
           ]}
           narrative={slides?.instance_overview?.narrative}
         />
 
-        {/* Slide 4: Projects Overview */}
-        <DataSlide index={3} active={currentSlide === 3} title="Projects Overview"
+        {/* ── Slide 4: Projects Overview ──────────────────────────── */}
+        <DataSlide index={3} slideNum="03" active={currentSlide === 3} title="Projects Overview"
           metrics={[
             { value: String(parsedData.projects?.length ?? '—'), label: 'Total Projects' },
             { value: String(healthScore.categories.find(c => c.category === 'project_footprint')?.score ?? '—'), label: 'Project Health' },
           ]}
           narrative={slides?.projects?.narrative}
           extras={slides?.projects?.highlights?.length ? (
-            <div style={{ marginTop: '1rem' }}>
+            <div className="report-extras-list">
               {slides.projects.highlights.map((h, i) => (
-                <div key={i} style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '0.25rem 0' }}>• {h}</div>
+                <div key={i} className="report-extras-item">• {h}</div>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 5: Project Footprint */}
-        <DataSlide index={4} active={currentSlide === 4} title="Project Footprint"
+        {/* ── Slide 5: Project Footprint ──────────────────────────── */}
+        <DataSlide index={4} slideNum="04" active={currentSlide === 4} title="Project Footprint"
           metrics={[
             { value: String(parsedData.projectFootprintSummary?.projectCount ?? parsedData.projectFootprint?.length ?? '—'), label: 'Projects Analyzed' },
             { value: parsedData.projectFootprintSummary?.instanceAvgProjectGB != null ? `${parsedData.projectFootprintSummary.instanceAvgProjectGB.toFixed(1)} GB` : '—', label: 'Avg Project Size' },
           ]}
           narrative={slides?.project_footprint?.narrative}
           extras={slides?.project_footprint?.risks?.length ? (
-            <div style={{ marginTop: '0.75rem' }}>
+            <div className="report-extras-badges">
               {slides.project_footprint.risks.map((r, i) => (
-                <div key={i} className="report-badge report-badge-important" style={{ marginRight: '0.5rem', marginBottom: '0.25rem' }}>{r}</div>
+                <span key={i} className="report-badge report-badge-important">{r}</span>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 6: Code Environments */}
-        <DataSlide index={5} active={currentSlide === 5} title="Code Environments"
+        {/* ── Slide 6: Code Environments ──────────────────────────── */}
+        <DataSlide index={5} slideNum="05" active={currentSlide === 5} title="Code Environments"
           metrics={[
             { value: String(parsedData.codeEnvs?.length ?? '—'), label: 'Total Envs' },
             { value: String(Object.keys(parsedData.pythonVersionCounts || {}).length), label: 'Python Versions' },
@@ -137,24 +146,24 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           narrative={slides?.code_envs?.narrative}
         />
 
-        {/* Slide 7: Code Env Health */}
-        <DataSlide index={6} active={currentSlide === 6} title="Code Environment Health"
+        {/* ── Slide 7: Code Env Health ────────────────────────────── */}
+        <DataSlide index={6} slideNum="06" active={currentSlide === 6} title="Code Environment Health"
           metrics={[
             { value: String(healthScore.categories.find(c => c.category === 'code_envs')?.score ?? '—'), label: 'Env Health Score' },
             { value: String(parsedData.codeEnvs?.filter(e => e.usageCount === 0).length ?? '0'), label: 'Unused Envs' },
           ]}
           narrative={slides?.code_env_health?.narrative}
           extras={slides?.code_env_health?.upgrade_paths?.length ? (
-            <div style={{ marginTop: '0.75rem' }}>
+            <div className="report-extras-list">
               {slides.code_env_health.upgrade_paths.map((u, i) => (
-                <div key={i} style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '0.2rem 0' }}>→ {u}</div>
+                <div key={i} className="report-extras-item">→ {u}</div>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 8: Filesystem */}
-        <DataSlide index={7} active={currentSlide === 7} title="Filesystem Health"
+        {/* ── Slide 8: Filesystem ─────────────────────────────────── */}
+        <DataSlide index={7} slideNum="07" active={currentSlide === 7} title="Filesystem Health"
           metrics={
             (parsedData.filesystemInfo || []).slice(0, 4).map(f => ({
               value: f['Use%'] || '—',
@@ -163,32 +172,32 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           }
           narrative={slides?.filesystem?.narrative}
           extras={slides?.filesystem?.warnings?.length ? (
-            <div style={{ marginTop: '0.75rem' }}>
+            <div className="report-extras-badges">
               {slides.filesystem.warnings.map((w, i) => (
-                <div key={i} className="report-badge report-badge-critical" style={{ marginRight: '0.5rem', marginBottom: '0.25rem' }}>{w}</div>
+                <span key={i} className="report-badge report-badge-critical">{w}</span>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 9: Memory & JVM */}
-        <DataSlide index={8} active={currentSlide === 8} title="Memory & JVM"
+        {/* ── Slide 9: Memory & JVM ───────────────────────────────── */}
+        <DataSlide index={8} slideNum="08" active={currentSlide === 8} title="Memory & JVM"
           metrics={[
             { value: parsedData.javaMemorySettings?.Xmx || parsedData.javaMemoryLimits?.Xmx || '—', label: 'Max Heap (Xmx)' },
             { value: parsedData.javaMemorySettings?.Xms || parsedData.javaMemoryLimits?.Xms || '—', label: 'Init Heap (Xms)' },
           ]}
           narrative={slides?.memory?.narrative}
           extras={slides?.memory?.tuning_recs?.length ? (
-            <div style={{ marginTop: '0.75rem' }}>
+            <div className="report-extras-list">
               {slides.memory.tuning_recs.map((r, i) => (
-                <div key={i} style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '0.2rem 0' }}>• {r}</div>
+                <div key={i} className="report-extras-item">• {r}</div>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 10: Connections */}
-        <DataSlide index={9} active={currentSlide === 9} title="Connections"
+        {/* ── Slide 10: Connections ────────────────────────────────── */}
+        <DataSlide index={9} slideNum="09" active={currentSlide === 9} title="Connections"
           metrics={[
             { value: String(parsedData.connectionDetails?.length ?? (Object.values(parsedData.connectionCounts || {}).reduce((a, b) => a + b, 0) || '—')), label: 'Total Connections' },
             { value: String(Object.keys(parsedData.connectionCounts || {}).length), label: 'Connection Types' },
@@ -196,8 +205,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           narrative={slides?.connections?.narrative}
         />
 
-        {/* Slide 11: Issues & Risks */}
-        <DataSlide index={10} active={currentSlide === 10} title="Issues & Risks"
+        {/* ── Slide 11: Issues & Risks ────────────────────────────── */}
+        <DataSlide index={10} slideNum="10" active={currentSlide === 10} title="Issues & Risks"
           metrics={[
             { value: String(Object.keys(parsedData.disabledFeatures || {}).length), label: 'Disabled Features' },
             { value: slides?.issues?.risk_level?.toUpperCase() || '—', label: 'Risk Level' },
@@ -205,8 +214,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           narrative={slides?.issues?.narrative}
         />
 
-        {/* Slide 12: Users & Activity */}
-        <DataSlide index={11} active={currentSlide === 11} title="Users & Activity"
+        {/* ── Slide 12: Users & Activity ──────────────────────────── */}
+        <DataSlide index={11} slideNum="11" active={currentSlide === 11} title="Users & Activity"
           metrics={[
             { value: String(parsedData.users?.length ?? '—'), label: 'Total Users' },
             { value: String(parsedData.users?.filter(u => u.enabled !== false).length ?? '—'), label: 'Active Users' },
@@ -214,75 +223,85 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           narrative={slides?.users?.narrative}
         />
 
-        {/* Slide 13: Log Analysis */}
-        <DataSlide index={12} active={currentSlide === 12} title="Log Analysis"
+        {/* ── Slide 13: Log Analysis ──────────────────────────────── */}
+        <DataSlide index={12} slideNum="12" active={currentSlide === 12} title="Log Analysis"
           metrics={[
             { value: String(parsedData.logStats?.['Unique Errors'] ?? '—'), label: 'Unique Errors' },
             { value: String(parsedData.logStats?.['Total Lines'] ?? '—'), label: 'Total Log Lines' },
           ]}
           narrative={slides?.logs?.narrative}
           extras={slides?.logs?.patterns?.length ? (
-            <div style={{ marginTop: '0.75rem' }}>
+            <div className="report-extras-list">
               {slides.logs.patterns.slice(0, 5).map((p, i) => (
-                <div key={i} style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', padding: '0.15rem 0', fontFamily: 'var(--font-mono, monospace)' }}>{p}</div>
+                <div key={i} className="report-extras-item" style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>{p}</div>
               ))}
             </div>
           ) : undefined}
         />
 
-        {/* Slide 14: Recommendations - Critical */}
-        <RecSlide index={13} active={currentSlide === 13} title="Critical Recommendations"
-          badgeClass="report-badge-critical" badgeText="CRITICAL"
+        {/* ── Slide 14: Recommendations - Critical ────────────────── */}
+        <RecSlide index={13} slideNum="13" active={currentSlide === 13}
+          title="Critical Recommendations"
+          badgeClass="report-badge-critical" badgeText="CRITICAL" numberClass="report-rec-number-critical"
           items={slides?.rec_critical?.items || []}
         />
 
-        {/* Slide 15: Recommendations - Important */}
-        <RecSlide index={14} active={currentSlide === 14} title="Important Recommendations"
-          badgeClass="report-badge-important" badgeText="IMPORTANT"
+        {/* ── Slide 15: Recommendations - Important ───────────────── */}
+        <RecSlide index={14} slideNum="14" active={currentSlide === 14}
+          title="Important Recommendations"
+          badgeClass="report-badge-important" badgeText="IMPORTANT" numberClass="report-rec-number-important"
           items={slides?.rec_important?.items || []}
         />
 
-        {/* Slide 16: Recommendations - Nice to Have */}
-        <RecSlide index={15} active={currentSlide === 15} title="Optimization Opportunities"
-          badgeClass="report-badge-nice" badgeText="NICE TO HAVE"
+        {/* ── Slide 16: Recommendations - Nice to Have ────────────── */}
+        <RecSlide index={15} slideNum="15" active={currentSlide === 15}
+          title="Optimization Opportunities"
+          badgeClass="report-badge-nice" badgeText="NICE TO HAVE" numberClass="report-rec-number-nice"
           items={slides?.rec_nice_to_have?.items || []}
         />
 
-        {/* Slide 17: Action Plan */}
+        {/* ── Slide 17: Action Plan ───────────────────────────────── */}
         <div className={`report-slide${currentSlide === 16 ? ' active' : ''}`} data-slide-index={16}>
-          <div className="report-slide-title">Action Plan</div>
-          <div className="report-slide-subtitle">Prioritized roadmap for the next quarter</div>
-          <div style={{ maxWidth: 800 }}>
+          <div className="report-slide-header">
+            <div className="report-slide-number">16</div>
+            <div>
+              <div className="report-slide-title">Action Plan</div>
+              <div className="report-slide-subtitle">Prioritized roadmap for the next quarter</div>
+            </div>
+          </div>
+          <div className="report-action-list">
             {(slides?.action_plan?.priorities || []).map((p, i) => (
               <div key={i} className="report-action-row">
-                <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-tertiary)', minWidth: 28 }}>{i + 1}</span>
+                <div className="report-action-step">{i + 1}</div>
                 <span className="action-text">{p.action}</span>
                 <span className="action-timeline">{p.timeline}</span>
                 <span className={`report-badge report-badge-effort-${p.effort || 'medium'}`}>{p.effort || 'medium'}</span>
               </div>
             ))}
             {(!slides?.action_plan?.priorities?.length) && (
-              <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem' }}>No action items generated.</div>
+              <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem', paddingLeft: '1rem' }}>No action items generated.</div>
             )}
           </div>
         </div>
 
-        {/* Slide 18: Closing */}
-        <div className={`report-slide${currentSlide === 17 ? ' active' : ''}`} data-slide-index={17}>
+        {/* ── Slide 18: Closing ───────────────────────────────────── */}
+        <div className={`report-slide report-slide-hero${currentSlide === 17 ? ' active' : ''}`} data-slide-index={17}>
           <div className="report-title-center">
-            <img src={dkulogo} alt="Dataiku" id="dku-logo-closing" style={{ width: 48, height: 48, opacity: 0.8 }} />
-            <div style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--text-primary)' }}>Thank You</div>
-            <div style={{ fontSize: '1rem', color: 'var(--text-secondary)', maxWidth: 500, lineHeight: 1.6 }}>
-              This health check was generated by the Dataiku Admin Toolkit.
-              For questions or follow-up, contact your Technical Account Manager.
+            <img src={dkulogo} alt="Dataiku" id="dku-logo-closing" className="report-title-logo" style={{ width: 56, height: 56 }} />
+            <div style={{ fontSize: '2.25rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Next Steps</div>
+            <div className="report-title-divider" />
+            <div style={{ fontSize: '1rem', color: 'var(--text-secondary)', maxWidth: 500, lineHeight: 1.7, textAlign: 'center' }}>
+              Review the recommendations with your team and prioritize based on your operational needs.
+              Your Technical Account Manager is available for follow-up discussions.
             </div>
             <div className="report-title-meta">{company} · {date}</div>
           </div>
         </div>
       </div>
 
-      {/* Navigation bar */}
+      {/* ── Navigation ─────────────────────────────────────────── */}
       <div className="report-nav">
+        <div className="report-progress-bar" style={{ width: `${progressPct}%` }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <button type="button" className="report-nav-btn" onClick={prev} disabled={currentSlide === 0}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><polyline points="15 18 9 12 15 6" /></svg>
@@ -290,8 +309,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           <button type="button" className="report-nav-btn" onClick={next} disabled={currentSlide === totalSlides - 1}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><polyline points="9 18 15 12 9 6" /></svg>
           </button>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginLeft: '0.5rem' }}>
-            {currentSlide + 1} / {totalSlides}
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)', marginLeft: '0.75rem', fontWeight: 500 }}>
+            {currentSlide + 1} <span style={{ opacity: 0.5 }}>/</span> {totalSlides}
           </span>
         </div>
 
@@ -324,13 +343,16 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
 interface MetricItem { value: string; label: string }
 
-function DataSlide({ index, active, title, metrics, narrative, extras }: {
-  index: number; active: boolean; title: string;
+function DataSlide({ index, slideNum, active, title, metrics, narrative, extras }: {
+  index: number; slideNum: string; active: boolean; title: string;
   metrics: MetricItem[]; narrative?: string; extras?: React.ReactNode;
 }) {
   return (
     <div className={`report-slide${active ? ' active' : ''}`} data-slide-index={index}>
-      <div className="report-slide-title">{title}</div>
+      <div className="report-slide-header">
+        <div className="report-slide-number">{slideNum}</div>
+        <div className="report-slide-title">{title}</div>
+      </div>
       <div className="report-two-col">
         <div className="report-metrics-grid">
           {metrics.map((m, i) => (
@@ -349,27 +371,32 @@ function DataSlide({ index, active, title, metrics, narrative, extras }: {
   );
 }
 
-function RecSlide({ index, active, title, badgeClass, badgeText, items }: {
-  index: number; active: boolean; title: string;
-  badgeClass: string; badgeText: string;
+function RecSlide({ index, slideNum, active, title, badgeClass, badgeText, numberClass, items }: {
+  index: number; slideNum: string; active: boolean; title: string;
+  badgeClass: string; badgeText: string; numberClass: string;
   items: Array<{ title: string; description: string; impact: string }>;
 }) {
   return (
     <div className={`report-slide${active ? ' active' : ''}`} data-slide-index={index}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-        <div className="report-slide-title" style={{ marginBottom: 0 }}>{title}</div>
+      <div className="report-slide-header">
+        <div className="report-slide-number">{slideNum}</div>
+        <div className="report-slide-title">{title}</div>
         <span className={`report-badge ${badgeClass}`}>{badgeText}</span>
       </div>
-      <div style={{ maxWidth: 800, maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
+      <div className="report-rec-list">
         {items.map((item, i) => (
           <div key={i} className="report-rec-card">
-            <h4>{item.title}</h4>
-            <p>{item.description}</p>
-            {item.impact && (
-              <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
-                Impact: {item.impact}
-              </div>
-            )}
+            <div className={`report-rec-number ${numberClass}`}>{i + 1}</div>
+            <div style={{ flex: 1 }}>
+              <h4>{item.title}</h4>
+              <p>{item.description}</p>
+              {item.impact && (
+                <div className="report-rec-impact">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><polyline points="20 6 9 17 4 12" /></svg>
+                  {item.impact}
+                </div>
+              )}
+            </div>
           </div>
         ))}
         {items.length === 0 && (

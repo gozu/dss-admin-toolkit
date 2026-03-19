@@ -1532,11 +1532,11 @@ pre,
   inset: 0;
   display: none;
   flex-direction: column;
-  justify-content: center;
-  padding: 3rem 4rem 5rem;
+  padding: 2.5rem 5rem 3.5rem;
   box-sizing: border-box;
   opacity: 0;
   transition: opacity 400ms ease;
+  overflow-y: auto;
 }
 
 .report-slide.active {
@@ -1544,63 +1544,118 @@ pre,
   opacity: 1;
 }
 
+/* Accent bar at top of content slides */
+.report-slide::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), rgba(59, 130, 246, 0));
+}
+
+/* Hero slides (title, closing) get no top bar but a radial gradient bg */
+.report-slide-hero {
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(42, 177, 172, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(59, 130, 246, 0.05) 0%, transparent 50%);
+}
+
+.report-slide-hero::before {
+  display: none;
+}
+
+/* Section header with slide number */
+.report-slide-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.report-slide-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
 .report-slide-title {
-  font-size: 2rem;
+  font-size: 1.75rem;
   font-weight: 700;
   color: var(--text-primary);
-  margin-bottom: 0.5rem;
   letter-spacing: -0.02em;
 }
 
 .report-slide-subtitle {
-  font-size: 1rem;
+  font-size: 0.95rem;
   color: var(--text-secondary);
-  margin-bottom: 2rem;
+  margin-top: 0.25rem;
 }
 
+/* Two-column layout for data slides */
 .report-two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2.5rem;
+  grid-template-columns: 2fr 3fr;
+  gap: 3rem;
   align-items: start;
+  margin-top: auto;
+  margin-bottom: auto;
 }
 
 .report-metrics-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  gap: 2rem;
+  align-content: start;
 }
 
 .report-metric {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.35rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
 }
 
 .report-metric-value {
-  font-size: 2.5rem;
+  font-size: 2rem;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
 }
 
 .report-metric-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-tertiary);
 }
 
+/* Narrative callout */
 .report-narrative {
   border-left: 3px solid var(--accent);
   background: var(--bg-surface);
-  border-radius: 0 0.5rem 0.5rem 0;
-  padding: 1.25rem 1.5rem;
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding: 1.5rem 1.75rem;
   color: var(--text-secondary);
-  line-height: 1.7;
+  line-height: 1.75;
   font-size: 0.95rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
+/* Executive summary findings */
 .report-findings-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1612,18 +1667,77 @@ pre,
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: 0.75rem;
-  padding: 1.25rem;
+  padding: 1.25rem 1.25rem 1.25rem 1rem;
   color: var(--text-secondary);
-  font-size: 0.9rem;
-  line-height: 1.5;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.report-finding-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* Recommendation cards */
+.report-rec-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+  max-width: 1200px;
+  margin-top: auto;
+  margin-bottom: auto;
+  align-content: start;
 }
 
 .report-rec-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: 0.75rem;
-  padding: 1rem 1.25rem;
-  margin-bottom: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.report-rec-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.report-rec-number-critical {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.report-rec-number-important {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--warning);
+}
+
+.report-rec-number-nice {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent);
 }
 
 .report-rec-card h4 {
@@ -1640,55 +1754,84 @@ pre,
   line-height: 1.5;
 }
 
+.report-rec-impact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 1rem;
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--success);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Badges */
 .report-badge {
   display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: 0.25rem;
-  font-size: 0.7rem;
-  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
 }
 
-.report-badge-critical {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--danger);
+.report-badge-critical { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+.report-badge-important { background: rgba(234, 179, 8, 0.15); color: var(--warning); }
+.report-badge-nice { background: rgba(59, 130, 246, 0.15); color: var(--accent); }
+.report-badge-effort-low { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+.report-badge-effort-medium { background: rgba(234, 179, 8, 0.15); color: var(--warning); }
+.report-badge-effort-high { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+
+/* Action plan */
+.report-action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+  padding-left: 1.25rem;
+  max-width: 1000px;
 }
 
-.report-badge-important {
-  background: rgba(234, 179, 8, 0.15);
-  color: var(--warning);
-}
-
-.report-badge-nice {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent);
-}
-
-.report-badge-effort-low {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--success);
-}
-
-.report-badge-effort-medium {
-  background: rgba(234, 179, 8, 0.15);
-  color: var(--warning);
-}
-
-.report-badge-effort-high {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--danger);
+/* Vertical connector line */
+.report-action-list::before {
+  content: '';
+  position: absolute;
+  left: 0.875rem;
+  top: 1.5rem;
+  bottom: 1.5rem;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--accent), var(--danger));
+  border-radius: 1px;
 }
 
 .report-action-row {
   display: flex;
   align-items: center;
   gap: 1rem;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem 1.25rem;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
-  border-radius: 0.5rem;
-  margin-bottom: 0.5rem;
+  border-radius: 0.75rem;
+  position: relative;
+}
+
+.report-action-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 2px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  z-index: 1;
 }
 
 .report-action-row .action-text {
@@ -1704,6 +1847,7 @@ pre,
   text-align: right;
 }
 
+/* Navigation */
 .report-nav {
   position: relative;
   padding: 0.75rem 2rem;
@@ -1713,6 +1857,17 @@ pre,
   background: var(--bg-elevated);
   border-top: 1px solid var(--border-default);
   z-index: 1;
+}
+
+.report-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), #2AB1AC);
+  transition: width 400ms ease;
+  border-radius: 0 2px 2px 0;
+  z-index: 2;
 }
 
 .report-nav-btn {
@@ -1729,16 +1884,10 @@ pre,
   transition: all 150ms;
 }
 
-.report-nav-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
+.report-nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.report-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-.report-nav-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
+/* Hero slides */
 .report-title-center {
   display: flex;
   flex-direction: column;
@@ -1746,27 +1895,44 @@ pre,
   justify-content: center;
   text-align: center;
   flex: 1;
-  gap: 1.5rem;
+  gap: 1rem;
+}
+
+.report-title-logo {
+  width: 80px;
+  height: 80px;
+  filter: drop-shadow(0 0 20px rgba(42, 177, 172, 0.3));
 }
 
 .report-title-company {
-  font-size: 3rem;
-  font-weight: 700;
+  font-size: 3.5rem;
+  font-weight: 800;
   color: var(--text-primary);
-  letter-spacing: -0.03em;
+  letter-spacing: -0.04em;
 }
 
 .report-title-sub {
   font-size: 1.25rem;
   color: var(--text-secondary);
   font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.report-title-divider {
+  width: 60px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
 }
 
 .report-title-meta {
   font-size: 0.85rem;
   color: var(--text-tertiary);
+  letter-spacing: 0.02em;
 }
 
+/* Health score */
 .report-health-score {
   font-size: 5rem;
   font-weight: 800;
@@ -1778,6 +1944,28 @@ pre,
 .report-health-score.warning { color: var(--warning); }
 .report-health-score.critical { color: var(--danger); }
 
+/* Extras list */
+.report-extras-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 1rem;
+}
+
+.report-extras-item {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  padding: 0.25rem 0;
+}
+
+.report-extras-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* Button pulse */
 @keyframes report-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
   50% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0); }
