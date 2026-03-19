@@ -8446,8 +8446,14 @@ def api_report_generate():
         '    "action_plan": { "priorities": [{ "action": "specific task description", "timeline": "concrete timeframe", "effort": "low|medium|high" }] }\n'
         '  }\n'
         '}\n\n'
-        "Be concise but insightful. Each narrative: 2-4 sentences. "
-        "Recommendations must be specific enough that an admin can act on them without further research."
+        "FORMATTING RULES:\n"
+        "- Each narrative: 2-4 sentences, concise but insightful.\n"
+        "- highlights, risks, warnings, upgrade_paths arrays: keep each item SHORT (under 12 words) — they display as badges/pills.\n"
+        "- patterns array: keep each item under 80 chars — they display in monospace.\n"
+        "- Recommendations: specific enough that an admin can act without further research. "
+        "Reference doc.dataiku.com when relevant (e.g., 'See doc.dataiku.com/latest/operations/...').\n"
+        "- Action plan: include 5-7 prioritized items covering critical, important, and optimization actions.\n"
+        "- Critical recs: 2-3 items max. Important recs: 3-5 items. Nice-to-have: 2-3 items."
     )
 
     def generate():
