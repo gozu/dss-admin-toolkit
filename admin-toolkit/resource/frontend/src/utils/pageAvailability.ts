@@ -22,6 +22,7 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'project-cleaner':
       return hasInactiveProjectsCache() ? 'ready' : 'loading';
     case 'plugins': // PluginComparator fetches its own data
+    case 'report': // self-contained, fetches LLMs on demand
       return 'independent';
 
     // Phase 1 — overview data

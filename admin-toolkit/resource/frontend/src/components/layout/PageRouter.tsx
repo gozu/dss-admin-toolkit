@@ -27,6 +27,9 @@ const SettingsView = lazy(() =>
 const CodeEnvCleanerLazy = lazy(() =>
   import('../CodeEnvCleaner').then((m) => ({ default: m.CodeEnvCleaner })),
 );
+const ReportPage = lazy(() =>
+  import('../pages/ReportPage').then((m) => ({ default: m.ReportPage })),
+);
 
 function LoadingSpinner() {
   return (
@@ -79,6 +82,8 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
       return <ToolsView />;
     case 'tracking':
       return <TrackingView />;
+    case 'report':
+      return <ReportPage />;
     case 'settings':
       return <SettingsView onBack={onBackToSummary} />;
     default:

@@ -125,6 +125,13 @@ const icons: Record<string, ReactNode> = {
       <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
     </svg>
   ),
+  report: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
+    </svg>
+  ),
   settings: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
@@ -194,6 +201,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'outreach', label: 'Outreach' },
       { id: 'tracking', label: 'Compliance' },
       { id: 'directory', label: 'Dir Usage' },
+      { id: 'report', label: 'Report' },
     ],
   },
 ];

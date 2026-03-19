@@ -726,6 +726,7 @@ export type PageId =
   | 'project-cleaner'
   | 'plugins'
   | 'tracking'
+  | 'report'
   | 'settings';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
