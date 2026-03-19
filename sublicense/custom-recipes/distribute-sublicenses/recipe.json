@@ -1,0 +1,57 @@
+{
+    "meta": {
+        "label": "Distribute sublicenses",
+        "description": "Sublicenses are a cooperative mechanism. It is not technically impossible for the administrator of the group who receives the sublicense to alter it. Doing so could however put you in breach of your Dataiku License Agreement.",
+        "icon": "fas fa-expand-arrows-alt"
+    },
+
+    "kind": "PYTHON",
+    "inputRoles": [
+        {
+            "name": "allocate_sublicenses",
+            "label": "Dataset with desired sublicense allocation",
+            "description": "Dataset with desired sublicense allocation",
+            "arity": "UNARY",
+            "required": true,
+            "acceptsDataset": true
+        }
+    ],
+
+    "outputRoles": [
+        {
+            "name": "sublicense_output",
+            "label": "Dataset with actual sublicense allocation",
+            "description": "Dataset with actual sublicense allocation",
+            "arity": "UNARY",
+            "required": true,
+            "acceptsDataset": true
+        },
+                {
+            "name": "total_allocation",
+            "label": "Dataset with total allocation",
+            "description": "Dataset with total allocation",
+            "arity": "UNARY",
+            "required": true,
+            "acceptsDataset": true
+        }
+    ],
+
+    "params": [
+        {
+            "type": "PRESETS",
+            "name": "nodes",
+            "label": "Select all nodes here",
+            "parameterSetId": "nodes"
+        },
+        {
+            "type": "PRESETS",
+            "name": "master-license",
+            "label": "Select master license",
+            "parameterSetId": "master-license"            
+        }
+        
+    ],
+
+    "resourceKeys": []
+
+}

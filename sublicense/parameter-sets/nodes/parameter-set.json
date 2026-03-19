@@ -1,0 +1,33 @@
+{
+    "meta" : {
+        "label": "Credentials",
+        "description": "",
+        "icon": "icon-rocket"
+    },
+    "defaultDefinableInline": false,
+    "defaultDefinableAtProjectLevel": false,
+
+    "pluginParams": [
+    ],
+
+    "params": [
+        {
+            "name": "node_name",
+            "label": "Name of instance",
+            "description": "Your instance name.",
+            "type": "STRING"
+        },
+        {
+            "name": "node_URL",
+            "label": "URL of instance",
+            "description": "Should be https://<YOUR>.<DOMAIN>.<COM>/",
+            "type": "STRING"
+        },
+        {
+            "name": "API_Key",
+            "label": "API Key",
+            "description": "API Key allowing access to instance.",
+            "type": "PASSWORD"
+        }
+    ]
+}
