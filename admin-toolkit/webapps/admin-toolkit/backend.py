@@ -5099,7 +5099,6 @@ def _compare_code_envs_logic(
 ) -> Dict[str, Any]:
     """Classify environment relationships. Returns JSON-serializable result."""
     from collections import defaultdict
-    from itertools import combinations
 
     pyver_map = {name: pyver for name, pyver, _ in envs}
 
@@ -5166,34 +5165,8 @@ def _compare_code_envs_logic(
                     'diffs': diff_table,
                 })
 
-    # YELLOW: near-matches across different buckets
+    # YELLOW: near-matches across different buckets (disabled — O(n^2) too slow)
     yellow_pairs: List[Dict[str, Any]] = []
-    bucket_keys = list(name_buckets.keys())
-
-    for i, j in combinations(range(len(bucket_keys)), 2):
-        ka, kb = bucket_keys[i], bucket_keys[j]
-        sym_diff = ka ^ kb
-        if not sym_diff or len(sym_diff) > max_diff:
-            continue
-
-        only_a_pkgs = sorted(ka - kb)
-        only_b_pkgs = sorted(kb - ka)
-        common = ka & kb
-
-        for env_a, pkgs_a in name_buckets[ka]:
-            for env_b, pkgs_b in name_buckets[kb]:
-                vdiffs = []
-                for pkg in sorted(common):
-                    va, vb = pkgs_a.get(pkg, ''), pkgs_b.get(pkg, '')
-                    if va != vb:
-                        vdiffs.append({'package': pkg, 'versionA': va, 'versionB': vb})
-                yellow_pairs.append({
-                    'envA': env_a,
-                    'envB': env_b,
-                    'onlyInA': only_a_pkgs,
-                    'onlyInB': only_b_pkgs,
-                    'versionDiffs': vdiffs,
-                })
 
     green_groups.sort(key=lambda g: g['envNames'][0])
     purple_groups.sort(key=lambda g: g['envNames'][0])
