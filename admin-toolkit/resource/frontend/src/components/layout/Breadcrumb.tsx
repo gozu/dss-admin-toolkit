@@ -24,6 +24,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   outreach: { label: 'Tools', firstPage: 'outreach' },
   tracking: { label: 'Tools', firstPage: 'outreach' },
   directory: { label: 'Tools', firstPage: 'outreach' },
+  report: { label: 'Tools', firstPage: 'outreach' },
 };
 
 const PAGE_LABELS: Record<PageId, string> = {
@@ -43,6 +44,7 @@ const PAGE_LABELS: Record<PageId, string> = {
   'project-cleaner': 'Project Cleaner',
   plugins: 'Plugin Sync',
   tracking: 'Compliance',
+  report: 'Report',
   settings: 'Settings',
 };
 
