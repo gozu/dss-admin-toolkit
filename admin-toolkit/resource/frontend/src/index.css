@@ -1647,7 +1647,13 @@ pre,
   color: #06312E;
 }
 
-/* Narrative callout */
+/* Right column in two-col should be a stretching flex container */
+.report-two-col > div:last-child {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Narrative callout — grows to fill available space */
 .report-narrative {
   border-left: 4px solid #06312E;
   background: #FEFEF9;
@@ -1657,6 +1663,9 @@ pre,
   line-height: 1.8;
   font-size: 1.15rem;
   font-family: 'Roboto', sans-serif;
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
 }
 
 /* Executive summary layout */
