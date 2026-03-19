@@ -850,6 +850,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 if (r?.sizes && typeof r.sizes === 'object') {
                   dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
                 }
+                // Pre-warm dir-tree backend cache after global footprint completes
+                log('Pre-warming /api/dir-tree after global footprint');
+                fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
               })
               .catch(() => { /* sizes optional */ });
             codeEnvsInterpolator.setBackendProgress(100);
@@ -932,6 +935,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   if (r?.sizes && typeof r.sizes === 'object') {
                     dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
                   }
+                  // Pre-warm dir-tree backend cache after global footprint completes
+                  log('Pre-warming /api/dir-tree after global footprint');
+                  fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
                 })
                 .catch(() => { /* sizes optional */ });
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');

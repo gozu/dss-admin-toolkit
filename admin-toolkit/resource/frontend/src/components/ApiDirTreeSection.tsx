@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { DirTreemap } from './DirTreemap';
 import { DirTreeTable } from './DirTreeTable';
@@ -15,6 +15,13 @@ export function ApiDirTreeSection() {
       loadRoot({ scope, projectKey });
     }
   }, [loadRoot, scope, projectKey, state.isLoading]);
+
+  // Auto-load on mount — no button click required
+  useEffect(() => {
+    if (!state.tree && !state.isLoading && !state.error) {
+      loadRoot({ scope, projectKey });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (state.isLoading && !state.tree) {
     return (
@@ -72,19 +79,10 @@ export function ApiDirTreeSection() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          <h3 className="text-lg font-semibold text-neon-subtle mb-3">
+          <h3 className="text-lg font-semibold text-neon-subtle mb-4">
             Directory Space Analysis
           </h3>
-          <p className="text-sm text-[var(--text-muted)] mb-4">Load a server-side footprint snapshot to analyze disk usage.</p>
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <button
-              onClick={handleLoad}
-              className="px-4 py-2 text-sm rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] text-[var(--text-secondary)] transition-colors"
-            >
-              Load Directory Analysis
-            </button>
-          </div>
-          <p className="text-xs text-[var(--text-muted)]">Scope: DSS Data Directory</p>
+          <p className="text-sm text-[var(--text-muted)]">Loading directory tree from server (DSS Data Directory)...</p>
         </motion.div>
       </div>
     );
