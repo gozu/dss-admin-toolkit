@@ -40,6 +40,17 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
     }
   }, [parsedData.company, theme]);
 
+  // Color helpers
+  const pctColor = (s: string): MetricItem['color'] => {
+    const n = parseInt(s);
+    if (isNaN(n)) return undefined;
+    return n >= 90 ? 'danger' : n >= 70 ? 'warning' : 'success';
+  };
+  const scoreColor = (n: number | undefined): MetricItem['color'] => {
+    if (n == null) return undefined;
+    return n < 50 ? 'danger' : n < 80 ? 'warning' : 'success';
+  };
+
   const company = parsedData.company || 'Unknown Instance';
   const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   const progressPct = ((currentSlide + 1) / totalSlides) * 100;
@@ -67,8 +78,8 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
             <div className="report-slide-number">01</div>
             <div className="report-slide-title">Executive Summary</div>
           </div>
-          <div className="report-two-col" style={{ flex: 0 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', padding: '1rem' }}>
+          <div className="report-exec-layout">
+            <div className="report-exec-score">
               <div className={`report-health-score ${healthScore.status}`}>
                 {healthScore.overall}
               </div>
@@ -77,19 +88,19 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
                 {healthScore.status}
               </div>
             </div>
-            <div>
+            <div className="report-exec-content">
               <div className="report-narrative">
                 {slides?.executive_summary?.overall_status || 'No summary available.'}
               </div>
-            </div>
-          </div>
-          <div className="report-findings-grid">
-            {(slides?.executive_summary?.findings || []).slice(0, 3).map((f, i) => (
-              <div key={i} className="report-finding-card">
-                <div className="report-finding-number">{i + 1}</div>
-                <div>{f}</div>
+              <div className="report-findings-grid">
+                {(slides?.executive_summary?.findings || []).slice(0, 3).map((f, i) => (
+                  <div key={i} className="report-finding-card">
+                    <div className="report-finding-number">{i + 1}</div>
+                    <div>{f}</div>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
         </div>
 
@@ -108,7 +119,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
         <DataSlide index={3} slideNum="03" active={currentSlide === 3} title="Projects Overview"
           metrics={[
             { value: String(parsedData.projects?.length ?? '—'), label: 'Total Projects' },
-            { value: String(healthScore.categories.find(c => c.category === 'project_footprint')?.score ?? '—'), label: 'Project Health' },
+            { value: String(healthScore.categories.find(c => c.category === 'project_footprint')?.score ?? '—'), label: 'Project Health', color: scoreColor(healthScore.categories.find(c => c.category === 'project_footprint')?.score) },
           ]}
           narrative={slides?.projects?.narrative}
           extras={slides?.projects?.highlights?.length ? (
@@ -149,7 +160,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
         {/* ── Slide 7: Code Env Health ────────────────────────────── */}
         <DataSlide index={6} slideNum="06" active={currentSlide === 6} title="Code Environment Health"
           metrics={[
-            { value: String(healthScore.categories.find(c => c.category === 'code_envs')?.score ?? '—'), label: 'Env Health Score' },
+            { value: String(healthScore.categories.find(c => c.category === 'code_envs')?.score ?? '—'), label: 'Env Health Score', color: scoreColor(healthScore.categories.find(c => c.category === 'code_envs')?.score) },
             { value: String(parsedData.codeEnvs?.filter(e => e.usageCount === 0).length ?? '0'), label: 'Unused Envs' },
           ]}
           narrative={slides?.code_env_health?.narrative}
@@ -168,6 +179,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
             (parsedData.filesystemInfo || []).slice(0, 4).map(f => ({
               value: f['Use%'] || '—',
               label: f['Mounted on'] || f.Filesystem,
+              color: pctColor(f['Use%'] || ''),
             }))
           }
           narrative={slides?.filesystem?.narrative}
@@ -356,7 +368,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
 
 /* ── Reusable sub-components ─────────────────────────────────── */
 
-interface MetricItem { value: string; label: string }
+interface MetricItem { value: string; label: string; color?: 'success' | 'warning' | 'danger' }
 
 function SlideWatermark() {
   return (
@@ -381,7 +393,7 @@ function DataSlide({ index, slideNum, active, title, metrics, narrative, extras 
         <div className="report-metrics-grid">
           {metrics.map((m, i) => (
             <div key={i} className="report-metric">
-              <div className="report-metric-value">{m.value}</div>
+              <div className="report-metric-value" style={m.color ? { color: `var(--${m.color})` } : undefined}>{m.value}</div>
               <div className="report-metric-label">{m.label}</div>
             </div>
           ))}
