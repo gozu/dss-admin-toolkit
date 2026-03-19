@@ -33,7 +33,7 @@ const pageTransition = {
 function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
   const { state, setMode, setActivePage, resetComparison, dispatch } = useDiag();
   const { parsedData, isLoading, error, mode, comparison, dataSource } = state;
-  const { isDetecting } = useDataSource();
+  useDataSource();
   const [reloadKey, setReloadKey] = useState(0);
   useApiDataLoader(dataSource === 'api', reloadKey);
 
@@ -94,19 +94,6 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
     setMode('single');
   }, [resetComparison, setMode]);
 
-  // Loading fallback
-  const LoadingFallback = (
-    <div className="min-h-screen flex flex-col bg-[var(--bg-app)]">
-      <Header />
-      <main className="flex-1 flex items-center justify-center">
-        <div className="flex flex-col items-center justify-center py-20">
-          <PacmanLoader />
-          <p className="text-lg text-[var(--text-primary)] mt-6">Loading...</p>
-        </div>
-      </main>
-    </div>
-  );
-
   const InlineLoadingFallback = (
     <main className="flex-1 flex items-center justify-center">
       <div className="flex flex-col items-center justify-center py-20">
@@ -120,10 +107,7 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
   let viewKey: string;
   let viewContent: React.ReactNode;
 
-  if (isDetecting) {
-    viewKey = 'detecting';
-    viewContent = LoadingFallback;
-  } else if (mode === 'comparison' && hasComparisonResults) {
+  if (mode === 'comparison' && hasComparisonResults) {
     viewKey = 'comparison-results';
     viewContent = (
       <Suspense fallback={InlineLoadingFallback}>
@@ -144,7 +128,7 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
       </div>
     );
   } else if (!hasResults) {
-    viewKey = 'landing';
+    viewKey = 'main';
     viewContent = (
       <div className="min-h-screen flex flex-col bg-[var(--bg-app)]">
         <Header />
@@ -168,7 +152,7 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
     );
   } else {
     // Main results view — new sidebar-based layout
-    viewKey = 'results';
+    viewKey = 'main';
     viewContent = (
       <AppShell onOpenPalette={() => setPaletteOpen(true)} onRefreshCache={handleRefreshCache} sqliteFallback={sqliteFallback}>
         <PageRouter />
@@ -182,7 +166,7 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
         <motion.div
           key={viewKey}
           variants={pageVariants}
-          initial="initial"
+          initial={false}
           animate="animate"
           exit="exit"
           transition={pageTransition}
