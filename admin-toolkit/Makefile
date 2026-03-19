@@ -54,7 +54,6 @@ DEPLOY_COMMIT_PATHS := \
 	webapps \
 	resource/dist \
 	resource/frontend/src \
-	resource/frontend/tests \
 	resource/frontend/public \
 	resource/frontend/index.html \
 	resource/frontend/package.json \
