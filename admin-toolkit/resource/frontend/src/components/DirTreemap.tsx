@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Chart as ChartJS, Tooltip, Legend } from 'chart.js';
 import { TreemapController, TreemapElement } from 'chartjs-chart-treemap';
@@ -13,6 +13,7 @@ interface DirTreemapProps {
   onExpand?: (dirPath: string) => Promise<DirEntry | null>;
   expandedNodes?: Map<string, DirEntry>;
   isExpanding?: boolean;
+  onVisibleDirectoriesChange?: (dirPaths: string[]) => void;
 }
 
 // Color palette for different depths
@@ -128,7 +129,7 @@ function wouldCreateDuplicateView(
   return false;
 }
 
-export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTreemapProps) {
+export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisibleDirectoriesChange }: DirTreemapProps) {
   const [currentNode, setCurrentNode] = useState<DirEntry | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<DirEntry[]>([]);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
@@ -231,6 +232,16 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
       _node: activeNode,
     }];
   }, [activeNode, expandedNodes]);
+
+  useEffect(() => {
+    if (!activeNode || !onVisibleDirectoriesChange) return;
+    const candidates = (expandedNodes?.get(activeNode.path)?.children || activeNode.children)
+      .filter((child) => child.isDirectory && child.hasHiddenChildren)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 3)
+      .map((child) => child.path);
+    onVisibleDirectoriesChange(candidates);
+  }, [activeNode, expandedNodes, onVisibleDirectoriesChange]);
 
   const chartData = useMemo(() => {
     if (!activeNode) return { datasets: [] };

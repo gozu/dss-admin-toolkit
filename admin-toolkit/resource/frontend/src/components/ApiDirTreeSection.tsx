@@ -5,7 +5,7 @@ import { DirTreeTable } from './DirTreeTable';
 import { useApiDirTree } from '../hooks';
 
 export function ApiDirTreeSection() {
-  const { state, loadRoot, abortLoad, expandDirectory } = useApiDirTree();
+  const { state, loadRoot, abortLoad, expandDirectory, schedulePrefetch, cancelPrefetch } = useApiDirTree();
 
   const scope = state.scope;
   const projectKey = state.projectKey;
@@ -22,6 +22,10 @@ export function ApiDirTreeSection() {
       loadRoot({ scope, projectKey });
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => () => {
+    cancelPrefetch();
+  }, [cancelPrefetch]);
 
   if (state.isLoading && !state.tree) {
     return (
@@ -121,6 +125,7 @@ export function ApiDirTreeSection() {
         onExpand={expandDirectory}
         expandedNodes={state.expandedNodes}
         isExpanding={state.isExpanding}
+        onVisibleDirectoriesChange={schedulePrefetch}
       />
       <DirTreeTable
         data={state.tree}
