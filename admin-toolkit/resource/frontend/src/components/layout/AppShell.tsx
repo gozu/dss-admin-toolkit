@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { Sidebar } from './Sidebar';
 import { Breadcrumb } from './Breadcrumb';
@@ -8,6 +8,9 @@ import { exportAllTablesToZip } from '../../utils/exportTables';
 import { exportDataToZip } from '../../utils/exportData';
 import { useDiag } from '../../context/DiagContext';
 import { SqliteWarningBanner } from '../SqliteWarningBanner';
+import { useReportGenerator } from '../../hooks/useReportGenerator';
+import { ReportOverlay } from '../ReportOverlay';
+import { SearchableCombobox } from '../SearchableCombobox';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -28,6 +31,54 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
   const { theme, toggle: toggleTheme } = useTheme();
   const { state: { parsedData } } = useDiag();
 
+  // Report generator
+  const report = useReportGenerator();
+  const [showReportPopover, setShowReportPopover] = useState(false);
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
+  const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
+  const reportPopoverRef = useRef<HTMLDivElement>(null);
+
+  const llmLabels = useMemo(() => report.llms.map(l => l.label), [report.llms]);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showReportPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (reportPopoverRef.current && !reportPopoverRef.current.contains(e.target as Node)) {
+        setShowReportPopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showReportPopover]);
+
+  const handleReportButtonClick = () => {
+    if (report.status === 'ready' || report.status === 'viewing') {
+      report.openOverlay();
+      return;
+    }
+    if (report.status === 'generating') return;
+    // Show disclaimer first time, then popover
+    if (!disclaimerAccepted) {
+      setShowDisclaimer(true);
+    } else {
+      setShowReportPopover(true);
+      report.openSelector();
+    }
+  };
+
+  const handleDisclaimerAccept = () => {
+    setShowDisclaimer(false);
+    setDisclaimerAccepted(true);
+    setShowReportPopover(true);
+    report.openSelector();
+  };
+
+  const handleGenerate = () => {
+    setShowReportPopover(false);
+    report.generate(parsedData);
+  };
+
   // Listen for viewport changes to auto-collapse
   useEffect(() => {
     const mql = window.matchMedia(`(max-width: ${COLLAPSE_BREAKPOINT - 1}px)`);
@@ -45,6 +96,14 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
   }, []);
 
   const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
+
+  const reportBtnClass = [
+    'flex items-center justify-center w-8 h-8 rounded-md transition-colors',
+    !parsedData.dataReady ? 'opacity-30 cursor-not-allowed text-[var(--text-tertiary)]'
+      : report.status === 'ready' ? 'text-[var(--accent)] report-btn-pulse'
+      : report.status === 'generating' ? 'text-[var(--accent)]'
+      : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]',
+  ].join(' ');
 
   return (
     <div
@@ -96,6 +155,62 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Generate Report button */}
+          <div className="relative" ref={reportPopoverRef}>
+            <button
+              type="button"
+              onClick={handleReportButtonClick}
+              disabled={!parsedData.dataReady}
+              title={report.status === 'generating' ? `Generating report... ${report.phase}` : report.status === 'ready' ? 'View report' : 'Generate quarterly report'}
+              className={reportBtnClass}
+            >
+              {report.status === 'generating' ? (
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+              )}
+            </button>
+
+            {/* LLM selector popover */}
+            {showReportPopover && (
+              <div className="absolute right-0 top-full mt-2 w-72 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-lg p-3 z-50 space-y-3">
+                <div className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">Generate Report</div>
+                {report.isLoadingLlms ? (
+                  <div className="text-sm text-[var(--text-tertiary)]">Loading models...</div>
+                ) : report.llms.length === 0 ? (
+                  <div className="text-sm text-[var(--text-tertiary)]">No LLMs available. Configure an LLM connection in this project.</div>
+                ) : (
+                  <>
+                    <SearchableCombobox
+                      value={report.selectedLlmLabel}
+                      onChange={report.setSelectedLlmLabel}
+                      options={llmLabels}
+                      placeholder="Select model..."
+                      className="w-full px-3 py-1.5 text-sm rounded-lg bg-[var(--bg-elevated)] border border-[var(--border-default)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleGenerate}
+                      disabled={!report.selectedLlmLabel}
+                      className="w-full px-3 py-1.5 text-sm font-medium rounded-lg bg-[var(--accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Generate
+                    </button>
+                  </>
+                )}
+                {report.error && (
+                  <div className="text-xs text-[var(--danger)] mt-1">{report.error}</div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Export all data as JSON zip */}
           <button
             type="button"
@@ -246,6 +361,54 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
 
 
       </main>
+
+      {/* AI Disclaimer modal */}
+      {showDisclaimer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowDisclaimer(false)}>
+          <div
+            className="mx-4 max-w-md rounded-xl bg-[var(--bg-elevated)] border border-[var(--border-default)] shadow-2xl p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-[var(--status-warning-bg)] border border-[var(--status-warning-border)] flex items-center justify-center">
+                <svg className="w-5 h-5 text-[var(--neon-amber)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">AI Report Disclaimer</h3>
+            </div>
+            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              The quarterly health check report is generated by AI and may contain <strong className="text-[var(--text-primary)]">inaccurate, incomplete, or misleading</strong> analysis.
+            </p>
+            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+              Always verify findings against official Dataiku documentation and your own system knowledge before presenting to customers.
+            </p>
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowDisclaimer(false)}
+                className="px-4 py-2 text-sm rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDisclaimerAccept}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-[var(--accent)] text-white hover:opacity-90 transition-opacity"
+              >
+                I understand, proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Report overlay */}
+      {report.isOverlayOpen && report.reportData && (
+        <ReportOverlay
+          reportData={report.reportData}
+          parsedData={parsedData}
+          onClose={report.closeOverlay}
+        />
+      )}
     </div>
   );
 }

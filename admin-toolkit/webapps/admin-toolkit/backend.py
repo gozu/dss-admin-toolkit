@@ -8395,6 +8395,101 @@ def api_logs_ai_analysis():
     )
 
 
+@app.route('/api/report/generate', methods=['POST'])
+def api_report_generate():
+    """Generate a quarterly health check report via LLM Mesh. SSE with phase-only events."""
+    body = request.get_json(force=True)
+    llm_id = (body.get('llmId') or '').strip()
+    diagnostic_data = body.get('diagnosticData') or {}
+
+    _REPORT_SYSTEM_PROMPT = (
+        "You are a Dataiku DSS health check expert generating a quarterly report "
+        "for a customer's Technical Account Manager.\n\n"
+        "PHASE 1 - Section Analysis:\n"
+        "For each diagnostic section in the data below, provide a concise narrative "
+        "(2-4 sentences) analyzing what is healthy, what needs attention, and citing "
+        "specific numbers from the data.\n\n"
+        "PHASE 2 - Cross-Cutting Synthesis:\n"
+        "After analyzing all sections, synthesize findings into:\n"
+        "- An executive summary (3 key findings + overall health status)\n"
+        "- Critical recommendations (must-fix items affecting stability/security)\n"
+        "- Important recommendations (should-fix within next quarter)\n"
+        "- Nice-to-have optimizations\n"
+        "- A prioritized action plan with timeline estimates\n\n"
+        'Return ONLY a valid JSON object (no markdown fences, no extra text) with this structure:\n'
+        '{\n'
+        '  "slides": {\n'
+        '    "executive_summary": { "findings": ["..."], "overall_status": "..." },\n'
+        '    "instance_overview": { "narrative": "..." },\n'
+        '    "projects": { "narrative": "...", "highlights": ["..."] },\n'
+        '    "project_footprint": { "narrative": "...", "risks": ["..."] },\n'
+        '    "code_envs": { "narrative": "..." },\n'
+        '    "code_env_health": { "narrative": "...", "upgrade_paths": ["..."] },\n'
+        '    "filesystem": { "narrative": "...", "warnings": ["..."] },\n'
+        '    "memory": { "narrative": "...", "tuning_recs": ["..."] },\n'
+        '    "connections": { "narrative": "..." },\n'
+        '    "issues": { "narrative": "...", "risk_level": "low|medium|high|critical" },\n'
+        '    "users": { "narrative": "..." },\n'
+        '    "logs": { "narrative": "...", "patterns": ["..."] },\n'
+        '    "rec_critical": { "items": [{ "title": "...", "description": "...", "impact": "..." }] },\n'
+        '    "rec_important": { "items": [{ "title": "...", "description": "...", "impact": "..." }] },\n'
+        '    "rec_nice_to_have": { "items": [{ "title": "...", "description": "...", "impact": "..." }] },\n'
+        '    "action_plan": { "priorities": [{ "action": "...", "timeline": "...", "effort": "low|medium|high" }] }\n'
+        '  }\n'
+        '}\n\n'
+        "Be concise. Each narrative: 2-4 sentences. Each recommendation: specific and actionable."
+    )
+
+    def generate():
+        if not llm_id:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": "llmId is required"})
+            return
+        if not diagnostic_data:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": "No diagnostic data provided. Please wait for all data to load."})
+            return
+
+        try:
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Preparing data"})
+
+            client = dataiku.api_client()
+            project_key = dataiku.default_project_key()
+            project = client.get_project(project_key)
+
+            user_message = "Analyze this DSS instance diagnostic data:\n\n" + json.dumps(diagnostic_data, indent=None, default=str)
+
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Analyzing diagnostics"})
+
+            completion = project.get_llm(llm_id).new_completion()
+            completion.settings['maxOutputTokens'] = 16384
+            completion.with_message(message=_REPORT_SYSTEM_PROMPT, role='system')
+            completion.with_message(message=user_message, role='user')
+
+            # Non-streamed call — JSON output cannot be progressively rendered
+            resp = completion.execute()
+            report_text = str(resp.text)
+
+            # Strip markdown fences if present
+            import re
+            report_text = re.sub(r'^```(?:json)?\s*\n?', '', report_text)
+            report_text = re.sub(r'\n?```\s*$', '', report_text).strip()
+
+            yield "event: done\ndata: %s\n\n" % json.dumps({
+                "report": report_text,
+                "llmId": llm_id,
+            })
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": str(e)})
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route('/api/dir-tree')
 def api_dir_tree():
     client = dataiku.api_client()
