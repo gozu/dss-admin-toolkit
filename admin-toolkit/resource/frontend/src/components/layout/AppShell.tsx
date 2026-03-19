@@ -5,6 +5,8 @@ import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
 import dkulogo from '../../assets/dkulogo.png';
 import { exportAllTablesToZip } from '../../utils/exportTables';
+import { exportDataToZip } from '../../utils/exportData';
+import { useDiag } from '../../context/DiagContext';
 import { SqliteWarningBanner } from '../SqliteWarningBanner';
 
 const COLLAPSE_BREAKPOINT = 1280;
@@ -24,6 +26,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
   );
   const [showAbout, setShowAbout] = useState(false);
   const { theme, toggle: toggleTheme } = useTheme();
+  const { state: { parsedData } } = useDiag();
 
   // Listen for viewport changes to auto-collapse
   useEffect(() => {
@@ -93,6 +96,21 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Export all data as JSON zip */}
+          <button
+            type="button"
+            onClick={() => exportDataToZip(parsedData)}
+            disabled={!parsedData.dataReady}
+            title="Export all data as JSON (zip)"
+            className={`flex items-center justify-center w-8 h-8 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${!parsedData.dataReady ? 'opacity-30 cursor-not-allowed' : ''}`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 8v13H3V8" />
+              <path d="M1 3h22v5H1z" />
+              <path d="M10 12h4" />
+            </svg>
+          </button>
+
           {/* Export all tables as CSV zip */}
           <button
             type="button"

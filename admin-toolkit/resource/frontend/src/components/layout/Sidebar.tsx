@@ -208,24 +208,33 @@ interface SidebarProps {
   onRefreshCache?: () => Promise<void>;
 }
 
-export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
+export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
   const { state, setActivePage, addDebugLog } = useDiag();
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshDone, setRefreshDone] = useState(false);
+  const { activePage, parsedData } = state;
+  const dataReady = !!parsedData.dataReady;
+
+  const [statusPhase, setStatusPhase] = useState<'loading' | 'complete' | 'refresh'>(
+    dataReady ? 'refresh' : 'loading',
+  );
+
+  useEffect(() => {
+    if (!dataReady) {
+      setStatusPhase('loading');
+      return;
+    }
+    setStatusPhase('complete');
+    const timer = setTimeout(() => setStatusPhase('refresh'), 2500);
+    return () => clearTimeout(timer);
+  }, [dataReady]);
 
   const handleRefresh = async () => {
-    if (refreshing || !onRefreshCache) return;
-    setRefreshing(true);
-    setRefreshDone(false);
     try {
-      await onRefreshCache();
-      setRefreshDone(true);
-      setTimeout(() => setRefreshDone(false), 1500);
-    } finally {
-      setRefreshing(false);
+      await fetch('/api/cache/clear', { method: 'POST' });
+    } catch {
+      /* best-effort */
     }
+    window.location.reload();
   };
-  const { activePage, parsedData } = state;
 
   // Track previous availability to detect loading → ready transitions
   const prevAvailRef = useRef<Partial<Record<PageId, PageAvailability>>>({});
@@ -340,39 +349,42 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
     >
       {/* Refresh cache + collapse toggle */}
       <div className={`flex items-center px-4 py-4 ${collapsed ? 'flex-col gap-1.5 px-2' : 'justify-between'}`}>
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title={refreshDone ? 'Cache cleared' : 'Refresh cache'}
-          className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 ${collapsed ? 'justify-center' : ''}`}
-        >
-          {refreshDone ? (
+        {statusPhase === 'loading' && (
+          <div className={`flex items-center gap-2 px-2 py-1 ${collapsed ? 'justify-center' : ''}`}>
+            <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            {!collapsed && (
+              <span className="text-sm font-medium text-[var(--text-tertiary)]">
+                Loading<span className="inline-block w-[1.5ch] text-left animate-[dots_1.4s_steps(4,end)_infinite]" />
+              </span>
+            )}
+          </div>
+        )}
+        {statusPhase === 'complete' && (
+          <div className={`flex items-center gap-2 px-2 py-1 animate-[blink_0.8s_ease-in-out_3] ${collapsed ? 'justify-center' : ''}`}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neon-green)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
-          ) : (
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className={refreshing ? 'animate-spin' : ''}
-            >
+            {!collapsed && (
+              <span className="text-sm font-medium text-[var(--neon-green)]">Complete!</span>
+            )}
+          </div>
+        )}
+        {statusPhase === 'refresh' && (
+          <button
+            type="button"
+            onClick={handleRefresh}
+            title="Refresh cache"
+            className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${collapsed ? 'justify-center' : ''}`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" />
               <polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
               <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
             </svg>
-          )}
-          {!collapsed && (
-            <span className="text-sm font-medium">{refreshDone ? 'Done' : 'Refresh'}</span>
-          )}
-        </button>
+            {!collapsed && <span className="text-sm font-medium">Refresh</span>}
+          </button>
+        )}
         <button
           type="button"
           onClick={onToggleCollapse}

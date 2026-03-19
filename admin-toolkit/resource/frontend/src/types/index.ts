@@ -506,6 +506,9 @@ export interface ParsedData {
   // General settings raw
   generalSettings?: Record<string, unknown>;
 
+  // Loading state
+  dataReady?: boolean;
+
   // Directory listing
   dirTree?: DirTreeData;
 }
