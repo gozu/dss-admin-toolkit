@@ -1336,6 +1336,18 @@ pre,
   animation: count-up 0.5s var(--ease-out);
 }
 
+/* Sidebar status animations */
+@keyframes dots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* =============================================================================
    File Upload Dropzone
    ============================================================================= */
