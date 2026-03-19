@@ -1608,7 +1608,7 @@ pre,
   display: grid;
   grid-template-columns: 2fr 3fr;
   gap: 3rem;
-  align-items: stretch;
+  align-items: start;
   flex: 1;
   min-height: 0;
 }
@@ -1653,7 +1653,7 @@ pre,
   flex-direction: column;
 }
 
-/* Narrative callout — grows to fill available space */
+/* Narrative callout — fits content, not stretched */
 .report-narrative {
   border-left: 4px solid #3EDAB2;
   background: rgba(254, 254, 249, 0.05);
@@ -1664,9 +1664,6 @@ pre,
   font-size: 1.25rem;
   white-space: pre-line;
   font-family: 'Roboto', sans-serif;
-  flex: 1;
-  display: flex;
-  align-items: flex-start;
 }
 
 /* Executive summary layout */
