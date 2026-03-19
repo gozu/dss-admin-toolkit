@@ -54,7 +54,8 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
 
   const handleReportButtonClick = () => {
     if (report.status === 'ready' || report.status === 'viewing') {
-      report.openOverlay();
+      // Open report in a new tab
+      openReportInNewTab();
       return;
     }
     if (report.status === 'generating') return;
@@ -65,6 +66,52 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
       setShowReportPopover(true);
       report.openSelector();
     }
+  };
+
+  const openReportInNewTab = () => {
+    if (!report.reportData) return;
+    // Briefly show overlay off-screen to render DOM, then export to new tab
+    report.openOverlay();
+    // Use requestAnimationFrame to wait for the overlay DOM to render
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const overlay = document.querySelector('.report-overlay') as HTMLElement;
+        if (overlay) {
+          // Extract styles and clone DOM for new tab
+          const styleTags = Array.from(document.querySelectorAll('head style'));
+          let css = '';
+          for (const tag of styleTags) css += tag.textContent + '\n';
+
+          const clone = overlay.cloneNode(true) as HTMLElement;
+          // Set first slide active
+          const slides = clone.querySelectorAll('[data-slide-index]');
+          slides.forEach((s, i) => {
+            (s as HTMLElement).classList.remove('active');
+            if (i === 0) (s as HTMLElement).classList.add('active');
+          });
+
+          const navScript = `(function(){var c=0,s=document.querySelectorAll('[data-slide-index]'),t=s.length,ct=document.getElementById('slide-counter');function show(i){s.forEach(function(e){e.classList.remove('active')});if(s[i])s[i].classList.add('active');if(ct)ct.textContent=(i+1)+' / '+t;var pb=document.querySelector('.report-progress-bar');if(pb)pb.style.width=((i+1)/t*100)+'%';}document.addEventListener('keydown',function(e){if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();c=Math.min(c+1,t-1);show(c);}else if(e.key==='ArrowLeft'){e.preventDefault();c=Math.max(c-1,0);show(c);}});var p=document.getElementById('nav-prev'),n=document.getElementById('nav-next');if(p)p.onclick=function(){c=Math.max(c-1,0);show(c);};if(n)n.onclick=function(){c=Math.min(c+1,t-1);show(c);};var dl=document.querySelector('[title="Download as HTML"]');if(dl)dl.parentElement.removeChild(dl);var cl=document.querySelector('[title="Close (Esc)"]');if(cl)cl.parentElement.removeChild(cl);})();`;
+
+          // Add IDs for nav script
+          const navBtns = clone.querySelectorAll('.report-nav-btn');
+          if (navBtns[0]) navBtns[0].id = 'nav-prev';
+          if (navBtns[1]) navBtns[1].id = 'nav-next';
+          const counter = clone.querySelector('.report-nav span');
+          if (counter) counter.id = 'slide-counter';
+
+          const company = parsedData.company || 'unknown';
+          const date = new Date().toISOString().slice(0, 10);
+          const html = `<!DOCTYPE html><html data-theme="${theme}"><head><meta charset="utf-8"><title>Health Check - ${company} - ${date}</title><style>@import url('https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Roboto:wght@400;500;700&display=swap');${css}body{margin:0;overflow:hidden;font-family:'Roboto',sans-serif;}</style></head><body>${clone.outerHTML}<script>${navScript}</script></body></html>`;
+
+          const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          window.open(url, '_blank');
+          // Clean up after a delay
+          setTimeout(() => URL.revokeObjectURL(url), 5000);
+        }
+        report.closeOverlay();
+      });
+    });
   };
 
   const handleDisclaimerAccept = () => {
