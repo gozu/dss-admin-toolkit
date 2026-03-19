@@ -15,6 +15,9 @@ function _readDirTreeDepth(): number {
 }
 const DEFAULT_MAX_DEPTH = _readDirTreeDepth();
 const EXPAND_DEPTH = 5;
+const SPECULATIVE_EXPAND_DEPTH = 3;
+const SPECULATIVE_PREFETCH_LIMIT = 3;
+const SPECULATIVE_COOLDOWN_MS = 400;
 
 export type { FootprintScope };
 
@@ -71,6 +74,13 @@ interface DirTreeLoadOptions {
   projectKey?: string;
 }
 
+interface ExpandDirectoryOptions {
+  priority?: 'user' | 'speculative';
+  debounceMs?: number;
+  suppressErrors?: boolean;
+  maxDepth?: number;
+}
+
 function buildScopeQuery(scope: FootprintScope, projectKey: string): string {
   const params = new URLSearchParams();
   params.set('scope', scope);
@@ -98,6 +108,15 @@ export function useApiDirTree() {
   const loadAbortRef = useRef<AbortController | null>(null);
   const expandAbortRef = useRef<AbortController | null>(null);
   const expandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const expandedNodesRef = useRef(state.expandedNodes);
+  const activeRequestRef = useRef<{ path: string; priority: 'user' | 'speculative' } | null>(null);
+  const inFlightExpandsRef = useRef(new Map<string, Promise<DirEntry | null>>());
+  const lastExpandCompletedAtRef = useRef(0);
+
+  useEffect(() => {
+    expandedNodesRef.current = state.expandedNodes;
+  }, [state.expandedNodes]);
 
   const abortLoad = useCallback(() => {
     const controller = loadAbortRef.current;
@@ -124,6 +143,10 @@ export function useApiDirTree() {
       if (expandTimerRef.current) {
         clearTimeout(expandTimerRef.current);
         expandTimerRef.current = null;
+      }
+      if (prefetchTimerRef.current) {
+        clearTimeout(prefetchTimerRef.current);
+        prefetchTimerRef.current = null;
       }
     };
   }, []);
@@ -288,35 +311,84 @@ export function useApiDirTree() {
     }
   }, [dispatch]);
 
-  const expandDirectory = useCallback((dirPath: string): Promise<DirEntry | null> => {
-    if (!dirPath) return Promise.resolve(null);
-
-    // Abort any in-flight expand request
+  const abortSpeculativeWork = useCallback(() => {
+    if (prefetchTimerRef.current) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+    }
+    if (activeRequestRef.current?.priority !== 'speculative') {
+      return;
+    }
     if (expandAbortRef.current) {
       expandAbortRef.current.abort();
       expandAbortRef.current = null;
     }
-    // Clear any pending debounce timer
-    if (expandTimerRef.current) {
+  }, []);
+
+  const expandDirectory = useCallback((dirPath: string, options: ExpandDirectoryOptions = {}): Promise<DirEntry | null> => {
+    if (!dirPath) return Promise.resolve(null);
+    const priority = options.priority || 'user';
+    const debounceMs = options.debounceMs ?? 0;
+    const suppressErrors = options.suppressErrors ?? (priority === 'speculative');
+    const maxDepth = options.maxDepth ?? (priority === 'speculative' ? SPECULATIVE_EXPAND_DEPTH : EXPAND_DEPTH);
+    const cached = expandedNodesRef.current.get(dirPath);
+    if (cached) {
+      return Promise.resolve(cached);
+    }
+    const existing = inFlightExpandsRef.current.get(dirPath);
+    if (existing) {
+      return existing;
+    }
+
+    if (priority === 'speculative') {
+      const now = Date.now();
+      if (activeRequestRef.current || now - lastExpandCompletedAtRef.current < SPECULATIVE_COOLDOWN_MS) {
+        return Promise.resolve(null);
+      }
+    } else {
+      abortSpeculativeWork();
+    }
+
+    if (expandAbortRef.current && activeRequestRef.current?.priority !== 'speculative') {
+      expandAbortRef.current.abort();
+      expandAbortRef.current = null;
+    }
+
+    if (priority === 'user' && expandTimerRef.current) {
       clearTimeout(expandTimerRef.current);
       expandTimerRef.current = null;
     }
 
-    return new Promise((resolve) => {
-      expandTimerRef.current = setTimeout(async () => {
-        expandTimerRef.current = null;
+    const promise = new Promise<DirEntry | null>((resolve) => {
+      const run = async () => {
+        if (priority === 'speculative' && activeRequestRef.current) {
+          resolve(null);
+          return;
+        }
         const scopeQuery = buildScopeQuery(state.scope, state.projectKey);
-        const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${EXPAND_DEPTH}&${scopeQuery}`;
+        const url = `/api/dir-tree?path=${encodeURIComponent(dirPath)}&maxDepth=${maxDepth}&${scopeQuery}`;
         const controller = new AbortController();
         expandAbortRef.current = controller;
+        activeRequestRef.current = { path: dirPath, priority };
 
-        dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expand ${dirPath} via ${state.scope}` } });
-        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: true, error: null } });
+        dispatch({
+          type: 'ADD_DEBUG_LOG',
+          payload: {
+            scope: 'dir-tree',
+            level: 'info',
+            message: `${priority === 'speculative' ? 'Prefetch' : 'Expand'} ${dirPath} via ${state.scope}`,
+          }
+        });
+        dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: priority === 'user', error: null } });
         try {
           const data = await fetchJson<DirTreeExpandResponse>(url, { signal: controller.signal });
           if (expandAbortRef.current === controller) {
             expandAbortRef.current = null;
           }
+          if (activeRequestRef.current?.path === dirPath) {
+            activeRequestRef.current = null;
+          }
+          lastExpandCompletedAtRef.current = Date.now();
           if (data.debug) {
             const dbg = data.debug;
             dispatch({
@@ -330,7 +402,14 @@ export function useApiDirTree() {
           }
           const node = data.node || null;
           if (node) {
-            dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'info', message: `Expanded ${dirPath} (${node.children.length} children)` } });
+            dispatch({
+              type: 'ADD_DEBUG_LOG',
+              payload: {
+                scope: 'dir-tree',
+                level: 'info',
+                message: `${priority === 'speculative' ? 'Prefetched' : 'Expanded'} ${dirPath} (${node.children.length} children)`,
+              }
+            });
             dispatch({ type: 'SET_API_DIR_TREE_EXPANDED_NODE', payload: { path: dirPath, node } });
           } else {
             dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false } });
@@ -340,28 +419,74 @@ export function useApiDirTree() {
           if (expandAbortRef.current === controller) {
             expandAbortRef.current = null;
           }
+          if (activeRequestRef.current?.path === dirPath) {
+            activeRequestRef.current = null;
+          }
+          lastExpandCompletedAtRef.current = Date.now();
           if (err instanceof DOMException && err.name === 'AbortError') {
             dispatch({
               type: 'ADD_DEBUG_LOG',
-              payload: { scope: 'dir-tree', level: 'info', message: `Expand canceled ${dirPath}` },
+              payload: { scope: 'dir-tree', level: 'info', message: `${priority === 'speculative' ? 'Prefetch' : 'Expand'} canceled ${dirPath}` },
             });
             dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: null } });
             resolve(null);
             return;
           }
           const message = err instanceof Error ? err.message : 'Unknown error';
-          dispatch({ type: 'ADD_DEBUG_LOG', payload: { scope: 'dir-tree', level: 'error', message: `Expand failed ${dirPath}: ${message}` } });
-          dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: message } });
+          dispatch({
+            type: 'ADD_DEBUG_LOG',
+            payload: {
+              scope: 'dir-tree',
+              level: suppressErrors ? 'warn' : 'error',
+              message: `${priority === 'speculative' ? 'Prefetch' : 'Expand'} failed ${dirPath}: ${message}`,
+            }
+          });
+          dispatch({ type: 'SET_API_DIR_TREE', payload: { isExpanding: false, error: suppressErrors ? null : message } });
           resolve(null);
+        } finally {
+          inFlightExpandsRef.current.delete(dirPath);
         }
-      }, 150);
+      };
+
+      if (debounceMs > 0) {
+        expandTimerRef.current = setTimeout(() => {
+          expandTimerRef.current = null;
+          void run();
+        }, debounceMs);
+      } else {
+        void run();
+      }
     });
-  }, [dispatch, state.scope, state.projectKey]);
+    inFlightExpandsRef.current.set(dirPath, promise);
+    return promise;
+  }, [abortSpeculativeWork, dispatch, state.scope, state.projectKey]);
+
+  const schedulePrefetch = useCallback((dirPaths: string[]) => {
+    if (prefetchTimerRef.current) {
+      clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+    }
+    if (!state.tree || !dirPaths.length) {
+      return;
+    }
+    prefetchTimerRef.current = setTimeout(() => {
+      prefetchTimerRef.current = null;
+      const nextPaths = dirPaths
+        .filter((path) => !!path && !expandedNodesRef.current.has(path) && !inFlightExpandsRef.current.has(path))
+        .slice(0, SPECULATIVE_PREFETCH_LIMIT);
+      void nextPaths.reduce<Promise<DirEntry | null>>(
+        (chain, path) => chain.then(() => expandDirectory(path, { priority: 'speculative' })),
+        Promise.resolve(null),
+      );
+    }, SPECULATIVE_COOLDOWN_MS);
+  }, [expandDirectory, state.tree]);
 
   return {
     state,
     loadRoot,
     abortLoad,
     expandDirectory,
+    schedulePrefetch,
+    cancelPrefetch: abortSpeculativeWork,
   };
 }
