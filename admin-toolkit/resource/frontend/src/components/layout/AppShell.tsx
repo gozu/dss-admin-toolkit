@@ -5,6 +5,7 @@ import { Breadcrumb } from './Breadcrumb';
 import { useTheme } from '../../hooks/useTheme';
 import dkulogo from '../../assets/dkulogo.png';
 import { exportAllTablesToZip } from '../../utils/exportTables';
+import { SqliteWarningBanner } from '../SqliteWarningBanner';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_EXPANDED = 160;
@@ -14,9 +15,10 @@ interface AppShellProps {
   children: ReactNode;
   onOpenPalette?: () => void;
   onRefreshCache?: () => Promise<void>;
+  sqliteFallback?: boolean;
 }
 
-export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellProps) {
+export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallback }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < COLLAPSE_BREAKPOINT,
   );
@@ -200,6 +202,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache }: AppShellPr
 
       {/* Main content area — scrollable */}
       <main className="overflow-y-auto bg-[var(--bg-app)] flex flex-col relative">
+        {sqliteFallback && <SqliteWarningBanner />}
         {children}
 
         {/* Floating bug report button */}

@@ -328,18 +328,18 @@ export function CodeEnvCleaner() {
           {showProgress && (
             <div className="mt-3">
               <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
-                <span>{analysisLoading?.message || 'Analyzing code environments...'}</span>
+                <span>{progressPct >= 99 ? 'Finalizing results...' : (analysisLoading?.message || 'Analyzing code environments...')}</span>
                 <span className="font-mono">{progressPct}%</span>
               </div>
               <div className="mt-2 h-2 rounded-full bg-[var(--bg-glass)] overflow-hidden">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-[var(--neon-cyan)] to-[var(--neon-green)] transition-all duration-300 ease-out"
+                  className={`h-full rounded-full bg-gradient-to-r from-[var(--neon-cyan)] to-[var(--neon-green)] transition-all duration-300 ease-out${progressPct >= 99 ? ' animate-pulse' : ''}`}
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
               {analysisLoading?.phase && (
                 <div className="mt-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-                  {analysisLoading.phase.replace(/_/g, ' ')}
+                  {progressPct >= 99 ? 'finalizing' : analysisLoading.phase.replace(/_/g, ' ')}
                 </div>
               )}
             </div>

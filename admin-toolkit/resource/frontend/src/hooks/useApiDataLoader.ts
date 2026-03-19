@@ -13,8 +13,10 @@ import type {
   ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
+  CodeEnvCompareResult,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
+import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
 import { useProgressInterpolation } from './useProgressInterpolation';
 
 interface OverviewResponse extends Partial<ParsedData> {
@@ -253,6 +255,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
       if (level !== 'info') return true;
       // Suppress all per-project/per-env info-level events
       if (event.projectKey) return false;
+      // Suppress per-env usage check lines (too spammy: 238 lines)
+      const step = (event.step || '').replace(/[-\s]/g, '_').toLowerCase();
+      if (step === 'code_env_usage_check') return false;
       return true;
     };
     const basicProjectsEnabled = (() => {
@@ -516,7 +521,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         // Fetch backend settings for configurable timeouts
         let beSettings: Record<string, number> = {};
         try {
-          beSettings = await fetchJson<Record<string, number>>('/api/settings');
+          beSettings = await fetchJson<{ current: Record<string, number>; defaults: Record<string, number> }>('/api/settings').then((d) => d.current);
           log('Backend settings loaded');
         } catch { log('Backend settings fetch failed, using defaults', 'warn'); }
 
@@ -836,6 +841,20 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               phase: 'done',
               message: 'Code env analysis completed',
             });
+            fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+              .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+              .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
+            // Lazy-load code env sizes (global footprint is deferred)
+            fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+              .then((r) => {
+                if (r?.sizes && typeof r.sizes === 'object') {
+                  dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                }
+                // Pre-warm dir-tree backend cache after global footprint completes
+                log('Pre-warming /api/dir-tree after global footprint');
+                fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+              })
+              .catch(() => { /* sizes optional */ });
             codeEnvsInterpolator.setBackendProgress(100);
             codeEnvsLastProgressRef.current = 100;
             codeEnvsInterpolationEnabledRef.current = false;
@@ -907,6 +926,20 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'done',
                 message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
               });
+              fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+                .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+                .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
+              // Lazy-load code env sizes (global footprint is deferred)
+              fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                .then((r) => {
+                  if (r?.sizes && typeof r.sizes === 'object') {
+                    dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                  }
+                  // Pre-warm dir-tree backend cache after global footprint completes
+                  log('Pre-warming /api/dir-tree after global footprint');
+                  fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+                })
+                .catch(() => { /* sizes optional */ });
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
               dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
@@ -916,6 +949,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'error',
                 message: 'Code env analysis failed',
               });
+              dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } });
             }
             log(`Failed /api/code-envs: ${settledError(codeEnvsRes)}`, 'warn');
           }
@@ -1312,6 +1346,13 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             }
           } else {
             log(`Failed /api/logs/errors: ${settledError(logsRes)}`, 'warn');
+            currentParsedData = {
+              ...currentParsedData,
+              formattedLogErrors: 'Failed to load log errors (endpoint timed out or unavailable)',
+              rawLogErrors: [],
+              logStats: { 'Total Lines': 0, 'Unique Errors': 0, 'Displayed Errors': 0 },
+            };
+            dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
           }
         };
 
@@ -1324,6 +1365,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
         log('Deferred /api/dir-tree until Directory page is opened');
+        prefetchInactiveProjects(); // warm cache for Project Cleaner
         const lowGate = Promise.allSettled([runProjects(), runLogs()]);
 
         await heavyGate;

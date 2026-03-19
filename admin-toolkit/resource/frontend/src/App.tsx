@@ -8,6 +8,7 @@ import {
   DebugPanel,
 } from './components';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { AppGate } from './components/AppGate';
 import { useApiDataLoader, useDataSource } from './hooks';
 import { AppShell } from './components/layout/AppShell';
 import { PageRouter } from './components/layout/PageRouter';
@@ -29,7 +30,7 @@ const pageTransition = {
   ease: [0.4, 0, 0.2, 1] as [number, number, number, number],
 };
 
-function AppContent() {
+function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
   const { state, setMode, setActivePage, resetComparison, dispatch } = useDiag();
   const { parsedData, isLoading, error, mode, comparison, dataSource } = state;
   const { isDetecting } = useDataSource();
@@ -169,7 +170,7 @@ function AppContent() {
     // Main results view — new sidebar-based layout
     viewKey = 'results';
     viewContent = (
-      <AppShell onOpenPalette={() => setPaletteOpen(true)} onRefreshCache={handleRefreshCache}>
+      <AppShell onOpenPalette={() => setPaletteOpen(true)} onRefreshCache={handleRefreshCache} sqliteFallback={sqliteFallback}>
         <PageRouter />
       </AppShell>
     );
@@ -201,9 +202,13 @@ function AppContent() {
 function App() {
   return (
     <DiagProvider>
-      <ErrorBoundary>
-        <AppContent />
-      </ErrorBoundary>
+      <AppGate>
+        {({ isSqliteFallback }) => (
+          <ErrorBoundary>
+            <AppContent sqliteFallback={isSqliteFallback} />
+          </ErrorBoundary>
+        )}
+      </AppGate>
       <DebugPanel />
     </DiagProvider>
   );

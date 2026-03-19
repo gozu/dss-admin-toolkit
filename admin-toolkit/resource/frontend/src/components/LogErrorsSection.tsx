@@ -7,7 +7,7 @@ export function LogErrorsSection() {
   const { state } = useDiag();
   const { isVisible } = useTableFilter();
   const { parsedData } = state;
-  const { formattedLogErrors, logStats } = parsedData;
+  const { formattedLogErrors, logStats, rawLogErrors } = parsedData;
 
   const [showLogs, setShowLogs] = useState(true);
 
@@ -89,7 +89,7 @@ export function LogErrorsSection() {
               </p>
             </div>
 
-            <AiLogAnalysis />
+            <AiLogAnalysis rawLogErrors={rawLogErrors} />
 
             <div
               className="log-container rounded-lg"

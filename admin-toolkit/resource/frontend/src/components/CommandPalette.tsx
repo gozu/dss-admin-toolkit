@@ -16,107 +16,32 @@ interface PageDef {
 }
 
 const PAGE_DEFS: PageDef[] = [
-  {
-    id: 'summary',
-    label: 'Summary',
-    section: 'Overview',
-    keywords: ['health', 'score', 'overview', 'dashboard'],
-  },
-  {
-    id: 'issues',
-    label: 'Issues',
-    section: 'Overview',
-    keywords: ['disabled', 'features', 'alerts', 'problems'],
-  },
-  {
-    id: 'filesystem',
-    label: 'Filesystem',
-    section: 'Infrastructure',
-    keywords: ['disk', 'storage', 'mount', 'partition'],
-  },
-  {
-    id: 'memory',
-    label: 'Memory',
-    section: 'Infrastructure',
-    keywords: ['ram', 'swap', 'memory', 'usage'],
-  },
-  {
-    id: 'directory',
-    label: 'Directory Usage',
-    section: 'Infrastructure',
-    keywords: ['treemap', 'space', 'folder', 'size'],
-  },
-  {
-    id: 'projects',
-    label: 'Projects',
-    section: 'Insights',
-    keywords: ['project', 'footprint', 'permissions'],
-  },
-  {
-    id: 'code-envs',
-    label: 'Code Envs',
-    section: 'Insights',
-    keywords: ['python', 'environment', 'package'],
-  },
-  {
-    id: 'connections',
-    label: 'Connections',
-    section: 'Insights',
-    keywords: ['database', 'connector', 'type'],
-  },
-  {
-    id: 'runtime-config',
-    label: 'Runtime',
-    section: 'Configuration',
-    keywords: ['java', 'memory', 'spark', 'settings'],
-  },
-  {
-    id: 'security-config',
-    label: 'Security',
-    section: 'Configuration',
-    keywords: ['auth', 'cgroups', 'users', 'isolation'],
-  },
-  {
-    id: 'platform-config',
-    label: 'Platform',
-    section: 'Configuration',
-    keywords: ['container', 'integration', 'proxy'],
-  },
-  {
-    id: 'logs',
-    label: 'Errors',
-    section: 'Logs',
-    keywords: ['log', 'error', 'exception', 'stack'],
-  },
+  { id: 'summary', label: 'Summary', section: 'Overview', keywords: ['health', 'score', 'overview', 'dashboard'] },
+  { id: 'issues', label: 'Issues', section: 'Overview', keywords: ['disabled', 'features', 'alerts', 'problems'] },
+  { id: 'settings', label: 'Settings', section: 'Overview', keywords: ['config', 'threshold', 'preference'] },
+  { id: 'filesystem', label: 'Filesystem', section: 'System', keywords: ['disk', 'storage', 'mount', 'partition'] },
+  { id: 'memory', label: 'Memory', section: 'System', keywords: ['ram', 'swap', 'memory', 'usage'] },
+  { id: 'connections', label: 'Connections', section: 'Monitoring', keywords: ['database', 'connector', 'type'] },
+  { id: 'runtime-config', label: 'Runtime', section: 'Monitoring', keywords: ['java', 'memory', 'spark', 'settings', 'auth', 'cgroups', 'users', 'isolation', 'container', 'integration', 'proxy'] },
+  { id: 'logs', label: 'Errors', section: 'Monitoring', keywords: ['log', 'error', 'exception', 'stack'] },
+  { id: 'plugins', label: 'Plugin Sync', section: 'Monitoring', keywords: ['plugin', 'sync', 'compare', 'version'] },
+  { id: 'projects', label: 'Projects', section: 'Projects', keywords: ['project', 'footprint', 'permissions'] },
+  { id: 'project-cleaner', label: 'Project Cleaner', section: 'Projects', keywords: ['clean', 'delete', 'inactive', 'project'] },
+  { id: 'code-envs', label: 'Insights', section: 'Code Environments', keywords: ['python', 'environment', 'package'] },
+  { id: 'code-envs-comparison', label: 'Comparison', section: 'Code Environments', keywords: ['compare', 'duplicate', 'version', 'mismatch'] },
+  { id: 'code-env-cleaner', label: 'Cleaner', section: 'Code Environments', keywords: ['clean', 'delete', 'unused', 'code env'] },
   { id: 'outreach', label: 'Outreach', section: 'Tools', keywords: ['email', 'campaign', 'owner'] },
-  {
-    id: 'code-env-cleaner',
-    label: 'CodEnv Cleaner',
-    section: 'Tools',
-    keywords: ['clean', 'delete', 'unused', 'code env'],
-  },
-  {
-    id: 'project-cleaner',
-    label: 'Project Cleaner',
-    section: 'Tools',
-    keywords: ['clean', 'delete', 'inactive', 'project'],
-  },
-  {
-    id: 'settings',
-    label: 'Settings',
-    section: 'App',
-    keywords: ['config', 'threshold', 'preference'],
-  },
+  { id: 'tracking', label: 'Compliance', section: 'Tools', keywords: ['tracking', 'compliance', 'audit', 'issues'] },
+  { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
 ];
 
 const SECTION_ICONS: Record<string, string> = {
   Overview: '\u2302',
-  Infrastructure: '\u2699',
-  Insights: '\u25C6',
-  Configuration: '\u2630',
-  Logs: '\u26A0',
+  System: '\u2699',
+  Monitoring: '\u26A0',
+  Projects: '\u25C6',
+  'Code Environments': '\u2318',
   Tools: '\u2692',
-  App: '\u2731',
 };
 
 function fuzzyMatch(query: string, def: PageDef): boolean {

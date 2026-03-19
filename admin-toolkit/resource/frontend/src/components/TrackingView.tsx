@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Container } from './Container';
 import { fetchJson } from '../utils/api';
+import { useDiag } from '../context/DiagContext';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -168,6 +169,13 @@ function statusPill(status: string) {
 /* ------------------------------------------------------------------ */
 
 export function TrackingView() {
+  const { addDebugLog } = useDiag();
+  const logRef = useRef(addDebugLog);
+  logRef.current = addDebugLog;
+  const log = useCallback((msg: string, level: 'info' | 'warn' | 'error' = 'info') => {
+    logRef.current(msg, 'tracking', level);
+  }, []);
+
   const [users, setUsers] = useState<AggregatedUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -178,36 +186,66 @@ export function TrackingView() {
   const [refreshing, setRefreshing] = useState(false);
 
   const loadUsers = useCallback(() => {
+    const t0 = performance.now();
+    log('GET /api/tracking/users');
     return fetchJson<{ users: UserRow[] }>('/api/tracking/users')
       .then((data) => {
-        setUsers(aggregate(data.users));
+        const ms = (performance.now() - t0).toFixed(0);
+        const agg = aggregate(data.users);
+        const totalOpen = agg.reduce((s, u) => s + u.open, 0);
+        const totalResolved = agg.reduce((s, u) => s + u.resolved, 0);
+        log(`GET /api/tracking/users OK (${ms}ms) — ${data.users.length} raw → ${agg.length} users, open=${totalOpen} resolved=${totalResolved}`);
+        if (data.users.length > 0) {
+          log(`Sample user: ${JSON.stringify(data.users[0]).slice(0, 200)}`);
+        } else {
+          log('No users returned (DB may be empty, waiting for refresh)', 'warn');
+        }
+        setUsers(agg);
         setError(null);
       })
       .catch((err) => {
+        const ms = (performance.now() - t0).toFixed(0);
+        const status = (err as { status?: number }).status ?? '?';
+        const body = (err as { bodySnippet?: string }).bodySnippet ?? '';
+        log(`GET /api/tracking/users FAILED (${ms}ms) status=${status} body=${body}`, 'error');
+        // Auto-probe debug endpoint to diagnose DB state
+        log('Probing /api/tracking/debug for DB diagnostics...');
+        fetchJson<Record<string, unknown>>('/api/tracking/debug')
+          .then((dbg) => log(`DB debug: ${JSON.stringify(dbg).slice(0, 500)}`))
+          .catch((dbgErr) => log(`DB debug probe also failed: ${dbgErr instanceof Error ? dbgErr.message : dbgErr}`, 'error'));
         setError(err instanceof Error ? err.message : 'Failed to load tracking data');
       });
-  }, []);
+  }, [log]);
 
-  // On mount: load stale data immediately, then trigger background refresh
+  // On mount: load existing data from DB (no auto-refresh to avoid connection pool exhaustion)
   useEffect(() => {
     let cancelled = false;
-    // Show existing data fast
+    log('=== TrackingView MOUNTED ===');
+    log('Loading existing user data from DB...');
     loadUsers().finally(() => {
-      if (!cancelled) setLoading(false);
+      if (!cancelled) {
+        log('User data loaded, spinner dismissed');
+        setLoading(false);
+      }
     });
-    // Then trigger a background refresh (re-scans DSS for resolved issues)
-    // and reload user data when it completes
-    fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then(() => { if (!cancelled) return loadUsers(); })
-      .catch(() => {});
     return () => { cancelled = true; };
   }, [loadUsers]);
 
   const handleRefresh = useCallback(() => {
+    log('Manual refresh triggered');
     setRefreshing(true);
+    const t0 = performance.now();
     fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then(() => loadUsers())
-      .catch(() => loadUsers())
+      .then((result) => {
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        log(`Manual refresh OK (${secs}s): ${JSON.stringify(result).slice(0, 200)}`);
+        return loadUsers();
+      })
+      .catch((err) => {
+        const secs = ((performance.now() - t0) / 1000).toFixed(1);
+        log(`Manual refresh FAILED (${secs}s): ${err instanceof Error ? err.message : err}`, 'error');
+        return loadUsers();
+      })
       .finally(() => setRefreshing(false));
   }, [loadUsers]);
 
@@ -395,19 +433,32 @@ export function TrackingView() {
 /* ------------------------------------------------------------------ */
 
 function UserRowGroup({ user, expanded, onToggle }: { user: AggregatedUser; expanded: boolean; onToggle: () => void }) {
+  const { addDebugLog } = useDiag();
+  const logRef = useRef(addDebugLog);
+  logRef.current = addDebugLog;
   const [issues, setIssues] = useState<Issue[]>([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
 
   const handleToggle = useCallback(() => {
+    logRef.current(`Expand user=${user.login} → ${!expanded ? 'open' : 'close'}`, 'tracking');
     if (!expanded) setIssuesLoading(true);
     onToggle();
-  }, [expanded, onToggle]);
+  }, [expanded, onToggle, user.login]);
 
   useEffect(() => {
     if (!expanded) return;
-    fetchJson<{ issues: Issue[] }>(`/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`)
-      .then((data) => setIssues(data.issues))
-      .catch(() => setIssues([]))
+    const t0 = performance.now();
+    const url = `/api/tracking/issues?owner_login=${encodeURIComponent(user.login)}&limit=500`;
+    logRef.current(`GET issues for ${user.login}`, 'tracking');
+    fetchJson<{ issues: Issue[] }>(url)
+      .then((data) => {
+        logRef.current(`Got ${data.issues.length} issues for ${user.login} (${(performance.now() - t0).toFixed(0)}ms)`, 'tracking');
+        setIssues(data.issues);
+      })
+      .catch((err) => {
+        logRef.current(`FAILED issues for ${user.login}: ${err instanceof Error ? err.message : err}`, 'tracking', 'error');
+        setIssues([]);
+      })
       .finally(() => setIssuesLoading(false));
   }, [expanded, user.login]);
 

@@ -211,6 +211,8 @@ CREATE INDEX IF NOT EXISTS idx_notes_issue ON issue_notes(issue_id);
 
 -- Views
 
+INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, datetime('now'));
+
 CREATE VIEW IF NOT EXISTS v_user_compliance AS
 SELECT
     i.owner_login,
@@ -264,6 +266,34 @@ JOIN run_campaign_summaries rcs ON r.run_id = rcs.run_id;
 INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, datetime('now'));
 """
 
+_SCHEMA_V2 = [
+    "ALTER TABLE issues ADD COLUMN entity_name TEXT",
+    "ALTER TABLE issues ADD COLUMN metrics_json TEXT",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, datetime('now'))",
+]
+
+_SCHEMA_V3 = [
+    """CREATE TABLE IF NOT EXISTS campaign_settings (
+        campaign_id TEXT PRIMARY KEY,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        updated_at  TEXT NOT NULL
+    )""",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, datetime('now'))",
+]
+
+_SCHEMA_V4 = [
+    """CREATE TABLE IF NOT EXISTS campaign_exemptions (
+        exemption_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id   TEXT NOT NULL,
+        entity_type   TEXT NOT NULL DEFAULT 'project',
+        entity_key    TEXT NOT NULL,
+        reason        TEXT,
+        created_at    TEXT NOT NULL,
+        UNIQUE(campaign_id, entity_type, entity_key)
+    )""",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -288,6 +318,33 @@ class TrackingDB:
             self._conn.execute('PRAGMA foreign_keys=ON')
             self._conn.row_factory = sqlite3.Row
             self._conn.executescript(_SCHEMA_V1)
+            # V2 migration: add entity_name + metrics_json to issues
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 2:
+                for stmt in _SCHEMA_V2:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # column may already exist
+                self._conn.commit()
+            # V3 migration: campaign_settings table
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 3:
+                for stmt in _SCHEMA_V3:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # table may already exist
+                self._conn.commit()
+            # V4 migration: campaign_exemptions table
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 4:
+                for stmt in _SCHEMA_V4:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # table may already exist
+                self._conn.commit()
         return self._conn
 
     # ------------------------------------------------------------------
@@ -453,6 +510,7 @@ class TrackingDB:
 
                 # 7. INSERT findings + lifecycle issues
                 finding_keys_this_run = set()  # (campaign_id, entity_type, entity_key)
+                entities_this_run = set()      # (entity_type, entity_key)
                 for f in findings:
                     campaign_id = f.get('campaign_id', '')
                     entity_type = f.get('entity_type', '')
@@ -462,6 +520,7 @@ class TrackingDB:
                         continue
 
                     finding_keys_this_run.add((campaign_id, entity_type, entity_key))
+                    entities_this_run.add((entity_type, entity_key))
 
                     metrics = f.get('metrics_json')
                     if isinstance(metrics, dict):
@@ -488,11 +547,13 @@ class TrackingDB:
                                    (instance_id, campaign_id, entity_type, entity_key,
                                     owner_login, owner_email, status,
                                     first_detected_run, first_detected_at,
-                                    last_detected_run, last_detected_at)
-                               VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+                                    last_detected_run, last_detected_at,
+                                    entity_name, metrics_json)
+                               VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)""",
                             (instance_id, campaign_id, entity_type, entity_key,
                              owner_login, f.get('owner_email'),
-                             run_id, now, run_id, now),
+                             run_id, now, run_id, now,
+                             f.get('entity_name'), metrics),
                         )
                     elif row['status'] == 'resolved':
                         conn.execute(
@@ -505,9 +566,12 @@ class TrackingDB:
                                    resolved_at = NULL,
                                    resolution_reason = NULL,
                                    owner_login = ?,
-                                   owner_email = ?
+                                   owner_email = ?,
+                                   entity_name = ?,
+                                   metrics_json = ?
                                WHERE issue_id = ?""",
-                            (run_id, now, owner_login, f.get('owner_email'), row['issue_id']),
+                            (run_id, now, owner_login, f.get('owner_email'),
+                             f.get('entity_name'), metrics, row['issue_id']),
                         )
                     else:
                         conn.execute(
@@ -515,9 +579,12 @@ class TrackingDB:
                                    last_detected_run = ?,
                                    last_detected_at = ?,
                                    owner_login = ?,
-                                   owner_email = ?
+                                   owner_email = ?,
+                                   entity_name = ?,
+                                   metrics_json = ?
                                WHERE issue_id = ?""",
-                            (run_id, now, owner_login, f.get('owner_email'), row['issue_id']),
+                            (run_id, now, owner_login, f.get('owner_email'),
+                             f.get('entity_name'), metrics, row['issue_id']),
                         )
 
                 # 8. INSERT run_sections
@@ -571,30 +638,15 @@ class TrackingDB:
                         if key in finding_keys_this_run:
                             continue  # still present, don't resolve
 
-                        # Determine resolution reason
+                        # Determine resolution reason: if the entity still
+                        # appears in any finding this run → whitelisted (condition
+                        # cleared); otherwise → deleted (entity gone).
                         etype = issue['entity_type']
                         ekey = issue['entity_key']
-                        reason = 'condition_cleared'
-
-                        if etype == 'project':
-                            kp = conn.execute(
-                                'SELECT last_seen_run FROM known_projects WHERE instance_id = ? AND project_key = ?',
-                                (instance_id, ekey),
-                            ).fetchone()
-                            if kp and kp['last_seen_run'] < run_id:
-                                reason = 'entity_deleted'
-                        elif etype == 'code_env':
-                            # Code envs aren't tracked in known_projects; default reason
-                            pass
-                        elif etype == 'scenario':
-                            # Scenario entity_key is projectKey:scenarioId
-                            proj_part = ekey.split(':')[0] if ':' in ekey else ekey
-                            kp = conn.execute(
-                                'SELECT last_seen_run FROM known_projects WHERE instance_id = ? AND project_key = ?',
-                                (instance_id, proj_part),
-                            ).fetchone()
-                            if kp and kp['last_seen_run'] < run_id:
-                                reason = 'entity_deleted'
+                        if (etype, ekey) in entities_this_run:
+                            reason = 'condition_cleared'
+                        else:
+                            reason = 'entity_deleted'
 
                         conn.execute(
                             """UPDATE issues SET
@@ -692,7 +744,16 @@ class TrackingDB:
                 f'SELECT * FROM issues{where} ORDER BY issue_id DESC LIMIT ? OFFSET ?',
                 params,
             ).fetchall()
-            return [dict(r) for r in rows]
+            results = []
+            for r in rows:
+                d = dict(r)
+                if d.get('metrics_json'):
+                    try:
+                        d['metrics_json'] = json.loads(d['metrics_json'])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(d)
+            return results
 
     def get_issue(self, issue_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -888,6 +949,91 @@ class TrackingDB:
                 'latest_run': dict(latest_run) if latest_run else None,
             }
 
+    # ------------------------------------------------------------------
+    # Campaign settings (enable/disable toggles)
+    # ------------------------------------------------------------------
+
+    def get_campaign_settings(self) -> Dict[str, bool]:
+        """Return {campaign_id: enabled} for all rows in campaign_settings."""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute('SELECT campaign_id, enabled FROM campaign_settings').fetchall()
+            return {r['campaign_id']: bool(r['enabled']) for r in rows}
+
+    def set_campaign_enabled(self, campaign_id: str, enabled: bool) -> None:
+        """UPSERT a campaign's enabled state."""
+        now = _now_iso()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO campaign_settings (campaign_id, enabled, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(campaign_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at""",
+                (campaign_id, 1 if enabled else 0, now),
+            )
+            conn.commit()
+
+    def get_disabled_campaigns(self) -> set:
+        """Return set of campaign_ids where enabled=0."""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute('SELECT campaign_id FROM campaign_settings WHERE enabled = 0').fetchall()
+            return {r['campaign_id'] for r in rows}
+
+    # ------------------------------------------------------------------
+    # Campaign exemptions
+    # ------------------------------------------------------------------
+
+    def get_exemptions(self, campaign_id: str = None) -> list:
+        """List all exemptions, optionally filtered by campaign_id."""
+        with self._lock:
+            conn = self._get_conn()
+            if campaign_id:
+                rows = conn.execute(
+                    'SELECT * FROM campaign_exemptions WHERE campaign_id = ? ORDER BY created_at DESC',
+                    (campaign_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT * FROM campaign_exemptions ORDER BY created_at DESC',
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_exemption_set(self) -> set:
+        """Return set of (campaign_id, entity_key) tuples for fast lookup during ingest."""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute('SELECT campaign_id, entity_key FROM campaign_exemptions').fetchall()
+            return {(r['campaign_id'], r['entity_key']) for r in rows}
+
+    def add_exemption(self, campaign_id: str, entity_key: str, reason: str = None) -> dict:
+        """Upsert an exemption. Returns the exemption row."""
+        now = _now_iso()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO campaign_exemptions (campaign_id, entity_type, entity_key, reason, created_at)
+                   VALUES (?, 'project', ?, ?, ?)
+                   ON CONFLICT(campaign_id, entity_type, entity_key) DO UPDATE SET
+                       reason = excluded.reason,
+                       created_at = excluded.created_at""",
+                (campaign_id, entity_key, reason, now),
+            )
+            conn.commit()
+            row = conn.execute(
+                'SELECT * FROM campaign_exemptions WHERE campaign_id = ? AND entity_key = ?',
+                (campaign_id, entity_key),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def remove_exemption(self, exemption_id: int) -> bool:
+        """Delete an exemption by ID. Returns True if deleted."""
+        with self._lock:
+            conn = self._get_conn()
+            cur = conn.execute('DELETE FROM campaign_exemptions WHERE exemption_id = ?', (exemption_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
     def resolve_issue_ids_for_preview(
         self,
         instance_id: str,
@@ -965,8 +1111,16 @@ class TrackingDB:
 # Finding extraction from outreach data
 # ------------------------------------------------------------------
 
-def extract_findings_from_outreach_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Convert outreach-data response into a flat findings list for ingestion."""
+def extract_findings_from_outreach_data(
+    data: Dict[str, Any],
+    disabled_campaigns: Optional[set] = None,
+    exemptions: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    """Convert outreach-data response into a flat findings list for ingestion.
+
+    Args:
+        exemptions: set of (campaign_id, entity_key) tuples to exclude from findings.
+    """
     findings: List[Dict[str, Any]] = []
 
     # campaign → (recipients_key, entity_type, entity_extraction_fn)
@@ -987,6 +1141,8 @@ def extract_findings_from_outreach_data(data: Dict[str, Any]) -> List[Dict[str, 
     }
 
     for campaign_id, (recipients_key, entity_type, extractor) in _CAMPAIGN_MAP.items():
+        if disabled_campaigns and campaign_id in disabled_campaigns:
+            continue
         recipients = data.get(recipients_key) or []
         for recipient in recipients:
             if not isinstance(recipient, dict):
@@ -994,6 +1150,8 @@ def extract_findings_from_outreach_data(data: Dict[str, Any]) -> List[Dict[str, 
             owner = str(recipient.get('owner') or recipient.get('recipientKey') or '')
             email = str(recipient.get('email') or owner)
             extracted = extractor(recipient, campaign_id, entity_type, owner, email)
+            if exemptions:
+                extracted = [f for f in extracted if (f['campaign_id'], f['entity_key']) not in exemptions]
             findings.extend(extracted)
 
     return findings

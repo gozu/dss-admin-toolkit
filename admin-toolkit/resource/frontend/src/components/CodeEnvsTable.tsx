@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useDiag } from '../context/DiagContext';
+import type { CodeEnv } from '../types';
 import { useTableFilter } from '../hooks/useTableFilter';
 import { getRelativeSizeColor } from '../utils/formatters';
 import { TetrisGame } from './TetrisGame';
@@ -7,7 +8,8 @@ import { TetrisGame } from './TetrisGame';
 type ViewMode = 'summary' | 'details';
 
 function formatSizeGb(sizeBytes: number | undefined): string {
-  const gb = (sizeBytes || 0) / (1024 * 1024 * 1024);
+  if (!sizeBytes) return '\u2014';
+  const gb = sizeBytes / (1024 * 1024 * 1024);
   return `${gb.toFixed(2)} GB`;
 }
 
@@ -15,7 +17,17 @@ export function CodeEnvsTable() {
   const { state } = useDiag();
   const { isVisible } = useTableFilter();
   const { parsedData } = state;
-  const codeEnvs = parsedData.codeEnvs || [];
+  const rawCodeEnvs = parsedData.codeEnvs || [];
+  const codeEnvSizes = parsedData.codeEnvSizes;
+  const codeEnvs = useMemo(() => {
+    if (!codeEnvSizes || !rawCodeEnvs.length) return rawCodeEnvs;
+    return rawCodeEnvs.map((env) => {
+      const sizeKey = `${(env.language || 'python').toLowerCase()}:${env.name}`;
+      const size = codeEnvSizes[sizeKey];
+      return size ? { ...env, sizeBytes: size } : env;
+    });
+  }, [rawCodeEnvs, codeEnvSizes]);
+  const provisionalCodeEnvs = parsedData.provisionalCodeEnvs || [];
   const loading = parsedData.analysisLoading;
   const isLoading = Boolean(loading?.active);
   const pythonVersionCounts = parsedData.pythonVersionCounts || {};
@@ -64,21 +76,37 @@ export function CodeEnvsTable() {
     return () => clearTimeout(id);
   }, [fadingOut]);
 
+  const allEnvs = useMemo(() => {
+    const realNames = new Set(codeEnvs.map((e) => e.name));
+    const provisionalAsEnvs = provisionalCodeEnvs
+      .filter((e) => !realNames.has(e.name))
+      .map(
+        (e) =>
+          ({
+            name: e.name,
+            version: '',
+            language: 'python' as CodeEnv['language'],
+            usageCount: e.usageCount,
+          }) as CodeEnv,
+      );
+    return [...codeEnvs, ...provisionalAsEnvs];
+  }, [codeEnvs, provisionalCodeEnvs]);
+
   const { pythonEnvs, rEnvs } = useMemo(() => {
-    const python = codeEnvs.filter((env) => env.language === 'python');
-    const r = codeEnvs.filter((env) => env.language === 'r');
+    const python = allEnvs.filter((env) => env.language === 'python');
+    const r = allEnvs.filter((env) => env.language === 'r');
     return { pythonEnvs: python, rEnvs: r };
-  }, [codeEnvs]);
+  }, [allEnvs]);
 
   const sortedCodeEnvs = useMemo(
     () =>
-      [...codeEnvs].sort((a, b) => {
+      [...allEnvs].sort((a, b) => {
         const sizeA = a.sizeBytes || 0;
         const sizeB = b.sizeBytes || 0;
         if (sizeB !== sizeA) return sizeB - sizeA;
         return a.name.localeCompare(b.name);
       }),
-    [codeEnvs],
+    [allEnvs],
   );
   const filteredCodeEnvs = useMemo(
     () =>

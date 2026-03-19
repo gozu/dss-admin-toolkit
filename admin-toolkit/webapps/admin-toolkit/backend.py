@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import logging
 
 import dataiku
+from dateutil import parser as dtparser
 from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
@@ -27,6 +28,8 @@ _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 _SHARED_USAGE_SCANS: Dict[str, Dict[str, Any]] = {}
 _SHARED_USAGE_SCANS_LOCK = threading.Lock()
+_SDK_CACHE: Optional[Any] = None
+_INSTANCE_ID_CACHED: Optional[str] = None
 _THREAD_LOCAL = threading.local()
 _PROGRESS: Dict[str, Dict[str, Any]] = {}
 _PROGRESS_LOCK = threading.Lock()
@@ -38,7 +41,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     # Concurrency
     'parallel_workers_default': 8,
     'parallel_workers_max': 32,
-    'code_env_detail_workers': 16,
+    'code_env_detail_workers': 8,
     # Timeouts
     'code_env_timeout_ms': 600000,
     'project_footprint_timeout_ms': 600000,
@@ -60,6 +63,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'fe_timeout_project_footprint': 620000,
     'fe_timeout_projects': 45000,
     'fe_timeout_logs': 30000,
+    'fe_timeout_llm_analysis': 120000,
     # Tracking
     'sqlite_connect_timeout': 30,
     'tracking_issue_page_size': 500,
@@ -68,6 +72,17 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
 }
 _BACKEND_SETTINGS_LOCK = threading.Lock()
 
+# Load plugin.json performance defaults and merge into _BACKEND_SETTINGS
+try:
+    from db_adapter import load_plugin_performance_settings as _load_perf
+    _plugin_perf = _load_perf()
+    if _plugin_perf:
+        _BACKEND_SETTINGS.update(_plugin_perf)
+except Exception:
+    pass
+# Snapshot after plugin merge — used as reset target
+_BACKEND_SETTINGS_DEFAULTS: Dict[str, Any] = dict(_BACKEND_SETTINGS)
+
 # ── Tracking database (optional, graceful fallback) ──
 try:
     from tracking import TrackingDB, extract_findings_from_outreach_data
@@ -75,40 +90,159 @@ try:
 except Exception:
     _tracking_available = False
 
+try:
+    from db_adapter import load_tracking_backend_config, create_tracking_backend
+    _db_adapter_available = True
+except Exception:
+    _db_adapter_available = False
+
 _tracking_db_instance: Optional[Any] = None
 _tracking_db_lock = threading.Lock()
+_tracking_db_dir: Optional[str] = None  # cached SQLite directory
+_migration_lock = threading.Lock()
+_migration_running = False
 
 
-def _get_tracking_db():
+def _resolve_sqlite_dir() -> str:
+    """Resolve the directory for SQLite tracking DB storage."""
+    global _tracking_db_dir
+    if _tracking_db_dir is not None:
+        return _tracking_db_dir
+    _log = logging.getLogger(__name__)
+    db_dir = None
+    for p in sys.path:
+        if 'webappruns' in p and 'run_' in p:
+            initial_dir = os.path.join(os.path.dirname(p), 'initial')
+            if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
+                db_dir = initial_dir
+            else:
+                db_dir = p
+            break
+    if db_dir is None:
+        db_dir = '/tmp'
+    _tracking_db_dir = db_dir
+    return db_dir
+
+
+_SQL_CONNECTION_TYPES = {
+    'PostgreSQL', 'Greenplum', 'MySQL', 'MariaDB', 'SQLServer', 'Oracle',
+    'Snowflake', 'BigQuery', 'Redshift', 'Teradata', 'Vertica', 'SAPHANA',
+    'Synapse', 'Databricks', 'Athena', 'Trino', 'Presto', 'Exasol',
+    'Netezza', 'DB2', 'SQLite',
+}
+
+
+def _list_compatible_sql_connections() -> list:
+    """Return SQL-type connections available on the instance (cached 300s)."""
+    def _loader():
+        try:
+            client = dataiku.api_client()
+            all_conns = client.list_connections()
+            return [
+                name for name, info in all_conns.items()
+                if isinstance(info, dict) and info.get('type') in _SQL_CONNECTION_TYPES
+            ]
+        except Exception as exc:
+            logging.getLogger(__name__).warning("[tracking] list_connections failed: %s", exc)
+            return None
+    return _cache_get('_sql_connections', 300, _loader)
+
+
+def _resolve_backend_decision() -> Dict[str, Any]:
+    """Shared logic for backend-status and _get_tracking_db(). No side effects."""
+    result: Dict[str, Any] = {
+        'mode': 'unconfigured',
+        'reason': '',
+        'connection_name': None,
+        'table_prefix': None,
+    }
+    try:
+        if not _db_adapter_available:
+            result['reason'] = 'db_adapter module not available'
+            result['mode'] = 'sqlite'
+            return result
+
+        config = load_tracking_backend_config()
+        result['connection_name'] = config.connection_name
+        result['table_prefix'] = config.table_prefix
+
+        if config.connection_name:
+            result['mode'] = 'sql'
+            result['reason'] = 'SQL connection configured'
+            return result
+
+        # No SQL configured — check if instance has compatible SQL connections
+        compat = _list_compatible_sql_connections()
+        if compat is None:
+            result['mode'] = 'unconfigured'
+            result['reason'] = 'Could not list connections'
+            return result
+        if compat:
+            result['mode'] = 'unconfigured'
+            result['reason'] = 'Compatible SQL connections exist but none configured'
+            return result
+
+        # No SQL connections on instance at all — SQLite fallback OK
+        result['mode'] = 'sqlite'
+        result['reason'] = 'No SQL connections on instance; SQLite fallback'
+        return result
+    except Exception as exc:
+        result['mode'] = 'unconfigured'
+        result['reason'] = 'Config read failed: %s' % exc
+        return result
+
+
+def _get_tracking_db(force_reload=False):
     global _tracking_db_instance
+    _log = logging.getLogger(__name__)
+    _log.info("[tracking:get_db] called — _tracking_available=%s, _tracking_db_instance=%s",
+              _tracking_available, type(_tracking_db_instance).__name__ if _tracking_db_instance else None)
     if not _tracking_available:
+        _log.warning("[tracking:get_db] tracking module not available, returning None")
         return None
+    if force_reload:
+        _tracking_db_instance = None
     if _tracking_db_instance is not None:
+        _log.info("[tracking:get_db] returning cached instance")
         return _tracking_db_instance
     with _tracking_db_lock:
-        if _tracking_db_instance is not None:
+        if _tracking_db_instance is not None and not force_reload:
+            _log.info("[tracking:get_db] returning cached instance (after lock)")
             return _tracking_db_instance
         try:
-            # Store tracking DB in the webapp's 'initial' dir, which persists across
-            # backend restarts (unlike the run dir which changes each restart).
-            # Path: .../webappruns/<project>/<webapp>/initial/tracking.db
-            db_dir = None
-            for p in sys.path:
-                if 'webappruns' in p and 'run_' in p:
-                    initial_dir = os.path.join(os.path.dirname(p), 'initial')
-                    if os.path.isdir(initial_dir) and os.access(initial_dir, os.W_OK):
-                        db_dir = initial_dir
-                    else:
-                        db_dir = p  # fallback to run dir
-                    break
-            if db_dir is None:
-                db_dir = '/tmp'
+            decision = _resolve_backend_decision()
+            _log.info("[tracking:get_db] decision: mode=%s reason=%s", decision['mode'], decision['reason'])
+
+            if decision['mode'] == 'sql':
+                config = load_tracking_backend_config()
+                db_dir = _resolve_sqlite_dir()
+                db_path = os.path.join(db_dir, 'tracking.db')
+                _log.info("[tracking:get_db] SQL backend: connection=%s prefix=%s",
+                          config.connection_name, config.table_prefix)
+                try:
+                    db = create_tracking_backend(config, db_path)
+                    _tracking_db_instance = db
+                    _log.info("[tracking:get_db] SQL backend initialized")
+                except Exception as exc:
+                    _log.error("[tracking:get_db] SQL backend FAILED — not falling back to SQLite: %s", exc, exc_info=True)
+                    _tracking_db_instance = None
+                return _tracking_db_instance
+
+            if decision['mode'] == 'unconfigured':
+                _log.warning("[tracking:get_db] %s — returning None", decision['reason'])
+                _tracking_db_instance = None
+                return None
+
+            # mode == 'sqlite' — fallback only when no SQL connections exist on instance
+            db_dir = _resolve_sqlite_dir()
             db_path = os.path.join(db_dir, 'tracking.db')
-            _tracking_db_instance = TrackingDB(db_path)
-            _tracking_db_instance._get_conn()  # init schema
-            logging.getLogger(__name__).info("[tracking] initialized at %s", db_path)
+            _log.info("[tracking:get_db] SQLite fallback at %s", db_path)
+            db = TrackingDB(db_path)
+            db._get_conn()
+            _tracking_db_instance = db
+            _log.info("[tracking:get_db] SQLite DB initialized at %s", db_path)
         except Exception as exc:
-            logging.getLogger(__name__).warning("[tracking] init failed: %s", exc)
+            _log.warning("[tracking:get_db] init FAILED: %s", exc, exc_info=True)
             _tracking_db_instance = None
     return _tracking_db_instance
 
@@ -968,7 +1102,7 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
     lines_after = 100
     time_threshold = 5
     max_errors = 5
-    log_levels = [r"\[ERROR\]", r"\[FATAL\]", r"\[SEVERE\]", r"\bERROR\b", r"\bFATAL\b", r"\bSEVERE\b"]
+    log_levels = [r"\[ERROR\]", r"\[FATAL\]", r"\[SEVERE\]", r"\[WARN\]", r"\bERROR\b", r"\bFATAL\b", r"\bSEVERE\b", r"\bWARN\b"]
     log_level_regex = re.compile(r"(" + '|'.join(log_levels) + r")")
     timestamp_regex = re.compile(r"\[(\d{4}/\d{2}/\d{2}-\d{2}:\d{2}:\d{2}\.\d{3})\]")
     leading_timestamp_regex = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?)")
@@ -1075,7 +1209,7 @@ def _parse_log_errors(content: Any) -> Dict[str, Any]:
                    .replace('>', '&gt;'))
         formatted = (
             '<div class="log-error-block">'
-            '<div class="log-header">No ERROR/FATAL/SEVERE patterns matched — showing last '
+            '<div class="log-header">No ERROR/FATAL/SEVERE/WARN patterns matched — showing last '
             f'{len(tail_lines):,} lines of backend.log</div>'
             f'<pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;">{escaped}</pre>'
             '</div>'
@@ -1568,6 +1702,48 @@ def _bench_call(name: str, fn, *args, **kwargs):
         _record_benchmark_operation(name, (time.time() - started) * 1000.0, 1)
 
 
+def _get_sdk_cache():
+    global _SDK_CACHE
+    if _SDK_CACHE is None:
+        try:
+            from db_adapter import load_tracking_backend_config, create_sdk_cache
+            _SDK_CACHE = create_sdk_cache(load_tracking_backend_config())
+        except Exception:
+            from sdk_cache import SdkApiCache
+            _SDK_CACHE = SdkApiCache(None)
+    return _SDK_CACHE
+
+
+def _instance_id() -> str:
+    global _INSTANCE_ID_CACHED
+    if _INSTANCE_ID_CACHED is not None:
+        return _INSTANCE_ID_CACHED
+    try:
+        install_ini = _safe_read_text(os.path.join(_dip_home(), 'install.ini'))
+        if install_ini:
+            current_section = None
+            for line in install_ini.split('\n'):
+                line = line.strip()
+                if line.startswith('[') and line.endswith(']'):
+                    current_section = line[1:-1].lower()
+                    continue
+                if current_section == 'general' and '=' in line:
+                    key, value = [part.strip() for part in line.split('=', 1)]
+                    if key.lower() == 'installid':
+                        _INSTANCE_ID_CACHED = value
+                        return value
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def _sdk_fetch(cache_key: str, ttl_seconds: int, fetch_fn, deadline_ts=None):
+    t0 = time.time()
+    result = _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
+    app.logger.info("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
+    return result
+
+
 def _notify_progress(
     callback: Optional[Callable[..., None]],
     step: str,
@@ -1594,6 +1770,12 @@ def _thread_client() -> Any:
     client = getattr(_THREAD_LOCAL, 'dss_client', None)
     if client is None:
         client = dataiku.api_client()
+        # Increase connection pool to handle concurrent worker threads
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        if hasattr(client, '_session'):
+            client._session.mount('http://', adapter)
+            client._session.mount('https://', adapter)
         setattr(_THREAD_LOCAL, 'dss_client', client)
     return client
 
@@ -1683,9 +1865,17 @@ def _compute_footprint_payload(
         try:
             footprint_api = _bench_call('get_data_directories_footprint', client.get_data_directories_footprint)
             if scope == 'global':
-                return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_global_only_footprint(wait=True)))
+                return _sdk_fetch(
+                    'global_footprint',
+                    _BACKEND_SETTINGS['cache_ttl_projects'],
+                    lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_global_only_footprint(wait=True))),
+                )
             if scope == 'project' and project_key:
-                return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True)))
+                return _sdk_fetch(
+                    f'project_footprint:{project_key}',
+                    _BACKEND_SETTINGS['cache_ttl_projects'],
+                    lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True))),
+                )
             return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_all_dss_footprint(wait=True)))
         except Exception:
             pass
@@ -1706,26 +1896,6 @@ def _compute_footprint_payload(
     return unwrapped
 
 
-def _footprint_item_name(item: Any, idx: int) -> str:
-    if isinstance(item, dict):
-        if item.get('projectKey'):
-            return str(item.get('projectKey'))
-        if item.get('path'):
-            return str(item.get('path'))
-        if item.get('name') and item.get('language'):
-            return f"{item.get('name')} ({item.get('language')})"
-        if item.get('name') and item.get('type'):
-            return f"{item.get('name')} ({item.get('type')})"
-        if item.get('name'):
-            return str(item.get('name'))
-    else:
-        for attr in ('projectKey', 'path', 'name'):
-            if hasattr(item, attr):
-                value = getattr(item, attr)
-                if value:
-                    return str(value)
-    return f'entry-{idx}'
-
 
 def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
     if scope == 'all':
@@ -1737,79 +1907,18 @@ def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
     return {'name': 'dss_data', 'path': '/dss-data'}
 
 
-def _read_license_via_client_api(client: Any) -> Optional[Dict[str, Any]]:
-    candidate_methods = [
-        'get_license',
-        'get_license_info',
-        'get_licensing',
-        'get_licensing_info',
-    ]
-    for method_name in candidate_methods:
-        if not hasattr(client, method_name):
-            continue
-        try:
-            raw = getattr(client, method_name)()
-            if hasattr(raw, 'get_raw'):
-                raw = raw.get_raw()
-            if isinstance(raw, dict):
-                return raw
-        except Exception:
-            continue
 
-    for path in ('/admin/license', '/admin/license-info', '/public/api/admin/license'):
-        response = _client_perform_json(client, 'GET', path)
-        if isinstance(response, dict):
-            return response
-
-    return None
-
-
-def _footprint_attr(footprint: Any, *keys: str) -> Any:
-    if isinstance(footprint, dict):
-        for key in keys:
-            if key in footprint:
-                return footprint.get(key)
-        return None
-    for key in keys:
-        if hasattr(footprint, key):
-            return getattr(footprint, key)
-    return None
 
 
 def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
-    raw_details = None
-    try:
-        raw_details = _footprint_attr(footprint, 'details', 'children')
-    except Exception:
-        raw_details = None
-
-    if isinstance(raw_details, dict):
-        return raw_details
-    if isinstance(raw_details, list):
-        out: Dict[str, Any] = {}
-        for idx, item in enumerate(raw_details):
-            name = _footprint_item_name(item, idx)
-            out[name] = item
-        return out
-
-    if isinstance(footprint, dict):
-        items = footprint.get('items')
-        if isinstance(items, list):
-            out = {}
-            for idx, item in enumerate(items):
-                out[_footprint_item_name(item, idx)] = item
-            return out
-        out = {}
-        for key, value in footprint.items():
-            if isinstance(value, dict):
-                out[str(key)] = value
-        return out
-
+    details = footprint.get('details')
+    if isinstance(details, dict):
+        return details
     return {}
 
 
 def _footprint_size(footprint: Any) -> int:
-    size = _coerce_int(_footprint_attr(footprint, 'size', 'totalSize', 'bytes'), 0)
+    size = _coerce_int(footprint.get('size'), 0)
     if size > 0:
         return size
     details = _footprint_details_map(footprint)
@@ -1844,7 +1953,7 @@ def _collect_bucket_file_count_by_name(footprint: Any, matcher) -> int:
     for name, child in details.items():
         normalized = _normalize_bucket_name(name)
         if matcher(normalized):
-            total += _coerce_int(_footprint_attr(child, 'nbFiles', 'nb_files', 'fileCount'), 0)
+            total += _coerce_int(child.get('nbFiles'), 0)
             continue
         total += _collect_bucket_file_count_by_name(child, matcher)
     return total
@@ -2025,22 +2134,12 @@ def _extract_nested_int(payload: Any, *paths: str) -> Optional[int]:
 
 
 def _normalize_project_permissions(perms_raw: Any) -> List[Dict[str, Any]]:
-    raw = perms_raw
-    if hasattr(raw, 'get_raw'):
-        try:
-            raw = raw.get_raw()
-        except Exception:
-            pass
+    if not isinstance(perms_raw, dict):
+        return []
 
-    entries: List[Any] = []
-    if isinstance(raw, list):
-        entries = raw
-    elif isinstance(raw, dict):
-        nested = raw.get('permissions')
-        if isinstance(nested, list):
-            entries = nested
-        elif raw.get('group') or raw.get('user'):
-            entries = [raw]
+    entries = perms_raw.get('permissions')
+    if not isinstance(entries, list):
+        return []
 
     normalized: List[Dict[str, Any]] = []
     for perm in entries:
@@ -2061,35 +2160,21 @@ def _normalize_project_permissions(perms_raw: Any) -> List[Dict[str, Any]]:
 
 
 def _extract_project_version_number(listing: Dict[str, Any], summary: Dict[str, Any], settings: Dict[str, Any]) -> int:
-    candidates = (
-        _extract_nested_int(summary, 'versionTag.versionNumber'),
-        _extract_nested_int(listing, 'versionTag.versionNumber'),
-        _extract_nested_int(settings, 'versionTag.versionNumber'),
-        _extract_nested_int(settings, 'settings.versionTag.versionNumber'),
-        _extract_nested_int(settings, 'settings.dkuProperties.versionNumber'),
-        _extract_nested_int(settings, 'dkuProperties.versionNumber'),
-    )
-    for value in candidates:
-        if value is not None:
-            return value
+    value = summary.get('versionTag', {}).get('versionNumber')
+    if isinstance(value, (int, float)):
+        return int(value)
     return 0
 
 
 def _extract_code_env_owner(env_listing: Dict[str, Any], settings_raw: Optional[Dict[str, Any]]) -> str:
-    owner = _extract_nested_text(
-        settings_raw or {},
-        'owner',
-        'desc.owner',
-        'spec.owner',
-        'meta.owner',
-    )
-    if owner:
-        return owner
+    if settings_raw:
+        owner = settings_raw.get('owner')
+        if isinstance(owner, str) and owner.strip():
+            return owner.strip()
 
-    for key in ('owner', 'createdBy', 'creator'):
-        value = env_listing.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    owner = env_listing.get('owner')
+    if isinstance(owner, str) and owner.strip():
+        return owner.strip()
     return 'Unknown'
 
 
@@ -3081,108 +3166,16 @@ def _render_template_text(template: str, variables: Dict[str, str]) -> str:
 def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) -> List[Dict[str, str]]:
     diag = diagnostics if diagnostics is not None else []
     channels: List[Dict[str, str]] = []
-    raw_items: List[Any] = []
 
-    has_method = hasattr(client, 'list_messaging_channels')
-    diag.append(f"has_list_messaging_channels={has_method}")
-
-    if has_method:
-        for idx, attempt in enumerate((
-            lambda: client.list_messaging_channels(as_type='objects', channel_family='mail'),
-            lambda: client.list_messaging_channels(channel_family='mail'),
-            lambda: client.list_messaging_channels(),
-        )):
-            try:
-                result = attempt()
-                rtype = type(result).__name__
-                rlen = len(result) if isinstance(result, (list, tuple)) else '?'
-                diag.append(f"python_attempt[{idx}] type={rtype} len={rlen}")
-                if isinstance(result, list):
-                    raw_items.extend(result)
-            except Exception as exc:
-                diag.append(f"python_attempt[{idx}] error={exc!r}")
-                continue
-
-    diag.append(f"raw_items_after_python_client={len(raw_items)}")
-
-    # If Python client method didn't yield results, try internal HTTP API
-    if not raw_items:
-        for api_path in ('/admin/messaging-channels/', '/public/api/admin/messaging-channels/'):
-            try:
-                result = _client_perform_json(client, 'GET', api_path)
-                rtype = type(result).__name__ if result is not None else 'None'
-                rlen = len(result) if isinstance(result, (list, dict)) else '?'
-                diag.append(f"http_fallback path={api_path} type={rtype} len={rlen}")
-                if isinstance(result, list):
-                    raw_items.extend(result)
-                    break
-                # Some endpoints wrap in {"channels": [...]}
-                if isinstance(result, dict):
-                    items = result.get('channels') or result.get('items') or []
-                    if isinstance(items, list) and items:
-                        raw_items.extend(items)
-                        diag.append(f"http_fallback unwrapped keys={list(result.keys())[:5]} items={len(items)}")
-                        break
-            except Exception as exc:
-                diag.append(f"http_fallback path={api_path} error={exc!r}")
-                continue
-
-    # Log first few item shapes for diagnostics
-    for i, item in enumerate(raw_items[:3]):
-        if isinstance(item, dict):
-            diag.append(f"item[{i}] type=dict keys={sorted(item.keys())[:8]}")
-        else:
-            diag.append(f"item[{i}] type={type(item).__name__} attrs={[a for a in dir(item) if not a.startswith('_')][:8]}")
+    raw_items = client.list_messaging_channels(channel_family='mail')
+    diag.append(f"raw_items={len(raw_items) if isinstance(raw_items, list) else '?'}")
 
     for item in raw_items:
-        channel_id = None
-        label = None
-        family = ''
-        channel_type = ''
-
-        if isinstance(item, dict):
-            family = str(item.get('channelFamily') or item.get('family') or '').lower()
-            channel_type = str(item.get('type') or '').lower()
-            channel_id = (
-                item.get('id')
-                or item.get('name')
-                or item.get('identifier')
-            )
-            label = item.get('label') or item.get('name') or channel_id
-        else:
-            if hasattr(item, 'get_id'):
-                try:
-                    channel_id = item.get_id()
-                except Exception:
-                    channel_id = None
-            if hasattr(item, 'id') and not channel_id:
-                try:
-                    channel_id = getattr(item, 'id')
-                except Exception:
-                    channel_id = None
-            if hasattr(item, 'family') and not family:
-                try:
-                    family = str(getattr(item, 'family') or '').lower()
-                except Exception:
-                    family = ''
-            if hasattr(item, 'type'):
-                try:
-                    channel_type = str(getattr(item, 'type') or '').lower()
-                except Exception:
-                    channel_type = ''
-            if hasattr(item, 'get_raw'):
-                try:
-                    raw = item.get_raw()
-                    if isinstance(raw, dict):
-                        family = str(raw.get('channelFamily') or raw.get('family') or family).lower()
-                        channel_type = str(raw.get('type') or channel_type).lower()
-                        if not channel_id:
-                            channel_id = raw.get('id') or raw.get('name')
-                        label = raw.get('label') or raw.get('name')
-                except Exception:
-                    pass
-            if hasattr(item, 'name') and not label:
-                label = getattr(item, 'name')
+        raw = item.get_raw()
+        channel_id = raw.get('id')
+        family = str(raw.get('family') or '').lower()
+        channel_type = str(raw.get('type') or '').lower()
+        label = raw.get('label') or channel_id
 
         if family and family != 'mail':
             continue
@@ -3201,7 +3194,7 @@ def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) ->
         unique[channel['id']] = channel
 
     result = list(unique.values())
-    diag.append(f"raw_items={len(raw_items)} filtered={len(channels)} deduped={len(result)}")
+    diag.append(f"filtered={len(channels)} deduped={len(result)}")
     if not result:
         app.logger.warning(
             "[tools] _list_mail_channels: no mail channels found — diag: %s",
@@ -3265,8 +3258,15 @@ _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 
 
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
-    projects = _bench_call('list_projects', client.list_projects) or []
+    t_total = time.time()
+    projects = _sdk_fetch(
+        'list_projects',
+        _BACKEND_SETTINGS['cache_ttl_projects'],
+        lambda: _bench_call('list_projects', client.list_projects) or [],
+    )
+    app.logger.info("[perf:catalog] list_projects elapsed=%.0fms count=%d", (time.time() - t_total) * 1000, len(projects))
     out: List[Dict[str, str]] = []
+    keys: List[str] = []
     for project in projects:
         if not isinstance(project, dict):
             continue
@@ -3278,12 +3278,67 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
             'name': str(project.get('name') or key),
             'owner': str(project.get('ownerLogin') or project.get('owner') or project.get('ownerName') or 'Unknown'),
         }
-        version_tag = project.get('versionTag') or {}
-        if isinstance(version_tag, dict):
-            last_modified = version_tag.get('lastModifiedOn')
-            if last_modified is not None:
-                entry['lastModifiedOn'] = last_modified
         out.append(entry)
+        keys.append(key)
+
+    # Fetch last-modified timestamps from git log in parallel (replaces versionTag
+    # which does not reflect webapp edits).
+    # Uses batch cache reads + batch writes to minimize SQL round-trips.
+    if keys:
+        cache = _get_sdk_cache()
+        iid = _instance_id()
+        ttl = _BACKEND_SETTINGS['cache_ttl_projects']
+
+        # Phase A: L1-only cache check (no SQL — avoids 418 SQL SELECTs on cold cache)
+        cached_logs: Dict[str, Any] = {}
+        uncached_keys: List[str] = []
+        _get_mem = cache.get_mem if hasattr(cache, 'get_mem') else cache.get
+        for key in keys:
+            cached = _get_mem(iid, f'project_git_log:{key}', ttl)
+            if cached is not None:
+                cached_logs[key] = cached
+            else:
+                uncached_keys.append(key)
+        app.logger.info("[perf:catalog] git_log cache hit=%d miss=%d", len(cached_logs), len(uncached_keys))
+
+        # Phase B: fetch uncached git logs from API in parallel
+        fetched_logs: Dict[str, Any] = {}
+        if uncached_keys:
+            def _fetch_git_log(project_key: str) -> Tuple[str, Optional[Any]]:
+                try:
+                    local_client = _thread_client()
+                    return (project_key, local_client.get_project(project_key).get_project_git().log())
+                except Exception:
+                    return (project_key, None)
+
+            workers = min(8, len(uncached_keys))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_fetch_git_log, k): k for k in uncached_keys}
+                for future in as_completed(futures):
+                    pk, log = future.result()
+                    if log is not None:
+                        fetched_logs[pk] = log
+
+            # Phase C: batch-write to cache
+            if fetched_logs:
+                cache.set_many(iid, {f'project_git_log:{k}': v for k, v in fetched_logs.items()}, ttl)
+
+        # Extract timestamps from all logs
+        all_logs = {**cached_logs, **fetched_logs}
+        ts_map: Dict[str, Optional[int]] = {}
+        for key, log in all_logs.items():
+            try:
+                ts_str = log['entries'][0]['timestamp']
+                ts_map[key] = int(dtparser.isoparse(ts_str).timestamp() * 1000)
+            except Exception:
+                ts_map[key] = None
+        for entry in out:
+            ts = ts_map.get(entry['key'])
+            if ts is not None:
+                entry['lastModifiedOn'] = ts
+        app.logger.info("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d cached=%d fetched=%d", (time.time() - t_total) * 1000, len(keys), min(8, len(uncached_keys)) if uncached_keys else 0, len(cached_logs), len(fetched_logs))
+
+    app.logger.info("[perf:catalog] total elapsed=%.0fms", (time.time() - t_total) * 1000)
     out.sort(key=lambda item: item.get('key') or '')
     return out
 
@@ -3436,7 +3491,7 @@ def _build_project_footprint_map_with_deadline(
         return footprint_map
 
     # Run direct per-project footprint calls with a fixed parallelism budget.
-    max_workers = min(5, len(wanted_keys))
+    max_workers = min(8, len(wanted_keys))
     app.logger.info("[footprint-map] mode=per-project wanted=%s workers=%s", len(wanted_keys), max_workers)
     _notify_progress(
         progress_cb,
@@ -3568,8 +3623,9 @@ def _check_env_usages(
     env_listing: Dict[str, Any],
     project_info: Dict[str, Dict[str, str]],
     size_by_env: Dict[str, int],
+    usages_by_env: Dict[Tuple[str, str], List[Dict]],
 ) -> Optional[Dict[str, Any]]:
-    """Fetch usages for a single code env via the Dataiku API.
+    """Look up usages for a single code env from the pre-fetched bulk dict.
 
     Returns a dict with env metadata and normalized usages, or None if the env
     should be skipped (e.g. plugin-managed or missing name).
@@ -3588,24 +3644,8 @@ def _check_env_usages(
         return None
 
     owner = _extract_code_env_owner(env_listing, {})
-    usages: List[Any] = []
-    client = _thread_client()
-    try:
-        raw_usages = _bench_call(
-            'list_code_env_usages',
-            _client_perform_json,
-            client,
-            'GET',
-            "/admin/code-envs/%s/%s/usages" % (str(env_lang_raw).upper(), env_name),
-        )
-        if isinstance(raw_usages, list):
-            usages = raw_usages
-        elif hasattr(client, 'get_code_env'):
-            env_obj = _bench_call('get_code_env', client.get_code_env, normalized_lang.upper(), env_name)
-            usages = _bench_call('list_code_env_usages', env_obj.list_usages) if hasattr(env_obj, 'list_usages') else []
-    except Exception as exc:
-        app.logger.warning("[code-env-usage] failed to check %s: %s", env_key, exc)
-        usages = []
+    env_key_tuple = (normalized_lang.upper(), env_name)
+    usages: List[Any] = usages_by_env.get(env_key_tuple, [])
 
     normalized_usages: List[Dict[str, Any]] = []
     for raw_usage in usages:
@@ -3635,29 +3675,20 @@ def _check_env_usages(
 
 def _fetch_code_env_details(
     client: Any, lang_upper: str, env_name: str,
-    fetch_settings: bool = True, fetch_usages: bool = True,
+    fetch_settings: bool = True,
 ) -> Tuple[Dict[str, Any], List[Any]]:
-    """Fetch code env settings and usages. Returns (settings_raw, usages)."""
+    """Fetch code env settings. Returns (settings_raw, [])."""
     settings_raw: Dict[str, Any] = {}
-    usages: List[Any] = []
-    env_obj = None
     if fetch_settings and hasattr(client, 'get_code_env'):
         try:
-            env_obj = _bench_call('get_code_env', client.get_code_env, lang_upper, env_name)
-        except Exception:
-            env_obj = None
-    if env_obj is not None:
-        try:
-            settings_raw = _safe_get_raw(env_obj.get_settings())
+            settings_raw = _sdk_fetch(
+                f'code_env_settings:{lang_upper}:{env_name}',
+                _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                lambda: _safe_get_raw(_bench_call('get_code_env', client.get_code_env, lang_upper, env_name).get_settings()),
+            )
         except Exception:
             settings_raw = {}
-        if fetch_usages:
-            try:
-                if hasattr(env_obj, 'list_usages'):
-                    usages = _bench_call('list_code_env_usages', env_obj.list_usages) or []
-            except Exception:
-                usages = []
-    return settings_raw, usages
+    return settings_raw, []
 
 
 def _load_code_env_full_details(
@@ -3665,6 +3696,7 @@ def _load_code_env_full_details(
     project_info: Dict[str, Dict[str, str]],
     size_by_env: Dict[str, int],
     include_usages: bool = True,
+    usages_by_env: Optional[Dict[Tuple[str, str], List[Dict]]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(env_listing, dict):
         return None
@@ -3681,13 +3713,16 @@ def _load_code_env_full_details(
     size_bytes = _coerce_int(size_by_env.get(size_key), 0)
     owner = _extract_code_env_owner(env_listing, {})
 
-    # Fast path for large instances: avoid fetching settings/usages unless needed.
+    # Fast path for large instances: avoid fetching settings unless needed.
     should_fetch = include_usages or (not version) or owner == 'Unknown'
     client = _thread_client()
-    settings_raw, usages = _fetch_code_env_details(
+    settings_raw, _ = _fetch_code_env_details(
         client, language.upper(), name,
-        fetch_settings=should_fetch, fetch_usages=include_usages,
+        fetch_settings=should_fetch,
     )
+    usages: List[Any] = []
+    if include_usages and usages_by_env is not None:
+        usages = usages_by_env.get((language.upper(), name), [])
     if settings_raw:
         owner = _extract_code_env_owner(env_listing, settings_raw)
     normalized_usages: List[Dict[str, Any]] = []
@@ -3769,25 +3804,37 @@ def _collect_project_code_env_usage(
         f"start projects={len(project_info)}",
     )
 
-    envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
-    workers = min(_parallel_workers(16), len(envs))
+    envs = [env for env in (_sdk_fetch(
+        'list_code_envs',
+        _BACKEND_SETTINGS['cache_ttl_code_envs'],
+        lambda: client.list_code_envs() or [],
+    ) or []) if isinstance(env, dict)]
     total = len(envs)
+
+    bulk_usages_raw = _sdk_fetch(
+        'list_code_env_usages',
+        _BACKEND_SETTINGS['cache_ttl_code_envs'],
+        lambda: client.list_code_env_usages() or [],
+    )
+    usages_by_env: Dict[Tuple[str, str], List[Dict]] = {}
+    for u in bulk_usages_raw:
+        k = (str(u.get('envLang', '')).upper(), str(u.get('envName', '')))
+        usages_by_env.setdefault(k, []).append(u)
+
     _notify_progress(
         progress_cb,
         'code_env_usage_scan_start',
-        f"checking {total} code envs with {workers} threads",
+        f"checking {total} code envs",
     )
 
     env_payloads: List[Dict[str, Any]] = []
     checked = [0]
-    checked_lock = threading.Lock()
 
     def _check_and_report(env: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        payload = _check_env_usages(env, project_info, size_by_env)
+        payload = _check_env_usages(env, project_info, size_by_env, usages_by_env)
         env_name = env.get('envName') or env.get('name') or '?'
-        with checked_lock:
-            checked[0] += 1
-            idx = checked[0]
+        checked[0] += 1
+        idx = checked[0]
         if payload is None:
             _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — skipped (plugin/internal)")
         else:
@@ -3796,23 +3843,10 @@ def _collect_project_code_env_usage(
             _notify_progress(progress_cb, 'code_env_usage_check', f"[{idx}/{total}] {env_name} — {status}")
         return payload
 
-    if workers <= 1:
-        for env in envs:
-            payload = _check_and_report(env)
-            if payload:
-                env_payloads.append(payload)
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(_check_and_report, env): env for env in envs}
-            for future in as_completed(list(futures.keys())):
-                try:
-                    payload = future.result()
-                except Exception as exc:
-                    app.logger.warning("[code-env-usage] env check failed: %s", exc)
-                    _notify_progress(progress_cb, 'code_env_usage_check_error', f"env check failed: {exc}", 'warn')
-                    continue
-                if payload:
-                    env_payloads.append(payload)
+    for env in envs:
+        payload = _check_and_report(env)
+        if payload:
+            env_payloads.append(payload)
 
     envs_by_project: Dict[str, set] = {k: set() for k in project_info.keys()}
     usage_breakdown_by_project: Dict[str, Dict[str, int]] = {k: {} for k in project_info.keys()}
@@ -4030,7 +4064,7 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
         # Pre-sort children by size to identify top-N for adaptive depth
         child_items = []
         for child_name, child_footprint in details.items():
-            child_size = _coerce_int(_footprint_attr(child_footprint, 'size', 'totalSize', 'bytes'), 0)
+            child_size = _coerce_int(child_footprint.get('size'), 0)
             child_items.append((child_name, child_footprint, child_size))
         child_items.sort(key=lambda x: x[2], reverse=True)
 
@@ -4047,8 +4081,8 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
 
     children.sort(key=lambda c: c.get('size', 0), reverse=True)
 
-    size = _coerce_int(_footprint_attr(footprint, 'size', 'totalSize', 'bytes'), 0)
-    file_count = _coerce_int(_footprint_attr(footprint, 'nb_files', 'nbFiles', 'fileCount'), 0)
+    size = _coerce_int(footprint.get('size'), 0)
+    file_count = _coerce_int(footprint.get('nbFiles'), 0)
 
     if size <= 0 and children:
         size = sum(child['size'] for child in children)
@@ -4056,7 +4090,7 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
         file_count = sum(child['fileCount'] for child in children)
 
     own_size = max(0, size - sum(child['size'] for child in children))
-    locations_raw = _footprint_attr(footprint, 'locations')
+    locations_raw = footprint.get('locations')
     locations: List[str] = []
     if isinstance(locations_raw, list):
         locations = [str(loc) for loc in locations_raw if loc is not None and str(loc).strip()]
@@ -4266,19 +4300,23 @@ def api_connections():
     client = dataiku.api_client()
 
     def loader():
-        connections = client.list_connections()
+        connections = _sdk_fetch(
+            'list_connections',
+            _BACKEND_SETTINGS['cache_ttl_overview'],
+            lambda: client.list_connections(),
+        )
         connection_counts: Dict[str, int] = {}
         details: List[Dict[str, Any]] = []
 
         if isinstance(connections, dict):
             items = connections.items()
         else:
-            items = [(c.get('name') or c.get('id') or c.get('connectionName'), c) for c in connections]
+            items = [(c.get('name'), c) for c in connections]
 
         for name, config in items:
             if not isinstance(config, dict):
                 continue
-            conn_type = config.get('type') or config.get('connectionType')
+            conn_type = config.get('type')
             if conn_type == 'EC2':
                 conn_type = 'S3'
             if not conn_type:
@@ -4312,8 +4350,16 @@ def api_users():
     client = dataiku.api_client()
 
     def loader():
-        users = client.list_users()
-        groups = client.list_groups()
+        users = _sdk_fetch(
+            'list_users',
+            _BACKEND_SETTINGS['cache_ttl_users'],
+            lambda: client.list_users(),
+        )
+        groups = _sdk_fetch(
+            'list_groups',
+            _BACKEND_SETTINGS['cache_ttl_users'],
+            lambda: client.list_groups(),
+        )
 
         enabled_users = [u for u in users if u.get('enabled') is True]
         user_stats: Dict[str, Any] = {
@@ -4354,13 +4400,18 @@ def api_license():
     dip_home = _dip_home()
 
     def loader():
-        license_data = _safe_read_json(os.path.join(dip_home, 'config', 'license.json'))
-        source = 'file'
-        if not license_data:
-            license_data = _read_license_via_client_api(client)
-            source = 'api'
-        parsed = _parse_license(license_data)
-        parsed['licenseSource'] = source if license_data else 'none'
+        def _fetch_raw():
+            status = client.get_licensing_status()
+            return status if isinstance(status, dict) else status.get_raw()
+        raw = _sdk_fetch(
+            'licensing_status',
+            _BACKEND_SETTINGS['cache_ttl_license'],
+            _fetch_raw,
+        )
+        license_content = raw.get('base', {}).get('licenseContent', {})
+        parsed = _parse_license(license_content)
+        parsed['licenseSource'] = 'api'
+        parsed['licensingStatus'] = raw
         return _ensure_license_fallback(parsed, dip_home)
 
     data = _cache_get('license', _BACKEND_SETTINGS['cache_ttl_license'], loader)
@@ -4381,7 +4432,11 @@ def api_projects():
     def loader():
         started = time.time()
         projects = []
-        raw_projects = client.list_projects() or []
+        raw_projects = _sdk_fetch(
+            'list_projects',
+            _BACKEND_SETTINGS['cache_ttl_projects'],
+            lambda: client.list_projects() or [],
+        )
         total = len(raw_projects)
         app.logger.info("[projects] start total=%s", total)
         for idx, project in enumerate(raw_projects, 1):
@@ -4389,8 +4444,6 @@ def api_projects():
             name = project.get('name') or key
             owner = project.get('ownerLogin') or project.get('owner') or project.get('ownerName') or 'Unknown'
 
-            settings: Dict[str, Any] = {}
-            summary: Dict[str, Any] = {}
             perms_raw: Any = None
 
             try:
@@ -4400,51 +4453,12 @@ def api_projects():
 
             if project_obj is not None:
                 try:
-                    raw_settings = project_obj.get_settings().get_raw()
-                    if isinstance(raw_settings, dict):
-                        settings = raw_settings
-                except Exception as exc:
-                    app.logger.warning("[projects] %s settings fetch failed: %s", key, exc)
-                try:
-                    raw_summary = project_obj.get_summary()
-                    if isinstance(raw_summary, dict):
-                        summary = raw_summary
-                except Exception as exc:
-                    app.logger.warning("[projects] %s summary fetch failed: %s", key, exc)
-                try:
                     perms_raw = project_obj.get_permissions()
                 except Exception as exc:
                     app.logger.warning("[projects] %s permissions fetch failed: %s", key, exc)
 
-            name_override = _extract_nested_text(
-                summary,
-                'name',
-            ) or _extract_nested_text(
-                settings,
-                'name',
-                'settings.name',
-                'settings.dkuProperties.name',
-                'dkuProperties.name',
-            )
-            if name_override:
-                name = name_override
-
-            owner_override = _extract_nested_text(
-                summary,
-                'ownerLogin',
-                'owner',
-                'ownerName',
-            ) or _extract_nested_text(
-                settings,
-                'owner',
-                'settings.owner',
-                'settings.dkuProperties.owner',
-                'dkuProperties.owner',
-            )
-            if owner_override:
-                owner = owner_override
-
-            version_number = _extract_project_version_number(project if isinstance(project, dict) else {}, summary, settings)
+            listing = project if isinstance(project, dict) else {}
+            version_number = _extract_project_version_number(listing, listing, {})
             permissions = _normalize_project_permissions(perms_raw)
 
             if key == 'PYTHONAUDIT_TEST' or (version_number == 0 and len(permissions) == 0):
@@ -4453,12 +4467,11 @@ def api_projects():
                 if isinstance(perms_raw, dict):
                     perms_raw_keys = sorted(list(perms_raw.keys()))
                 app.logger.info(
-                    "[projects] %s version=%s perms=%s listingVersion=%s summaryVersion=%s permsRawType=%s permsRawKeys=%s",
+                    "[projects] %s version=%s perms=%s listingVersion=%s permsRawType=%s permsRawKeys=%s",
                     key,
                     version_number,
                     len(permissions),
-                    _extract_nested_int(project if isinstance(project, dict) else {}, 'versionTag.versionNumber'),
-                    _extract_nested_int(summary, 'versionTag.versionNumber'),
+                    _extract_nested_int(listing, 'versionTag.versionNumber'),
                     perms_raw_type,
                     perms_raw_keys,
                 )
@@ -4485,6 +4498,173 @@ def api_projects():
     return jsonify(data)
 
 
+# ── Scan pipeline helpers: /api/code-envs ─────────────────────────────────────
+
+def _env_key_from_listing(env: Dict[str, Any]) -> str:
+    env_name = env.get('envName') or env.get('name') or env.get('id')
+    env_lang_raw = env.get('envLang') or env.get('language') or env.get('type') or 'PYTHON'
+    language = _normalize_language(env_lang_raw)
+    return f"{language}:{env_name}" if env_name else 'unknown'
+
+
+def _task_ce_catalog(
+    client: Any,
+    add_event: Callable,
+    limit_label: str,
+    project_limit: int,
+) -> Dict[str, Any]:
+    add_event('load_project_catalog', 'loading project catalog')
+    project_catalog = _list_projects_catalog(client)
+    selected_catalog: List[Dict[str, str]] = project_catalog[:] if project_limit <= 0 else project_catalog[:project_limit]
+    add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
+    project_info: Dict[str, Dict[str, str]] = {}
+    for project in selected_catalog:
+        key = str(project.get('key') or '').strip()
+        if not key:
+            continue
+        project_info[key] = {
+            'name': str(project.get('name') or key),
+            'owner': str(project.get('owner') or 'Unknown'),
+        }
+    add_event(
+        'project_scope_ready',
+        f"project scope ready selected={len(project_info)} total={len(project_catalog)} limit={limit_label}",
+    )
+    return {
+        'project_catalog': project_catalog,
+        'selected_catalog': selected_catalog,
+        'project_info': project_info,
+        'selected_count': len(project_info),
+    }
+
+
+def _task_ce_size_map(add_event: Callable) -> Dict[str, int]:
+    """Runs in a background thread; acquires its own client via _thread_client()."""
+    client = _thread_client()
+    global_footprint = _compute_footprint_payload(client, 'global', None)
+    size_by_env: Dict[str, int] = {}
+    if isinstance(global_footprint, dict):
+        code_envs_section = global_footprint.get('codeEnvs')
+        if isinstance(code_envs_section, dict):
+            code_env_items = code_envs_section.get('items')
+            if isinstance(code_env_items, list):
+                for item in code_env_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_name = item.get('name')
+                    item_lang = str(item.get('language') or '').strip().lower()
+                    if not item_name or not item_lang:
+                        continue
+                    size_key = f"{item_lang}:{item_name}"
+                    size_by_env[size_key] = _coerce_int(item.get('size'), 0)
+    return size_by_env
+
+
+def _task_ce_usage_scan(
+    client: Any,
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    if not project_info:
+        return {}
+    add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
+    return _get_shared_project_code_env_usage(
+        client,
+        project_info,
+        {},
+        include_project_object_scan=True,
+        include_code_env_usage_api=False,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+
+
+def _task_ce_env_details(
+    client: Any,
+    envs: List[Dict[str, Any]],
+    project_info: Dict[str, Dict[str, str]],
+    size_by_env: Dict[str, int],
+    progress_meta: Dict[str, Any],
+    deadline_ts: float,
+    add_event: Callable,
+    append_partial_row: Callable,
+    usages_by_env: Optional[Dict[Tuple[str, str], List[Dict]]] = None,
+) -> List[Dict[str, Any]]:
+    env_details: List[Dict[str, Any]] = []
+    max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), max(1, len(envs)))
+    progress_meta['envDetailsTotal'] = len(envs)
+    progress_meta['envDetailsDone'] = 0
+    add_event('load_code_env_details', f"loading env details envs={len(envs)} workers={max_workers}")
+    if max_workers <= 1:
+        for env in envs:
+            if time.time() > deadline_ts:
+                add_event('load_code_env_details', 'deadline reached at step=load_code_env_details', 'warn')
+                break
+            env_key = _env_key_from_listing(env)
+            env_started = time.time()
+            add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
+            detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True, usages_by_env=usages_by_env)
+            if detail:
+                env_details.append(detail)
+                row = detail.get('row')
+                if isinstance(row, dict):
+                    append_partial_row(row)
+                add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - env_started) * 1000.0)
+            else:
+                add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - env_started) * 1000.0)
+    else:
+        future_to_env: Dict[Any, Dict[str, Any]] = {}
+        env_started_at: Dict[str, float] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for env in envs:
+                if time.time() > deadline_ts:
+                    break
+                env_key = _env_key_from_listing(env)
+                add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
+                env_started_at[env_key] = time.time()
+                future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True, usages_by_env)
+                future_to_env[future] = env
+
+            timed_out_futures = False
+            remaining = max(0.0, deadline_ts - time.time())
+            try:
+                for future in as_completed(list(future_to_env.keys()), timeout=remaining):
+                    if time.time() > deadline_ts:
+                        timed_out_futures = True
+                        break
+                    env = future_to_env.get(future) or {}
+                    env_key = _env_key_from_listing(env)
+                    started_at = env_started_at.get(env_key, time.time())
+                    try:
+                        detail = future.result()
+                    except Exception as exc:
+                        add_event('code_env_detail_error', f"code env detail failed: {exc}", 'warn', env_key, (time.time() - started_at) * 1000.0)
+                        continue
+                    if detail:
+                        env_details.append(detail)
+                        row = detail.get('row')
+                        if isinstance(row, dict):
+                            append_partial_row(row)
+                        add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - started_at) * 1000.0)
+                    else:
+                        add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - started_at) * 1000.0)
+            except FuturesTimeoutError:
+                timed_out_futures = True
+                add_event('load_code_env_details', 'timeout while waiting for env detail futures', 'warn')
+
+            if timed_out_futures or time.time() > deadline_ts:
+                for future, env in future_to_env.items():
+                    if future.done():
+                        continue
+                    future.cancel()
+                    env_key = _env_key_from_listing(env)
+                    started_at = env_started_at.get(env_key, time.time())
+                    add_event('code_env_detail_timeout', 'cancelled env detail future on deadline', 'warn', env_key, (time.time() - started_at) * 1000.0)
+    return env_details
+
+
 @app.route('/api/code-envs')
 def api_code_envs():
     client = dataiku.api_client()
@@ -4499,8 +4679,6 @@ def api_code_envs():
         code_envs = []
         python_counts: Dict[str, int] = {}
         r_counts: Dict[str, int] = {}
-        size_by_env: Dict[str, int] = {}
-        project_info: Dict[str, Dict[str, str]] = {}
         steps: List[Dict[str, Any]] = []
         op_stats: Dict[str, Dict[str, Any]] = {}
         events: List[Dict[str, Any]] = []
@@ -4508,14 +4686,17 @@ def api_code_envs():
         timeout_at_step: Optional[str] = None
         deadline_pressure_steps: set = set()
         timeout_event_steps: set = set()
-        progress_run_id = _start_progress('code_envs')
-        selected_project_count = 0
-        usage_completed_projects: set = set()
-        env_detail_total = 0
-        env_detail_done = 0
-        catalog_done = False
-        size_map_done = False
         timed_out_or_error = False
+        progress_run_id = _start_progress('code_envs')
+        catalog: Optional[Dict[str, Any]] = None
+        progress_meta: Dict[str, Any] = {
+            'selectedProjects': 0,
+            'projectUsageDone': 0,
+            'envDetailsTotal': 0,
+            'envDetailsDone': 0,
+            'catalogDone': False,
+            'sizeMapDone': False,
+        }
 
         def elapsed_ms() -> float:
             return (time.time() - started) * 1000.0
@@ -4529,27 +4710,27 @@ def api_code_envs():
         def _compute_progress_pct(force_done: bool = False) -> int:
             if force_done:
                 return 100
-            usage_total = max(0, int(selected_project_count))
-            usage_ratio = min(1.0, float(len(usage_completed_projects)) / float(usage_total)) if usage_total > 0 else 1.0
-            detail_total = max(0, int(env_detail_total))
-            detail_ratio = min(1.0, float(env_detail_done) / float(detail_total)) if detail_total > 0 else 0.0
+            usage_total = max(0, int(progress_meta['selectedProjects']))
+            usage_ratio = min(1.0, float(progress_meta['projectUsageDone']) / float(usage_total)) if usage_total > 0 else 1.0
+            detail_total = max(0, int(progress_meta['envDetailsTotal']))
+            detail_ratio = min(1.0, float(progress_meta['envDetailsDone']) / float(detail_total)) if detail_total > 0 else 0.0
             pct = 0.0
-            pct += 10.0 if catalog_done else 0.0
-            pct += 55.0 if size_map_done else 0.0
-            pct += 20.0 * usage_ratio
-            pct += 15.0 * detail_ratio
+            pct += 10.0 if progress_meta['catalogDone'] else 0.0
+            pct += 15.0 if progress_meta['sizeMapDone'] else 0.0
+            pct += 50.0 * usage_ratio
+            pct += 25.0 * detail_ratio
             if timed_out_or_error:
                 return int(max(0.0, min(100.0, pct)))
             return int(max(0.0, min(99.0, pct)))
 
         def _infer_phase() -> str:
-            if not catalog_done:
+            if not progress_meta['catalogDone']:
                 return 'catalog'
-            if not size_map_done:
+            if not progress_meta['sizeMapDone']:
                 return 'size_map'
-            if selected_project_count > 0 and len(usage_completed_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectUsageDone'] < progress_meta['selectedProjects']:
                 return 'usage_scan'
-            if env_detail_total > 0 and env_detail_done < env_detail_total:
+            if progress_meta['envDetailsTotal'] > 0 and progress_meta['envDetailsDone'] < progress_meta['envDetailsTotal']:
                 return 'env_details'
             return 'finalizing'
 
@@ -4560,10 +4741,10 @@ def api_code_envs():
                 {
                     'progressPct': _compute_progress_pct(force_done),
                     'phase': _infer_phase() if not force_done else 'done',
-                    'selectedProjects': int(selected_project_count),
-                    'projectUsageDone': int(len(usage_completed_projects)),
-                    'envDetailsTotal': int(env_detail_total),
-                    'envDetailsDone': int(env_detail_done),
+                    'selectedProjects': int(progress_meta['selectedProjects']),
+                    'projectUsageDone': int(progress_meta['projectUsageDone']),
+                    'envDetailsTotal': int(progress_meta['envDetailsTotal']),
+                    'envDetailsDone': int(progress_meta['envDetailsDone']),
                     'timedOut': bool(timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
@@ -4578,7 +4759,6 @@ def api_code_envs():
             project_key: Optional[str] = None,
             event_elapsed_ms: Optional[float] = None,
         ) -> None:
-            nonlocal env_detail_done
             event: Dict[str, Any] = {
                 'tMs': round(elapsed_ms(), 2),
                 'level': level,
@@ -4592,9 +4772,9 @@ def api_code_envs():
             events.append(event)
             _append_progress_event('code_envs', progress_run_id, event)
             if step == 'project_env_refs_resolved' and project_key:
-                usage_completed_projects.add(project_key)
+                progress_meta['projectUsageDone'] += 1
             if step in ('code_env_detail_ok', 'code_env_detail_error', 'code_env_detail_timeout'):
-                env_detail_done += 1
+                progress_meta['envDetailsDone'] += 1
             _update_progress_summary(False)
 
         def progress_event(**kwargs) -> None:
@@ -4641,120 +4821,59 @@ def api_code_envs():
             entry['calls'] = int(entry.get('calls') or 0) + int(max(0, calls))
             entry['elapsedMs'] = float(entry.get('elapsedMs') or 0.0) + max(0.0, float(elapsed_ms_value))
 
-        def env_key_from_listing(env: Dict[str, Any]) -> str:
-            env_name = env.get('envName') or env.get('name') or env.get('id')
-            env_lang_raw = env.get('envLang') or env.get('language') or env.get('type') or 'PYTHON'
-            language = _normalize_language(env_lang_raw)
-            return f"{language}:{env_name}" if env_name else 'unknown'
-
         previous_recorder = getattr(_THREAD_LOCAL, 'bench_record_op', None)
         setattr(_THREAD_LOCAL, 'bench_record_op', record_op)
         add_event('code_envs_start', f"code env analysis started timeoutMs={timeout_ms} limit={limit_label}")
 
         try:
-            if deadline_reached('load_project_catalog'):
-                project_catalog = []
-            else:
-                step_started = time.time()
-                add_event('load_project_catalog', 'loading project catalog')
-                project_catalog = _list_projects_catalog(client)
-                record_step('load_project_catalog', step_started, calls=1)
-            catalog_done = True
+            # Phase 1: catalog
+            step_started = time.time()
+            catalog = _task_ce_catalog(client, add_event, limit_label, project_limit)
+            record_step('load_project_catalog', step_started, calls=catalog['selected_count'])
+            progress_meta['selectedProjects'] = catalog['selected_count']
+            progress_meta['catalogDone'] = True
             _update_progress_summary(False)
-
-            selected_catalog: List[Dict[str, str]] = []
-            if not deadline_reached('select_projects_by_key'):
-                step_started = time.time()
-                add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
-                selected_catalog = project_catalog[:] if project_limit <= 0 else project_catalog[:project_limit]
-                record_step('select_projects_by_key', step_started, calls=len(selected_catalog))
-                selected_project_count = len(selected_catalog)
-                _update_progress_summary(False)
-
-            for project in selected_catalog:
-                key = str(project.get('key') or '').strip()
-                if not key:
-                    continue
-                project_info[key] = {
-                    'name': str(project.get('name') or key),
-                    'owner': str(project.get('owner') or 'Unknown'),
-                }
             app.logger.info(
                 "[code-envs] projectInfo selected=%s total=%s limit=%s elapsed=%.2fs",
-                len(project_info),
-                len(project_catalog),
+                catalog['selected_count'],
+                len(catalog['project_catalog']),
                 limit_label,
                 time.time() - started,
             )
-            add_event(
-                'project_scope_ready',
-                f"project scope ready selected={len(project_info)} total={len(project_catalog)} limit={limit_label}",
-            )
+            app.logger.info("[perf:ce] phase1_catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
-            # Launch footprint computation in background so project scan can run concurrently.
-            # The project scan does not depend on size_by_env; it only needs it for sizeBytes
-            # decoration which happens later in _load_code_env_full_details.
+            # Phase 2: usage_scan (size_map deferred to /api/code-envs/sizes)
+            footprint_pool = None
             footprint_future = None
-            footprint_step_started = time.time()
-            if not deadline_reached('load_code_env_size_map'):
-                add_event('load_code_env_size_map', 'loading global code env size map')
-
-                def _bg_compute_global_footprint():
-                    return _compute_footprint_payload(_thread_client(), 'global', None)
-
-                footprint_pool = ThreadPoolExecutor(max_workers=1)
-                footprint_future = footprint_pool.submit(_bg_compute_global_footprint)
 
             usage_data: Dict[str, Any] = {}
-            if project_info and not deadline_reached('collect_project_code_env_usage'):
+            if catalog['project_info'] and not deadline_reached('collect_project_code_env_usage'):
                 step_started = time.time()
-                add_event('collect_project_code_env_usage', f"collecting usage for projects={len(project_info)}")
-                usage_data = _get_shared_project_code_env_usage(
+                usage_data = _task_ce_usage_scan(
                     client,
-                    project_info,
-                    size_by_env,
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
+                    catalog['project_info'],
+                    deadline,
+                    add_event,
+                    progress_event,
                 )
-                record_step('collect_project_code_env_usage', step_started, calls=len(project_info))
+                record_step('collect_project_code_env_usage', step_started, calls=catalog['selected_count'])
+            app.logger.info("[perf:ce] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
-            # Wait for footprint and populate size_by_env before the env details step.
-            if footprint_future is not None:
-                try:
-                    global_footprint = footprint_future.result(timeout=remaining_seconds())
-                    if isinstance(global_footprint, dict):
-                        code_envs_section = global_footprint.get('codeEnvs')
-                        if isinstance(code_envs_section, dict):
-                            code_env_items = code_envs_section.get('items')
-                            if isinstance(code_env_items, list):
-                                for item in code_env_items:
-                                    if not isinstance(item, dict):
-                                        continue
-                                    item_name = item.get('name')
-                                    item_lang = str(item.get('language') or '').strip().lower()
-                                    if not item_name or not item_lang:
-                                        continue
-                                    size_key = f"{item_lang}:{item_name}"
-                                    size_by_env[size_key] = _coerce_int(item.get('size'), 0)
-                except Exception:
-                    pass
-                finally:
-                    footprint_pool.shutdown(wait=False)
-                record_step('load_code_env_size_map', footprint_step_started, calls=1)
-                size_map_done = True
-                _update_progress_summary(False)
-            app.logger.info("[code-envs] sizeMap=%s elapsed=%.2fs", len(size_by_env), time.time() - started)
+            # Size map deferred — sizes will be 0 until /api/code-envs/sizes is called
+            size_by_env: Dict[str, int] = {}
+            progress_meta['sizeMapDone'] = True
+            _update_progress_summary(False)
+            app.logger.info("[perf:ce] size_map deferred, elapsed=%.0fms", elapsed_ms())
 
+            # Phase 3: list + filter envs, then fetch details
             envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {}
-            selected_env_keys = set()
+            selected_env_keys: set = set()
             for env_keys in envs_by_project.values():
                 selected_env_keys.update(env_keys or set())
             app.logger.info(
                 "[code-envs] selectedEnvKeys=%s projects=%s elapsed=%.2fs",
                 len(selected_env_keys),
-                len(project_info),
+                len(catalog['project_info']),
                 time.time() - started,
             )
             add_event('selected_env_keys', f"selected env keys count={len(selected_env_keys)}")
@@ -4763,10 +4882,14 @@ def api_code_envs():
             if not deadline_reached('list_code_envs'):
                 step_started = time.time()
                 add_event('list_code_envs', 'listing code envs')
-                envs = [env for env in (client.list_code_envs() or []) if isinstance(env, dict)]
+                envs = [env for env in (_sdk_fetch(
+                    'list_code_envs',
+                    _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                    lambda: client.list_code_envs() or [],
+                ) or []) if isinstance(env, dict)]
                 record_step('list_code_envs', step_started, calls=1)
+                app.logger.info("[perf:ce] list_code_envs elapsed=%.0fms count=%d", elapsed_ms(), len(envs))
 
-            # Filter out plugin-managed and DSS-internal code envs by default
             _SKIP_DEPLOYMENT_MODES = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
             total_env_count = len(envs)
             skipped_env_count = 0
@@ -4783,85 +4906,34 @@ def api_code_envs():
             app.logger.info("[code-envs] listed=%s", len(envs))
 
             env_details: List[Dict[str, Any]] = []
-            max_workers = min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), len(envs))
-            env_detail_total = len(envs)
-            env_detail_done = 0
-            _update_progress_summary(False)
             if envs and not deadline_reached('load_code_env_details'):
                 step_started = time.time()
-                add_event('load_code_env_details', f"loading env details envs={len(envs)} workers={max_workers}")
-                if max_workers <= 1:
-                    processed = 0
-                    for env in envs:
-                        if deadline_reached('load_code_env_details'):
-                            break
-                        env_key = env_key_from_listing(env)
-                        env_started = time.time()
-                        add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-                        detail = _load_code_env_full_details(env, project_info, size_by_env, include_usages=True)
-                        if detail:
-                            env_details.append(detail)
-                            row = detail.get('row')
-                            if isinstance(row, dict):
-                                _append_progress_partial_row('code_envs', progress_run_id, row)
-                            add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - env_started) * 1000.0)
-                        else:
-                            add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - env_started) * 1000.0)
-                        processed += 1
-                    record_step('load_code_env_details', step_started, calls=processed)
-                else:
-                    future_to_env: Dict[Any, Dict[str, Any]] = {}
-                    env_started_at: Dict[str, float] = {}
-                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                        for env in envs:
-                            if deadline_reached('load_code_env_details'):
-                                break
-                            env_key = env_key_from_listing(env)
-                            add_event('code_env_detail_start', 'loading code env detail', 'info', env_key)
-                            env_started_at[env_key] = time.time()
-                            future = pool.submit(_load_code_env_full_details, env, project_info, size_by_env, True)
-                            future_to_env[future] = env
+                bulk_usages_raw = _sdk_fetch(
+                    'list_code_env_usages',
+                    _BACKEND_SETTINGS['cache_ttl_code_envs'],
+                    lambda: client.list_code_env_usages() or [],
+                )
+                usages_by_env_details: Dict[Tuple[str, str], List[Dict]] = {}
+                for _u in bulk_usages_raw:
+                    _k = (str(_u.get('envLang', '')).upper(), str(_u.get('envName', '')))
+                    usages_by_env_details.setdefault(_k, []).append(_u)
+                app.logger.info("[perf:ce] list_code_env_usages bulk elapsed=%.0fms count=%d", elapsed_ms(), len(bulk_usages_raw))
+                env_details = _task_ce_env_details(
+                    client,
+                    envs,
+                    catalog['project_info'],
+                    size_by_env,
+                    progress_meta,
+                    deadline,
+                    add_event,
+                    lambda row: _append_progress_partial_row('code_envs', progress_run_id, row),
+                    usages_by_env=usages_by_env_details,
+                )
+                record_step('load_code_env_details', step_started, calls=progress_meta['envDetailsDone'])
+                app.logger.info("[perf:ce] env_details elapsed=%.0fms envs=%d workers=%d", elapsed_ms(), len(env_details), min(_parallel_workers(_BACKEND_SETTINGS['code_env_detail_workers']), max(1, len(envs))))
+            app.logger.info("[code-envs] details=%s elapsed=%.2fs", len(env_details), time.time() - started)
 
-                        processed = 0
-                        timed_out_futures = False
-                        try:
-                            for future in as_completed(list(future_to_env.keys()), timeout=remaining_seconds()):
-                                if deadline_reached('load_code_env_details'):
-                                    timed_out_futures = True
-                                    break
-                                env = future_to_env.get(future) or {}
-                                env_key = env_key_from_listing(env)
-                                started_at = env_started_at.get(env_key, started)
-                                try:
-                                    detail = future.result()
-                                except Exception as exc:
-                                    add_event('code_env_detail_error', f"code env detail failed: {exc}", 'warn', env_key, (time.time() - started_at) * 1000.0)
-                                    processed += 1
-                                    continue
-                                if detail:
-                                    env_details.append(detail)
-                                    row = detail.get('row')
-                                    if isinstance(row, dict):
-                                        _append_progress_partial_row('code_envs', progress_run_id, row)
-                                    add_event('code_env_detail_ok', 'code env detail loaded', 'info', env_key, (time.time() - started_at) * 1000.0)
-                                else:
-                                    add_event('code_env_detail_error', 'code env detail missing', 'warn', env_key, (time.time() - started_at) * 1000.0)
-                                processed += 1
-                        except FuturesTimeoutError:
-                            timed_out_futures = True
-                            add_event('load_code_env_details', 'timeout while waiting for env detail futures', 'warn')
-
-                        if timed_out_futures or deadline_reached('load_code_env_details'):
-                            for future, env in future_to_env.items():
-                                if future.done():
-                                    continue
-                                future.cancel()
-                                env_key = env_key_from_listing(env)
-                                started_at = env_started_at.get(env_key, started)
-                                add_event('code_env_detail_timeout', 'cancelled env detail future on deadline', 'warn', env_key, (time.time() - started_at) * 1000.0)
-                        record_step('load_code_env_details', step_started, calls=processed)
-            app.logger.info("[code-envs] details=%s workers=%s elapsed=%.2fs", len(env_details), max_workers, time.time() - started)
-
+            # Phase 4: aggregate rows
             if env_details and not deadline_reached('aggregate_code_env_rows'):
                 step_started = time.time()
                 add_event('aggregate_code_env_rows', f"aggregating rows count={len(env_details)}")
@@ -4882,6 +4954,7 @@ def api_code_envs():
 
             code_envs.sort(key=lambda item: (_coerce_int(item.get('sizeBytes'), 0), str(item.get('name') or '')), reverse=True)
             app.logger.info("[code-envs] done rows=%s elapsed=%.2fs", len(code_envs), time.time() - started)
+            app.logger.info("[perf:ce] total elapsed=%.0fms", elapsed_ms())
             add_event('code_envs_done', f"code envs done rows={len(code_envs)} timedOut={timed_out}")
 
             api_calls = []
@@ -4898,16 +4971,17 @@ def api_code_envs():
                     'qps': round(qps, 2),
                 })
 
+            selected_count = len(catalog['project_info']) if catalog is not None else 0
             benchmark_summary = {
                 'enabled': True,
-                'projectLimit': len(project_info),
+                'projectLimit': selected_count,
                 'projectSelection': project_selection,
                 'timeoutMs': timeout_ms,
                 'timedOut': bool(timed_out),
                 'timeoutAtStep': timeout_at_step,
                 'totalElapsedMs': round(elapsed_ms(), 2),
                 'remainingMs': remaining_ms(),
-                'selectedProjectCount': len(project_info),
+                'selectedProjectCount': selected_count,
                 'selectedEnvKeyCount': len(selected_env_keys),
                 'steps': steps,
                 'apiCalls': api_calls,
@@ -4939,7 +5013,7 @@ def api_code_envs():
                 status='error',
                 summary={
                     'enabled': True,
-                    'projectLimit': len(project_info),
+                    'projectLimit': progress_meta['selectedProjects'],
                     'projectSelection': project_selection,
                     'timeoutMs': timeout_ms,
                     'timedOut': bool(timed_out),
@@ -4958,6 +5032,16 @@ def api_code_envs():
 
     data = _cache_get('code_envs', _BACKEND_SETTINGS['cache_ttl_code_envs'], loader)
     return jsonify(data)
+
+
+@app.route('/api/code-envs/sizes')
+def api_code_envs_sizes():
+    """Lazy-load code env sizes via global footprint. Cached for 300s."""
+    def loader():
+        client = dataiku.api_client()
+        return _get_code_env_size_map(client)
+    size_map = _cache_get('code_envs_sizes', _BACKEND_SETTINGS['cache_ttl_projects'], loader)
+    return jsonify({'sizes': size_map})
 
 
 @app.route('/api/code-envs/progress')
@@ -4982,6 +5066,382 @@ def api_code_envs_progress_alias():
     return api_code_envs_progress()
 
 
+# ── Code env comparison helpers ─────────────────────────────────────────────
+
+def _parse_spec_packages(spec: Any) -> Dict[str, str]:
+    """Parse a spec package list into {normalized_name: version_spec}."""
+    packages: Dict[str, str] = {}
+    if not spec:
+        return packages
+    lines = spec if isinstance(spec, list) else str(spec).strip().split('\n')
+    for line in lines:
+        line = str(line).strip()
+        if not line or line.startswith('#') or line.startswith('-'):
+            continue
+        m = re.match(r'^([A-Za-z0-9_.\-]+)(?:\[.*?\])?\s*(.*)', line)
+        if m:
+            name = re.sub(r'[-_.]+', '_', m.group(1)).lower()
+            version = m.group(2).strip()
+            packages[name] = version
+    return packages
+
+
+def _compare_code_envs_logic(
+    envs: List[Tuple[str, str, Dict[str, str]]],
+    max_diff: int = 3,
+) -> Dict[str, Any]:
+    """Classify environment relationships. Returns JSON-serializable result."""
+    from collections import defaultdict
+
+    pyver_map = {name: pyver for name, pyver, _ in envs}
+
+    # Bucket by package-name fingerprint
+    name_buckets: Dict[frozenset, List[Tuple[str, Dict[str, str]]]] = defaultdict(list)
+    for name, pyver, packages in envs:
+        key = frozenset(packages.keys())
+        name_buckets[key].append((name, packages))
+
+    green_groups: List[Dict[str, Any]] = []
+    purple_groups: List[Dict[str, Any]] = []
+    blue_groups: List[Dict[str, Any]] = []
+
+    for pkg_names, members in name_buckets.items():
+        if len(members) < 2:
+            continue
+
+        version_buckets: Dict[frozenset, List[str]] = defaultdict(list)
+        for env_name, packages in members:
+            vkey = frozenset(packages.items())
+            version_buckets[vkey].append(env_name)
+
+        for vkey, env_names in version_buckets.items():
+            if len(env_names) < 2:
+                continue
+            py_sub: Dict[str, List[str]] = defaultdict(list)
+            for en in env_names:
+                py_sub[pyver_map[en]].append(en)
+
+            # GREEN: same packages, same versions, same python
+            for pv, names in py_sub.items():
+                if len(names) >= 2:
+                    green_groups.append({
+                        'envNames': sorted(names),
+                        'packageCount': len(dict(vkey)),
+                        'pythonVersion': pv,
+                    })
+
+            # PURPLE: same packages, same versions, different python
+            if len(py_sub) >= 2:
+                all_names = sorted(env_names)
+                pv_info = {en: pyver_map[en] for en in all_names}
+                purple_groups.append({
+                    'envNames': all_names,
+                    'packageCount': len(dict(vkey)),
+                    'pythonVersions': pv_info,
+                })
+
+        # BLUE: same package set, version diffs exist
+        if len(version_buckets) >= 2:
+            member_names = sorted(m[0] for m in members)
+            diff_table: Dict[str, Dict[str, str]] = {}
+            member_dict = {n: p for n, p in members}
+            for pkg in sorted(pkg_names):
+                versions = {n: member_dict[n].get(pkg, '') for n in member_names}
+                if len(set(versions.values())) > 1:
+                    diff_table[pkg] = versions
+            if diff_table:
+                total_pkgs = len(next(iter(member_dict.values())))
+                blue_groups.append({
+                    'envNames': member_names,
+                    'packageCount': total_pkgs,
+                    'diffCount': len(diff_table),
+                    'diffs': diff_table,
+                })
+
+    # YELLOW: near-matches across different buckets (disabled — O(n^2) too slow)
+    yellow_pairs: List[Dict[str, Any]] = []
+
+    green_groups.sort(key=lambda g: g['envNames'][0])
+    purple_groups.sort(key=lambda g: g['envNames'][0])
+    blue_groups.sort(key=lambda g: g['envNames'][0])
+    yellow_pairs.sort(key=lambda p: (p['envA'], p['envB']))
+
+    return {
+        'green': green_groups,
+        'purple': purple_groups,
+        'blue': blue_groups,
+        'yellow': yellow_pairs,
+        'analyzedCount': len(envs),
+    }
+
+
+@app.route('/api/code-envs/compare')
+def api_code_envs_compare():
+    max_diff = 1
+    try:
+        max_diff = max(1, int(request.args.get('maxDiff', '1')))
+    except Exception:
+        pass
+
+    def loader():
+        client = dataiku.api_client()
+        env_listings = client.list_code_envs()
+        _SKIP = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
+        envs: List[Tuple[str, str, Dict[str, str]]] = []
+
+        def fetch_one(env_listing: Dict[str, Any]) -> Optional[Tuple[str, str, Dict[str, str]]]:
+            name = env_listing.get('envName') or env_listing.get('name')
+            lang = (env_listing.get('envLang') or env_listing.get('language') or 'PYTHON').upper()
+            if not name or lang != 'PYTHON':
+                return None
+            try:
+                c = _thread_client()
+                env_obj = c.get_code_env(lang, name)
+                raw = _safe_get_raw(env_obj.get_settings())
+                if str(raw.get('deploymentMode') or '').upper() in _SKIP:
+                    return None
+                packages = _parse_spec_packages(raw.get('specPackageList', ''))
+                pyver_raw = (
+                    raw.get('desc', {}).get('pythonInterpreter')
+                    or raw.get('pythonInterpreter')
+                    or ''
+                )
+                ver = str(pyver_raw).replace('PYTHON', '')
+                if len(ver) == 2:
+                    pyver = f'{ver[0]}.{ver[1]}'
+                elif len(ver) >= 3:
+                    pyver = f'{ver[0]}.{ver[1:]}'
+                else:
+                    pyver = str(pyver_raw) or 'unknown'
+                return (name, pyver, packages)
+            except Exception:
+                return None
+
+        workers = min(8, len(env_listings))
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {pool.submit(fetch_one, e): e for e in env_listings}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    envs.append(result)
+
+        return _compare_code_envs_logic(envs, max_diff)
+
+    data = _cache_get('code_envs_compare', _BACKEND_SETTINGS.get('cache_ttl_projects', 300), loader)
+    return jsonify(data)
+
+
+# ── Scan pipeline helpers: /api/project-footprint ────────────────────────────
+
+def _task_pf_catalog(
+    client: Any,
+    add_event: Callable,
+    limit_label: str,
+    project_limit: int,
+) -> Dict[str, Any]:
+    add_event('load_project_catalog', 'loading project catalog')
+    catalog = _list_projects_catalog(client)
+    total_project_count = len(catalog)
+    selected_catalog: List[Dict[str, str]] = catalog[:] if project_limit <= 0 else catalog[:project_limit]
+    add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
+    project_info: Dict[str, Dict[str, str]] = {
+        str(project.get('key') or ''): {
+            'name': str(project.get('name') or project.get('key') or ''),
+            'owner': str(project.get('owner') or 'Unknown'),
+        }
+        for project in selected_catalog
+        if str(project.get('key') or '').strip()
+    }
+    project_keys = list(project_info.keys())
+    return {
+        'catalog': catalog,
+        'total_project_count': total_project_count,
+        'project_info': project_info,
+        'project_keys': project_keys,
+        'selected_count': len(project_keys),
+    }
+
+
+def _task_pf_footprint(
+    project_keys: List[str],
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    append_partial_row: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    """Runs in a background thread; acquires its own client via _thread_client().
+    Emits partial rows immediately so the frontend can render before usage scan finishes."""
+    if not project_keys:
+        return {}
+    client = _thread_client()
+    add_event('load_project_footprint_map', f"loading project footprint map for {len(project_keys)} projects")
+    project_footprints = _build_project_footprint_map_with_deadline(
+        client,
+        project_keys,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+    for pk in project_keys:
+        meta = project_info.get(pk) or {}
+        pf = project_footprints.get(pk)
+        mdb = _collect_bucket_size_by_name(pf, lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n))
+        mfb = _collect_bucket_size_by_name(pf, lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n))
+        bb = _collect_bucket_size_by_name(pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
+        bc = _collect_bucket_file_count_by_name(pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
+        total = _footprint_size(pf)
+        if total <= 0:
+            total = mdb + mfb + bb
+        append_partial_row({
+            'projectKey': pk,
+            'name': str(meta.get('name') or pk).replace('_', ' '),
+            'owner': meta.get('owner') or 'Unknown',
+            'codeEnvCount': 0,
+            'codeStudioCount': 0,
+            'codeEnvBytes': 0,
+            'managedDatasetsBytes': mdb,
+            'managedFoldersBytes': mfb,
+            'bundleBytes': bb,
+            'bundleCount': bc,
+            'totalBytes': total,
+            'totalGB': total / float(1024 ** 3),
+            'codeEnvHealth': _code_env_health(0),
+        })
+    return project_footprints
+
+
+def _task_pf_usage_scan(
+    project_info: Dict[str, Dict[str, str]],
+    deadline_ts: float,
+    add_event: Callable,
+    progress_cb: Callable,
+) -> Dict[str, Any]:
+    """Runs in a background thread; acquires its own client via _thread_client()."""
+    if not project_info:
+        return {}
+    client = _thread_client()
+    add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_info)} projects")
+    return _get_shared_project_code_env_usage(
+        client,
+        project_info,
+        {},
+        include_project_object_scan=True,
+        include_code_env_usage_api=False,
+        deadline_ts=deadline_ts,
+        progress_cb=progress_cb,
+    )
+
+
+def _task_pf_aggregate(
+    project_keys: List[str],
+    project_info: Dict[str, Dict[str, str]],
+    project_footprints: Dict[str, Any],
+    usage_data: Dict[str, Any],
+    deadline_ts: float,
+    add_event: Callable,
+) -> Dict[str, Any]:
+    envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {k: set() for k in project_info.keys()}
+    usage_breakdown_by_project = usage_data.get('usageBreakdownByProject') or {k: {} for k in project_info.keys()}
+    usage_details_by_project = usage_data.get('usageDetailsByProject') or {k: [] for k in project_info.keys()}
+    code_studio_count_by_project = usage_data.get('codeStudioCountByProject') or {}
+
+    project_rows: List[Dict[str, Any]] = []
+    project_risks: List[float] = []
+    total_gb_values: List[float] = []
+
+    add_event('aggregate_project_rows', f"aggregating project rows for {len(project_keys)} projects")
+    raw_rows: List[Dict[str, Any]] = []
+    for project_key in project_keys:
+        if time.time() > deadline_ts:
+            add_event('aggregate_project_rows', 'deadline reached at step=aggregate_project_rows', 'warn')
+            break
+        project_started = time.time()
+        add_event('project_aggregate_start', 'aggregating project row', 'info', project_key)
+        meta = project_info.get(project_key) or {}
+        project_footprint = project_footprints.get(project_key)
+
+        managed_datasets_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n),
+        )
+        managed_folders_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n),
+        )
+        project_env_keys = envs_by_project.get(project_key) or set()
+        code_env_count = len(project_env_keys)
+        bundle_bytes = _collect_bucket_size_by_name(
+            project_footprint,
+            lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
+        )
+        bundle_count = _collect_bucket_file_count_by_name(
+            project_footprint,
+            lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
+        )
+        total_bytes = _footprint_size(project_footprint)
+        if total_bytes <= 0:
+            total_bytes = managed_datasets_bytes + managed_folders_bytes + bundle_bytes
+        total_gb = total_bytes / float(1024 ** 3)
+        total_gb_values.append(total_gb)
+
+        raw_row = {
+            'projectKey': project_key,
+            'name': str(meta.get('name') or project_key).replace('_', ' '),
+            'owner': meta.get('owner') or 'Unknown',
+            'codeEnvCount': code_env_count,
+            'codeStudioCount': code_studio_count_by_project.get(project_key, 0),
+            'codeEnvBytes': 0,
+            'managedDatasetsBytes': managed_datasets_bytes,
+            'managedFoldersBytes': managed_folders_bytes,
+            'bundleBytes': bundle_bytes,
+            'bundleCount': bundle_count,
+            'totalBytes': total_bytes,
+            'totalGB': total_gb,
+            'codeEnvHealth': _code_env_health(code_env_count),
+            'usageBreakdown': usage_breakdown_by_project.get(project_key) or {},
+            'usageDetails': usage_details_by_project.get(project_key) or [],
+            'codeEnvKeys': sorted(list(project_env_keys)),
+        }
+        raw_rows.append(raw_row)
+        add_event(
+            'project_aggregate_done',
+            (
+                f"aggregate complete codeEnvCount={code_env_count} "
+                f"total={_format_size_human(total_bytes)} bundles={bundle_count}"
+            ),
+            'info',
+            project_key,
+            event_elapsed_ms=(time.time() - project_started) * 1000.0,
+        )
+
+    avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
+    add_event('compute_health_scores', f"computing health scores for {len(raw_rows)} projects")
+    for row in raw_rows:
+        if time.time() > deadline_ts:
+            break
+        total_gb = _coerce_float(row.get('totalGB'), 0.0)
+        size_index = _project_size_index(total_gb, avg_project_gb)
+        size_health = _project_size_health(total_gb, size_index)
+        code_env_count = _coerce_int(row.get('codeEnvCount'), 0)
+        env_risk = _code_env_risk(code_env_count)
+        project_risk = (0.7 * env_risk) + (0.3 * size_index)
+        project_risks.append(project_risk)
+        row.update({
+            'instanceAvgProjectGB': round(avg_project_gb, 4),
+            'projectSizeIndex': round(size_index, 4),
+            'projectSizeHealth': size_health,
+            'codeEnvRisk': round(env_risk, 4),
+            'projectRisk': round(project_risk, 4),
+        })
+        project_rows.append(row)
+
+    return {
+        'project_rows': project_rows,
+        'project_risks': project_risks,
+        'total_gb_values': total_gb_values,
+    }
+
+
 @app.route('/api/project-footprint')
 def api_project_footprint():
     client = dataiku.api_client()
@@ -5000,13 +5460,16 @@ def api_project_footprint():
         timeout_at_step: Optional[str] = None
         deadline_pressure_steps: set = set()
         timeout_event_steps: set = set()
-        progress_run_id = _start_progress('project_footprint')
-        selected_project_count = 0
-        footprint_done_projects: set = set()
-        usage_done_projects: set = set()
-        aggregate_done_projects: set = set()
-        catalog_done = False
         timed_out_or_error = False
+        progress_run_id = _start_progress('project_footprint')
+        catalog_result: Optional[Dict[str, Any]] = None
+        progress_meta: Dict[str, Any] = {
+            'selectedProjects': 0,
+            'projectFootprintDone': 0,
+            'projectUsageDone': 0,
+            'projectAggregateDone': 0,
+            'catalogDone': False,
+        }
 
         def elapsed_ms() -> float:
             return (time.time() - started) * 1000.0
@@ -5017,14 +5480,14 @@ def api_project_footprint():
         def _compute_progress_pct(force_done: bool = False) -> int:
             if force_done:
                 return 100
-            footprint_total = max(0, int(selected_project_count))
-            usage_total = max(0, int(selected_project_count))
-            aggregate_total = max(0, int(selected_project_count))
-            footprint_ratio = min(1.0, float(len(footprint_done_projects)) / float(footprint_total)) if footprint_total > 0 else 0.0
-            usage_ratio = min(1.0, float(len(usage_done_projects)) / float(usage_total)) if usage_total > 0 else 0.0
-            aggregate_ratio = min(1.0, float(len(aggregate_done_projects)) / float(aggregate_total)) if aggregate_total > 0 else 0.0
+            footprint_total = max(0, int(progress_meta['selectedProjects']))
+            usage_total = max(0, int(progress_meta['selectedProjects']))
+            aggregate_total = max(0, int(progress_meta['selectedProjects']))
+            footprint_ratio = min(1.0, float(progress_meta['projectFootprintDone']) / float(footprint_total)) if footprint_total > 0 else 0.0
+            usage_ratio = min(1.0, float(progress_meta['projectUsageDone']) / float(usage_total)) if usage_total > 0 else 0.0
+            aggregate_ratio = min(1.0, float(progress_meta['projectAggregateDone']) / float(aggregate_total)) if aggregate_total > 0 else 0.0
             pct = 0.0
-            pct += 10.0 if catalog_done else 0.0
+            pct += 10.0 if progress_meta['catalogDone'] else 0.0
             pct += 50.0 * footprint_ratio
             pct += 25.0 * usage_ratio
             pct += 15.0 * aggregate_ratio
@@ -5033,13 +5496,13 @@ def api_project_footprint():
             return int(max(0.0, min(99.0, pct)))
 
         def _infer_phase() -> str:
-            if not catalog_done:
+            if not progress_meta['catalogDone']:
                 return 'catalog'
-            if selected_project_count > 0 and len(footprint_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectFootprintDone'] < progress_meta['selectedProjects']:
                 return 'footprint_fetch'
-            if selected_project_count > 0 and len(usage_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectUsageDone'] < progress_meta['selectedProjects']:
                 return 'usage_scan'
-            if selected_project_count > 0 and len(aggregate_done_projects) < selected_project_count:
+            if progress_meta['selectedProjects'] > 0 and progress_meta['projectAggregateDone'] < progress_meta['selectedProjects']:
                 return 'aggregate'
             return 'finalizing'
 
@@ -5050,10 +5513,10 @@ def api_project_footprint():
                 {
                     'progressPct': _compute_progress_pct(force_done),
                     'phase': _infer_phase() if not force_done else 'done',
-                    'selectedProjects': int(selected_project_count),
-                    'projectFootprintDone': int(len(footprint_done_projects)),
-                    'projectUsageDone': int(len(usage_done_projects)),
-                    'projectAggregateDone': int(len(aggregate_done_projects)),
+                    'selectedProjects': int(progress_meta['selectedProjects']),
+                    'projectFootprintDone': int(progress_meta['projectFootprintDone']),
+                    'projectUsageDone': int(progress_meta['projectUsageDone']),
+                    'projectAggregateDone': int(progress_meta['projectAggregateDone']),
                     'timedOut': bool(benchmark_timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
@@ -5081,11 +5544,11 @@ def api_project_footprint():
             benchmark_events.append(event)
             _append_progress_event('project_footprint', progress_run_id, event)
             if step in ('project_footprint_fetch_ok', 'project_footprint_fetch_error', 'project_footprint_fetch_timeout') and project_key:
-                footprint_done_projects.add(project_key)
+                progress_meta['projectFootprintDone'] += 1
             if step == 'project_env_refs_resolved' and project_key:
-                usage_done_projects.add(project_key)
+                progress_meta['projectUsageDone'] += 1
             if step == 'project_aggregate_done' and project_key:
-                aggregate_done_projects.add(project_key)
+                progress_meta['projectAggregateDone'] += 1
             _update_progress_summary(False)
 
         def progress_event(**kwargs) -> None:
@@ -5135,202 +5598,70 @@ def api_project_footprint():
         previous_recorder = getattr(_THREAD_LOCAL, 'bench_record_op', None)
         setattr(_THREAD_LOCAL, 'bench_record_op', record_op)
 
-        total_project_count = 0
-        selected_catalog: List[Dict[str, str]] = []
-        project_rows: List[Dict[str, Any]] = []
-        project_risks: List[float] = []
-        total_gb_values: List[float] = []
-
         try:
-            project_info: Dict[str, Dict[str, str]] = {}
-            project_keys: List[str] = []
-            project_footprints: Dict[str, Any] = {}
-            usage_data: Dict[str, Any] = {}
-
+            # Phase 1: catalog (main thread)
             if not deadline_reached('load_project_catalog'):
                 step_start = time.time()
-                add_event('load_project_catalog', 'loading project catalog')
-                catalog = _list_projects_catalog(client)
-                total_project_count = len(catalog)
-                record_step('load_project_catalog', step_start, calls=1)
+                catalog_result = _task_pf_catalog(client, add_event, limit_label, project_limit)
+                record_step('load_project_catalog', step_start, calls=catalog_result['selected_count'])
             else:
-                catalog = []
-            catalog_done = True
+                catalog_result = {'catalog': [], 'total_project_count': 0, 'project_info': {}, 'project_keys': [], 'selected_count': 0}
+            progress_meta['selectedProjects'] = catalog_result['selected_count']
+            progress_meta['catalogDone'] = True
             _update_progress_summary(False)
+            app.logger.info("[perf:pf] catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog_result['selected_count'])
 
-            if not deadline_reached('select_projects_by_key'):
-                step_start = time.time()
-                add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
-                selected_catalog = catalog[:] if project_limit <= 0 else catalog[:project_limit]
-                record_step('select_projects_by_key', step_start, calls=len(selected_catalog))
+            project_keys: List[str] = catalog_result['project_keys']
+            project_info: Dict[str, Dict[str, str]] = catalog_result['project_info']
+            total_project_count: int = catalog_result['total_project_count']
 
-            project_info = {
-                str(project.get('key') or ''): {
-                    'name': str(project.get('name') or project.get('key') or ''),
-                    'owner': str(project.get('owner') or 'Unknown'),
-                }
-                for project in selected_catalog
-                if str(project.get('key') or '').strip()
-            }
-            project_keys = list(project_info.keys())
-            selected_project_count = len(project_keys)
-            _update_progress_summary(False)
-
+            # Phase 2: footprint + usage in parallel (off-thread)
+            project_footprints: Dict[str, Any] = {}
+            usage_data: Dict[str, Any] = {}
             if project_keys and not deadline_reached('load_project_footprint_map'):
-                step_start = time.time()
-                add_event('load_project_footprint_map', f"loading project footprint map for {len(project_keys)} projects")
-                project_footprints = _build_project_footprint_map_with_deadline(
-                    client,
-                    project_keys,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
-                )
-                record_step('load_project_footprint_map', step_start, calls=len(project_keys))
+                step_start_fp = time.time()
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    f_footprint = pool.submit(
+                        _task_pf_footprint,
+                        project_keys,
+                        project_info,
+                        deadline,
+                        add_event,
+                        lambda row: _append_progress_partial_row('project_footprint', progress_run_id, row),
+                        progress_event,
+                    )
+                    f_usage = pool.submit(
+                        _task_pf_usage_scan,
+                        project_info,
+                        deadline,
+                        add_event,
+                        progress_event,
+                    )
+                    project_footprints = f_footprint.result()
+                    usage_data = f_usage.result()
+                record_step('load_project_footprint_map', step_start_fp, calls=len(project_keys))
+                record_step('collect_project_code_env_usage', step_start_fp, calls=len(project_keys))
+            app.logger.info("[perf:pf] footprint_fetch elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
+            app.logger.info("[perf:pf] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
 
-            # Emit partial rows immediately after footprint fetch so the frontend
-            # can render the table (~10s) while the usage scan runs in the background.
-            # These rows have codeEnvCount=0; the final response replaces them.
-            if project_keys and project_footprints:
-                for _pk in project_keys:
-                    _meta = project_info.get(_pk) or {}
-                    _pf = project_footprints.get(_pk)
-                    _mdb = _collect_bucket_size_by_name(_pf, lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n))
-                    _mfb = _collect_bucket_size_by_name(_pf, lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n))
-                    _bb = _collect_bucket_size_by_name(_pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
-                    _bc = _collect_bucket_file_count_by_name(_pf, lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n)
-                    _total = _footprint_size(_pf)
-                    if _total <= 0:
-                        _total = _mdb + _mfb + _bb
-                    _append_progress_partial_row('project_footprint', progress_run_id, {
-                        'projectKey': _pk,
-                        'name': str(_meta.get('name') or _pk).replace('_', ' '),
-                        'owner': _meta.get('owner') or 'Unknown',
-                        'codeEnvCount': 0,
-                        'codeStudioCount': 0,
-                        'codeEnvBytes': 0,
-                        'managedDatasetsBytes': _mdb,
-                        'managedFoldersBytes': _mfb,
-                        'bundleBytes': _bb,
-                        'bundleCount': _bc,
-                        'totalBytes': _total,
-                        'totalGB': _total / float(1024 ** 3),
-                        'codeEnvHealth': _code_env_health(0),
-                    })
-
-            if project_keys and not deadline_reached('collect_project_code_env_usage'):
-                step_start = time.time()
-                add_event('collect_project_code_env_usage', f"collecting project code env usage for {len(project_keys)} projects")
-                usage_data = _get_shared_project_code_env_usage(
-                    client,
-                    project_info,
-                    {},
-                    include_project_object_scan=True,
-                    include_code_env_usage_api=False,
-                    deadline_ts=deadline,
-                    progress_cb=progress_event,
-                )
-                record_step('collect_project_code_env_usage', step_start, calls=len(project_keys))
-
-            envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {k: set() for k in project_info.keys()}
-            usage_breakdown_by_project: Dict[str, Dict[str, int]] = usage_data.get('usageBreakdownByProject') or {k: {} for k in project_info.keys()}
-            usage_details_by_project: Dict[str, List[Dict[str, Any]]] = usage_data.get('usageDetailsByProject') or {k: [] for k in project_info.keys()}
-            code_studio_count_by_project: Dict[str, int] = usage_data.get('codeStudioCountByProject') or {}
-
+            # Phase 3: aggregate (main thread)
+            agg_result: Dict[str, Any] = {'project_rows': [], 'project_risks': [], 'total_gb_values': []}
             if project_keys and not deadline_reached('aggregate_project_rows'):
                 step_start = time.time()
-                add_event('aggregate_project_rows', f"aggregating project rows for {len(project_keys)} projects")
-                processed = 0
-                raw_rows: List[Dict[str, Any]] = []
-                for project_key in project_keys:
-                    if deadline_reached('aggregate_project_rows'):
-                        break
-                    project_started = time.time()
-                    add_event('project_aggregate_start', 'aggregating project row', 'info', project_key)
-                    meta = project_info.get(project_key) or {}
-                    project_footprint = project_footprints.get(project_key)
+                agg_result = _task_pf_aggregate(
+                    project_keys,
+                    project_info,
+                    project_footprints,
+                    usage_data,
+                    deadline,
+                    add_event,
+                )
+                record_step('aggregate_project_rows', step_start, calls=len(agg_result['project_rows']))
+            app.logger.info("[perf:pf] aggregate elapsed=%.0fms rows=%d", elapsed_ms(), len(agg_result['project_rows']))
 
-                    managed_datasets_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'manageddataset' in n or ('managed' in n and 'dataset' in n),
-                    )
-                    managed_folders_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'managedfolder' in n or ('managed' in n and 'folder' in n),
-                    )
-
-                    project_env_keys = envs_by_project.get(project_key) or set()
-                    code_env_count = len(project_env_keys)
-                    bundle_bytes = _collect_bucket_size_by_name(
-                        project_footprint,
-                        lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
-                    )
-                    bundle_count = _collect_bucket_file_count_by_name(
-                        project_footprint,
-                        lambda n: 'preparedbundle' in n or n.endswith('bundles') or 'bundle' in n,
-                    )
-
-                    total_bytes = _footprint_size(project_footprint)
-                    if total_bytes <= 0:
-                        total_bytes = managed_datasets_bytes + managed_folders_bytes + bundle_bytes
-                    total_gb = total_bytes / float(1024 ** 3)
-                    total_gb_values.append(total_gb)
-
-                    raw_row = {
-                        'projectKey': project_key,
-                        'name': str(meta.get('name') or project_key).replace('_', ' '),
-                        'owner': meta.get('owner') or 'Unknown',
-                        'codeEnvCount': code_env_count,
-                        'codeStudioCount': code_studio_count_by_project.get(project_key, 0),
-                        'codeEnvBytes': 0,
-                        'managedDatasetsBytes': managed_datasets_bytes,
-                        'managedFoldersBytes': managed_folders_bytes,
-                        'bundleBytes': bundle_bytes,
-                        'bundleCount': bundle_count,
-                        'totalBytes': total_bytes,
-                        'totalGB': total_gb,
-                        'codeEnvHealth': _code_env_health(code_env_count),
-                        'usageBreakdown': usage_breakdown_by_project.get(project_key) or {},
-                        'usageDetails': usage_details_by_project.get(project_key) or [],
-                        'codeEnvKeys': sorted(list(project_env_keys)),
-                    }
-                    raw_rows.append(raw_row)
-                    processed += 1
-                    add_event(
-                        'project_aggregate_done',
-                        (
-                            f"aggregate complete codeEnvCount={code_env_count} "
-                            f"total={_format_size_human(total_bytes)} bundles={bundle_count}"
-                        ),
-                        'info',
-                        project_key,
-                        event_elapsed_ms=(time.time() - project_started) * 1000.0,
-                    )
-
-                record_step('aggregate_project_rows', step_start, calls=processed)
-
-                avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
-                if not deadline_reached('compute_health_scores'):
-                    step_start = time.time()
-                    add_event('compute_health_scores', f"computing health scores for {len(raw_rows)} projects")
-                    for row in raw_rows:
-                        if deadline_reached('compute_health_scores'):
-                            break
-                        total_gb = _coerce_float(row.get('totalGB'), 0.0)
-                        size_index = _project_size_index(total_gb, avg_project_gb)
-                        size_health = _project_size_health(total_gb, size_index)
-                        code_env_count = _coerce_int(row.get('codeEnvCount'), 0)
-                        env_risk = _code_env_risk(code_env_count)
-                        project_risk = (0.7 * env_risk) + (0.3 * size_index)
-                        project_risks.append(project_risk)
-                        row.update({
-                            'instanceAvgProjectGB': round(avg_project_gb, 4),
-                            'projectSizeIndex': round(size_index, 4),
-                            'projectSizeHealth': size_health,
-                            'codeEnvRisk': round(env_risk, 4),
-                            'projectRisk': round(project_risk, 4),
-                        })
-                        project_rows.append(row)
-                    record_step('compute_health_scores', step_start, calls=len(project_rows))
+            project_rows: List[Dict[str, Any]] = agg_result['project_rows']
+            total_gb_values: List[float] = agg_result['total_gb_values']
+            project_risks: List[float] = agg_result['project_risks']
 
             project_rows.sort(key=lambda item: _coerce_int(item.get('totalBytes'), 0), reverse=True)
             avg_project_gb = (sum(total_gb_values) / len(total_gb_values)) if total_gb_values else 0.0
@@ -5350,6 +5681,7 @@ def api_project_footprint():
                     'qps': round(qps, 2),
                 })
 
+            app.logger.info("[perf:pf] total elapsed=%.0fms", elapsed_ms())
             benchmark_summary = {
                 'enabled': True,
                 'projectLimit': len(project_keys),
@@ -5399,15 +5731,15 @@ def api_project_footprint():
                 status='error',
                 summary={
                     'enabled': True,
-                    'projectLimit': selected_project_count,
+                    'projectLimit': progress_meta['selectedProjects'],
                     'projectSelection': project_selection,
                     'timeoutMs': timeout_ms,
                     'timedOut': bool(benchmark_timed_out),
                     'timeoutAtStep': timeout_at_step,
                     'totalElapsedMs': round(elapsed_ms(), 2),
                     'remainingMs': remaining_ms(),
-                    'totalProjectCount': total_project_count,
-                    'selectedProjectCount': selected_project_count,
+                    'totalProjectCount': catalog_result['total_project_count'] if catalog_result else 0,
+                    'selectedProjectCount': progress_meta['selectedProjects'],
                     'steps': steps,
                     'apiCalls': [
                         {
@@ -5456,15 +5788,25 @@ def api_project_footprint_progress_alias():
 def _do_tracking_ingest(db, data):
     """Run a tracking ingest from outreach data. Returns the new run_id."""
     import hashlib
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:ingest] === INGEST STARTED ===")
     overview = _CACHE.get('overview', {}).get('value') or {}
     instance_info = overview.get('instanceInfo') or {}
     install_id = instance_info.get('installId') or ''
     instance_url = instance_info.get('instanceUrl') or ''
     inst_id = install_id or (hashlib.sha256(instance_url.encode()).hexdigest()[:16] if instance_url else 'unknown')
+    app.logger.info("[tracking:ingest] instance_id=%s instance_url=%s", inst_id, instance_url)
 
     disabled = db.get_disabled_campaigns()
     exemptions = db.get_exemption_set()
+    app.logger.info("[tracking:ingest] disabled_campaigns=%s, exemptions_count=%d",
+                    disabled, len(exemptions) if exemptions else 0)
+    app.logger.info("[tracking:ingest] extracting findings from outreach data (keys: %s)...",
+                    list(data.keys()) if isinstance(data, dict) else type(data).__name__)
     findings = extract_findings_from_outreach_data(data, disabled_campaigns=disabled, exemptions=exemptions)
+    app.logger.info("[tracking:ingest] extracted %d findings in %.1fs",
+                    len(findings), _time.time() - _t0)
 
     users_data = (_CACHE.get('users', {}).get('value') or {})
     projects_data = (_CACHE.get('projects', {}).get('value') or {})
@@ -5557,6 +5899,9 @@ def _do_tracking_ingest(db, data):
                 'owner': p.get('owner') or p.get('ownerLogin'),
             })
 
+    app.logger.info("[tracking:ingest] calling db.ingest_run with %d findings, %d users, %d projects, %d campaign_summaries",
+                    len(findings), len(user_ingest), len(project_ingest), len(campaign_summaries))
+    _t_db = _time.time()
     run_id = db.ingest_run(
         instance_id=inst_id,
         instance_url=instance_url,
@@ -5570,7 +5915,8 @@ def _do_tracking_ingest(db, data):
         health_metrics=health_metrics,
         campaign_summaries=campaign_summaries,
     )
-    app.logger.info("[tracking] ingested run %d with %d findings", run_id, len(findings))
+    app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
+                    run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)
     return run_id
 
 
@@ -6732,19 +7078,7 @@ def api_tools_email_send():
             continue
 
         try:
-            try:
-                channel_obj.send(project_key, [to_email], subject, body, plain_text=plain_text)
-            except TypeError:
-                try:
-                    channel_obj.send(
-                        project_key=project_key,
-                        to=[to_email],
-                        subject=subject,
-                        body=body,
-                        plain_text=plain_text,
-                    )
-                except TypeError:
-                    channel_obj.send(project_key, [to_email], subject, body)
+            channel_obj.send(project_key, [to_email], subject, body, plain_text=plain_text)
             sent_count += 1
             results.append({
                 'recipientKey': recipient_key,
@@ -6814,6 +7148,18 @@ def api_tools_email_send():
 
 # ── Tracking API endpoints ──
 
+import math as _math
+
+def _sanitize(obj):
+    """Replace NaN/Inf floats with None so jsonify produces valid JSON."""
+    if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
+
 
 def _tracking_instance_id() -> str:
     """Resolve the current instance_id from cached overview data."""
@@ -6829,34 +7175,64 @@ def _tracking_instance_id() -> str:
     return 'unknown'
 
 
+_tracking_refresh_lock = threading.Lock()
+
+
 @app.route('/api/tracking/refresh', methods=['POST'])
 def api_tracking_refresh():
+    if not _tracking_refresh_lock.acquire(blocking=False):
+        app.logger.info("[tracking:refresh] already running, skipping duplicate")
+        return jsonify({'ok': True, 'skipped': True, 'reason': 'refresh already in progress'})
+    try:
+        return _do_tracking_refresh()
+    finally:
+        _tracking_refresh_lock.release()
+
+
+def _do_tracking_refresh():
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:refresh] === REFRESH STARTED ===")
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:refresh] _get_tracking_db() returned None, aborting")
         return jsonify({'error': 'Tracking not available'}), 501
     if not _tracking_available:
+        app.logger.error("[tracking:refresh] tracking module not loaded")
         return jsonify({'error': 'Tracking module not loaded'}), 501
+    app.logger.info("[tracking:refresh] DB ok, clearing caches")
     # Invalidate outreach data cache to force fresh DSS API calls
     _CACHE.pop('tools_outreach_data', None)
     _CACHE.pop('project_code_env_usage_full', None)
     _clear_shared_project_code_env_usage()
     # Load fresh outreach data (populates _CACHE['tools_outreach_data'])
+    app.logger.info("[tracking:refresh] calling api_tools_outreach_data()...")
+    _t1 = _time.time()
     try:
         with app.test_request_context('/api/tools/outreach-data'):
             api_tools_outreach_data()
     except Exception as exc:
-        app.logger.warning("[tracking refresh] outreach-data failed: %s", exc)
+        app.logger.warning("[tracking:refresh] outreach-data FAILED after %.1fs: %s",
+                           _time.time() - _t1, exc, exc_info=True)
         return jsonify({'error': 'Failed to load outreach data: %s' % exc}), 500
+    app.logger.info("[tracking:refresh] outreach-data loaded in %.1fs", _time.time() - _t1)
     # Run tracking ingest directly (bypasses _tracking_ingested guard)
     cache_entry = _CACHE.get('tools_outreach_data')
     data = cache_entry.get('value') if cache_entry else None
     if not data:
+        app.logger.error("[tracking:refresh] cache entry present=%s but data is falsy",
+                         cache_entry is not None)
         return jsonify({'error': 'No outreach data after refresh'}), 500
+    app.logger.info("[tracking:refresh] outreach data keys: %s", list(data.keys()) if isinstance(data, dict) else type(data).__name__)
+    _t2 = _time.time()
     try:
         run_id = _do_tracking_ingest(db, data)
+        app.logger.info("[tracking:refresh] === REFRESH DONE === run_id=%d, ingest=%.1fs, total=%.1fs",
+                        run_id, _time.time() - _t2, _time.time() - _t0)
         return jsonify({'ok': True, 'run_id': run_id})
     except Exception as exc:
-        app.logger.warning("[tracking refresh] ingest failed: %s", exc, exc_info=True)
+        app.logger.warning("[tracking:refresh] ingest FAILED after %.1fs: %s",
+                           _time.time() - _t2, exc, exc_info=True)
         return jsonify({'error': 'Ingest failed: %s' % exc}), 500
 
 
@@ -6885,27 +7261,42 @@ def api_tracking_run_detail(run_id):
 
 @app.route('/api/tracking/issues')
 def api_tracking_issues():
+    import time as _time
+    _t0 = _time.time()
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:issues] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
-    instance_id = request.args.get('instance_id') or _tracking_instance_id()
-    status = request.args.get('status')
-    campaign_id = request.args.get('campaign_id')
-    owner_login = request.args.get('owner_login')
-    limit = request.args.get('limit', 100, type=int)
-    offset = request.args.get('offset', 0, type=int)
-    issues = db.list_issues(
-        instance_id=instance_id,
-        status=status,
-        campaign_id=campaign_id,
-        owner_login=owner_login,
-        limit=limit,
-        offset=offset,
-    )
-    disabled = db.get_disabled_campaigns()
-    if disabled:
-        issues = [i for i in issues if i.get('campaign_id') not in disabled]
-    return jsonify({'issues': issues, 'count': len(issues)})
+    try:
+        instance_id_raw = request.args.get('instance_id')
+        status = request.args.get('status')
+        campaign_id = request.args.get('campaign_id')
+        owner_login = request.args.get('owner_login')
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        # When fetching issues for a specific user, skip instance_id filter
+        # to stay consistent with the user compliance view
+        instance_id = instance_id_raw or (None if owner_login else _tracking_instance_id())
+        app.logger.info("[tracking:issues] query: instance_id=%s status=%s campaign=%s owner=%s limit=%d offset=%d",
+                        instance_id, status, campaign_id, owner_login, limit, offset)
+        issues = db.list_issues(
+            instance_id=instance_id,
+            status=status,
+            campaign_id=campaign_id,
+            owner_login=owner_login,
+            limit=limit,
+            offset=offset,
+        )
+        disabled = db.get_disabled_campaigns()
+        before_filter = len(issues) if issues else 0
+        if disabled:
+            issues = [i for i in issues if i.get('campaign_id') not in disabled]
+        app.logger.info("[tracking:issues] returning %d issues (before filter: %d) in %.1fms",
+                        len(issues), before_filter, (_time.time() - _t0) * 1000)
+        return jsonify({'issues': _sanitize(issues), 'count': len(issues)})
+    except Exception as exc:
+        app.logger.error("[tracking:issues] UNHANDLED: %s", exc, exc_info=True)
+        return jsonify({'error': 'tracking/issues failed: %s' % exc}), 500
 
 
 @app.route('/api/tracking/issues/<int:issue_id>')
@@ -6921,21 +7312,292 @@ def api_tracking_issue_detail(issue_id):
 
 @app.route('/api/tracking/users')
 def api_tracking_users_all():
+    import time as _time
+    _t0 = _time.time()
+    app.logger.info("[tracking:users] GET /api/tracking/users called")
     db = _get_tracking_db()
     if db is None:
+        app.logger.error("[tracking:users] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
-    instance_id = request.args.get('instance_id')
-    rows = db.list_all_user_compliance(instance_id)
-    disabled = db.get_disabled_campaigns()
-    users = {}
-    for r in rows:
-        if disabled and r.get('campaign_id') in disabled:
-            continue
-        login = r['owner_login']
-        if login not in users:
-            users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
-        users[login]['campaigns'].append(r)
-    return jsonify({'users': list(users.values())})
+    try:
+        instance_id = request.args.get('instance_id') or _tracking_instance_id()
+        app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
+        rows = db.list_all_user_compliance(instance_id)
+        app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
+        disabled = db.get_disabled_campaigns()
+        app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
+        users = {}
+        skipped = 0
+        for r in rows:
+            if disabled and r.get('campaign_id') in disabled:
+                skipped += 1
+                continue
+            login = r['owner_login']
+            if login not in users:
+                users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
+            users[login]['campaigns'].append(_sanitize(r))
+        app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
+                        len(users), skipped, (_time.time() - _t0) * 1000)
+        return jsonify({'users': list(users.values())})
+    except Exception as exc:
+        app.logger.error("[tracking:users] UNHANDLED EXCEPTION: %s", exc, exc_info=True)
+        return jsonify({'error': 'tracking/users failed: %s' % exc}), 500
+
+
+@app.route('/api/tracking/debug')
+def api_tracking_debug():
+    """Diagnostic endpoint: check DB path, tables, views, row counts."""
+    info = {
+        'tracking_available': _tracking_available,
+        'db_instance': type(_tracking_db_instance).__name__ if _tracking_db_instance else None,
+    }
+    db = _get_tracking_db()
+    if db is None:
+        info['error'] = 'DB is None'
+        return jsonify(info), 501
+    try:
+        # Detect backend type and dispatch accordingly
+        from sql_tracking import SQLTrackingDB
+        if isinstance(db, SQLTrackingDB):
+            info['backend'] = 'sql'
+            info.update(db.get_table_info())
+        else:
+            info['backend'] = 'sqlite'
+            conn = db._get_conn()
+            info['db_path'] = db._db_path
+            info['db_path_exists'] = os.path.exists(db._db_path)
+            info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
+            tables = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
+            ).fetchall()
+            info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
+            for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
+                         'campaign_settings', 'campaign_exemptions']:
+                try:
+                    cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                    info['count_%s' % tbl] = cnt
+                except Exception as e:
+                    info['count_%s' % tbl] = 'ERROR: %s' % e
+            try:
+                vrows = conn.execute('SELECT COUNT(*) FROM v_user_compliance').fetchone()[0]
+                info['count_v_user_compliance'] = vrows
+            except Exception as e:
+                info['count_v_user_compliance'] = 'ERROR: %s' % e
+            try:
+                info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+            except Exception as e:
+                info['schema_version'] = 'ERROR: %s' % e
+    except ImportError:
+        # sql_tracking not available — use original SQLite-only path
+        try:
+            conn = db._get_conn()
+            info['backend'] = 'sqlite'
+            info['db_path'] = db._db_path
+            info['db_path_exists'] = os.path.exists(db._db_path)
+            info['db_size_bytes'] = os.path.getsize(db._db_path) if os.path.exists(db._db_path) else 0
+            tables = conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type IN ('table','view') ORDER BY type, name"
+            ).fetchall()
+            info['objects'] = [{'type': r[0], 'name': r[1]} for r in tables]
+            for tbl in ['runs', 'issues', 'findings', 'known_users', 'known_projects',
+                         'campaign_settings', 'campaign_exemptions']:
+                try:
+                    cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                    info['count_%s' % tbl] = cnt
+                except Exception as e:
+                    info['count_%s' % tbl] = 'ERROR: %s' % e
+            try:
+                info['schema_version'] = conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0]
+            except Exception as e:
+                info['schema_version'] = 'ERROR: %s' % e
+        except Exception as exc:
+            info['error'] = str(exc)
+    except Exception as exc:
+        info['error'] = str(exc)
+        import traceback
+        info['traceback'] = traceback.format_exc()
+    return jsonify(info)
+
+
+@app.route('/api/tracking/backend-status')
+def api_tracking_backend_status():
+    """Side-effect-free status check — does NOT instantiate a DB or create files."""
+    decision = _resolve_backend_decision()
+    status: Dict[str, Any] = {
+        'sql_connection_configured': bool(decision['connection_name']),
+        'sql_connection_healthy': None,
+        'instance_has_compatible_sql': None,
+        'table_prefix': decision['table_prefix'],
+        'effective_backend': 'unconfigured',
+        'connection_name': decision['connection_name'],
+        'sqlite_exists': False,
+        'sqlite_has_data': False,
+        'migration_running': _migration_running,
+    }
+    try:
+        # Compatible SQL connections on instance
+        compat = _list_compatible_sql_connections()
+        status['instance_has_compatible_sql'] = bool(compat) if compat is not None else None
+
+        # SQL connection health check
+        if decision['connection_name']:
+            try:
+                from dataiku.core.sql import SQLExecutor2
+                ex = SQLExecutor2(connection=decision['connection_name'])
+                ex.query_to_df("SELECT 1")
+                status['sql_connection_healthy'] = True
+            except Exception:
+                status['sql_connection_healthy'] = False
+
+        # Check SQLite state (read-only, no creation)
+        db_dir = _resolve_sqlite_dir()
+        sqlite_path = os.path.join(db_dir, 'tracking.db')
+        status['sqlite_exists'] = os.path.exists(sqlite_path)
+        if status['sqlite_exists']:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(sqlite_path, timeout=5)
+                conn.row_factory = sqlite3.Row
+                for tbl in ['runs', 'issues', 'findings']:
+                    try:
+                        cnt = conn.execute('SELECT COUNT(*) FROM %s' % tbl).fetchone()[0]
+                        if cnt > 0:
+                            status['sqlite_has_data'] = True
+                            break
+                    except Exception:
+                        pass
+                conn.close()
+            except Exception:
+                pass
+
+        # Determine effective backend from the ACTUAL cached singleton
+        db = _tracking_db_instance
+        if db is not None:
+            try:
+                from sql_tracking import SQLTrackingDB
+                status['effective_backend'] = 'sql' if isinstance(db, SQLTrackingDB) else 'sqlite'
+            except ImportError:
+                status['effective_backend'] = 'sqlite'
+        else:
+            status['effective_backend'] = decision['mode']
+
+    except Exception as exc:
+        status['error'] = str(exc)
+    return jsonify(status)
+
+
+@app.route('/api/tracking/migrate-to-sql', methods=['POST'])
+def api_tracking_migrate_to_sql():
+    """Migrate tracking data from local SQLite to the configured SQL connection."""
+    global _migration_running, _tracking_db_instance
+    _log = logging.getLogger(__name__)
+
+    if not _db_adapter_available:
+        return jsonify({'error': 'db_adapter module not available'}), 501
+
+    config = load_tracking_backend_config()
+    if not config.connection_name:
+        return jsonify({'error': 'No SQL connection configured in plugin settings'}), 400
+
+    db_dir = _resolve_sqlite_dir()
+    sqlite_path = os.path.join(db_dir, 'tracking.db')
+    if not os.path.exists(sqlite_path):
+        return jsonify({'error': 'No local SQLite database found at %s' % sqlite_path}), 404
+
+    if not _migration_lock.acquire(blocking=False):
+        return jsonify({'error': 'Migration already in progress'}), 409
+    try:
+        _migration_running = True
+        progress_endpoint = 'migrate_to_sql'
+        progress_run_id = _start_progress(progress_endpoint)
+
+        import sqlite3
+        from sql_tracking import SQLTrackingDB
+
+        # 1. Open source SQLite
+        src = sqlite3.connect(sqlite_path, timeout=30)
+        src.row_factory = sqlite3.Row
+        _append_progress_event(progress_endpoint, progress_run_id,
+                               {'message': 'Opened SQLite source'})
+
+        # 2. Create target SQL backend
+        target = SQLTrackingDB(config.connection_name, config.table_prefix)
+        target._init_tables()
+        _append_progress_event(progress_endpoint, progress_run_id,
+                               {'message': 'SQL target tables created'})
+
+        # 3. Migrate tables in FK-dependency order
+        migration_order = [
+            'schema_version', 'instances', 'runs', 'run_health_metrics',
+            'run_campaign_summaries', 'run_sections', 'findings', 'issues',
+            'outreach_emails', 'outreach_email_issues', 'known_users',
+            'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
+        ]
+        results = {}
+        for table in migration_order:
+            try:
+                rows = src.execute('SELECT * FROM %s' % table).fetchall()
+                row_dicts = [dict(r) for r in rows]
+                inserted = target.insert_migration_rows(table, row_dicts)
+                results[table] = {'source_rows': len(row_dicts), 'inserted': inserted}
+                _append_progress_event(progress_endpoint, progress_run_id,
+                                       {'message': 'Migrated %s: %d/%d rows' % (table, inserted, len(row_dicts))})
+            except Exception as exc:
+                results[table] = {'error': str(exc)}
+                _log.warning("[migration] Failed on table %s: %s", table, exc, exc_info=True)
+                _append_progress_event(progress_endpoint, progress_run_id,
+                                       {'message': 'Warning: %s failed: %s' % (table, exc), 'level': 'warn'})
+
+        src.close()
+
+        # 4. Reset sequences
+        try:
+            target.reset_sequences()
+            _append_progress_event(progress_endpoint, progress_run_id,
+                                   {'message': 'Sequences reset'})
+        except Exception as exc:
+            _log.warning("[migration] Sequence reset failed: %s", exc)
+
+        # 5. Validate row counts
+        target_counts = target.get_row_counts()
+        validation = {}
+        all_ok = True
+        for table, info in results.items():
+            if 'error' in info:
+                validation[table] = 'SKIPPED (error during migration)'
+                all_ok = False
+                continue
+            target_cnt = target_counts.get(table, 0)
+            source_cnt = info['source_rows']
+            if target_cnt >= source_cnt:
+                validation[table] = 'OK (%d rows)' % target_cnt
+            else:
+                validation[table] = 'MISMATCH: source=%d target=%d' % (source_cnt, target_cnt)
+                all_ok = False
+
+        # 6. Switch backend if validation passed
+        if all_ok:
+            _tracking_db_instance = target
+            _finish_progress(progress_endpoint, progress_run_id, 'completed',
+                             summary={'message': 'Migration completed successfully'})
+        else:
+            _finish_progress(progress_endpoint, progress_run_id, 'completed',
+                             summary={'message': 'Migration completed with warnings — backend NOT switched automatically'})
+
+        return jsonify({
+            'ok': all_ok,
+            'results': results,
+            'validation': validation,
+            'backend_switched': all_ok,
+        })
+
+    except Exception as exc:
+        _log.error("[migration] FAILED: %s", exc, exc_info=True)
+        _finish_progress(progress_endpoint, progress_run_id, 'error', error=str(exc))
+        return jsonify({'error': str(exc)}), 500
+    finally:
+        _migration_running = False
+        _migration_lock.release()
 
 
 @app.route('/api/tracking/users/<login>')
@@ -6943,8 +7605,12 @@ def api_tracking_user_compliance(login):
     db = _get_tracking_db()
     if db is None:
         return jsonify({'error': 'Tracking not available'}), 501
-    rows = db.get_user_compliance(login)
-    return jsonify({'login': login, 'campaigns': rows})
+    try:
+        rows = db.get_user_compliance(login)
+        return jsonify({'login': login, 'campaigns': rows})
+    except Exception as exc:
+        app.logger.error("[tracking:user/%s] UNHANDLED: %s", login, exc, exc_info=True)
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/tracking/issues/<int:issue_id>/notes', methods=['POST'])
@@ -7110,6 +7776,7 @@ def api_cache_clear():
     with _CACHE_LOCK:
         _CACHE.clear()
     _clear_shared_project_code_env_usage()
+    _get_sdk_cache().invalidate_all(_instance_id())
     return jsonify({'ok': True})
 
 
@@ -7376,6 +8043,7 @@ def api_tools_plugins_compare():
 
     try:
         remote_client = dataikuapi.DSSClient(remote_url, remote_api_key)
+        remote_client._session.verify = False
         remote_plugins_raw = remote_client.list_plugins()
     except Exception as e:
         return jsonify({"error": "Failed to fetch remote plugins: %s" % str(e)}), 500
@@ -7435,6 +8103,7 @@ def api_tools_plugins_deploy_one():
 
     local_client = dataiku.api_client()
     remote_client = dataikuapi.DSSClient(remote_url, api_key)
+    remote_client._session.verify = False
 
     # Strategy 1: dev plugin → download stream and upload archive
     try:
@@ -7463,7 +8132,12 @@ def api_plugins():
     def loader():
         plugins = []
         plugin_details = []
-        for p in client.list_plugins():
+        _all_plugins = _sdk_fetch(
+            'list_plugins',
+            _BACKEND_SETTINGS['cache_ttl_overview'],
+            lambda: list(client.list_plugins()),
+        )
+        for p in _all_plugins:
             if isinstance(p, dict):
                 meta = p.get('meta') or {}
                 pid = p.get('id') or p.get('name') or meta.get('label')
@@ -7528,12 +8202,82 @@ def api_llms():
         return jsonify({'error': str(e), 'llms': []}), 500
 
 
+@app.route('/api/debug/perf')
+def api_debug_perf():
+    """Return performance debug data without triggering any scans."""
+    try:
+        cache = _get_sdk_cache()
+        cache_keys = cache.get_cache_keys() if hasattr(cache, 'get_cache_keys') else []
+        sdk_stats = cache.get_stats() if hasattr(cache, 'get_stats') else {}
+    except Exception:
+        cache_keys = []
+        sdk_stats = {}
+    with _BACKEND_SETTINGS_LOCK:
+        settings = dict(_BACKEND_SETTINGS)
+    ce_benchmark = None
+    pf_benchmark = None
+    with _CACHE_LOCK:
+        ce_entry = _CACHE.get('code_envs')
+        if isinstance(ce_entry, dict):
+            ce_val = ce_entry.get('value')
+            if isinstance(ce_val, dict):
+                ce_benchmark = ce_val.get('summary', {}).get('benchmark')
+    # Extract benchmarks from progress (PF doesn't use _cache_get; CE as fallback)
+    progress_summaries: Dict[str, Any] = {}
+    with _PROGRESS_LOCK:
+        for k, v in _PROGRESS.items():
+            summary = v.get('summary')
+            if isinstance(summary, dict):
+                # Strip events array to keep response small
+                progress_summaries[k] = {
+                    key: val for key, val in summary.items() if key != 'events'
+                }
+                if k == 'project_footprint' and pf_benchmark is None:
+                    pf_benchmark = summary
+                if k == 'code_envs' and ce_benchmark is None:
+                    ce_benchmark = summary
+    # Strip events from benchmarks to keep response small
+    if isinstance(ce_benchmark, dict):
+        ce_benchmark = {k: v for k, v in ce_benchmark.items() if k != 'events'}
+    if isinstance(pf_benchmark, dict):
+        pf_benchmark = {k: v for k, v in pf_benchmark.items() if k != 'events'}
+    return jsonify({
+        'cache_keys': cache_keys,
+        'sdk_cache_stats': sdk_stats,
+        'backend_settings': settings,
+        'last_code_envs_benchmark': ce_benchmark,
+        'last_project_footprint_benchmark': pf_benchmark,
+        'progress_summaries': progress_summaries,
+    })
+
+
+@app.route('/api/logs/raw-tail')
+def api_logs_raw_tail():
+    """Return the last 100K characters of backend.log as plain text."""
+    max_chars = 100_000
+    try:
+        client = dataiku.api_client()
+        dip_home = _dip_home()
+        log_content = None
+        try:
+            log_content = client.get_log('backend.log')
+        except Exception:
+            log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
+        text = _coerce_log_text(log_content) or ''
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return jsonify({'text': text, 'chars': len(text)})
+    except Exception as e:
+        return jsonify({'error': str(e), 'text': '', 'chars': 0}), 500
+
+
 @app.route('/api/logs/ai-analysis', methods=['POST'])
 def api_logs_ai_analysis():
     """Stream AI log analysis via SSE with phase updates and token streaming."""
     body = request.get_json(force=True)
     llm_id = body.get('llmId', '').strip()
     custom_system_prompt = (body.get('systemPrompt') or '').strip()
+    client_user_message = (body.get('userMessage') or '').strip()
 
     _DEFAULT_SYSTEM_PROMPT = (
         "You are an expert Dataiku DSS administrator and backend engineer "
@@ -7569,44 +8313,50 @@ def api_logs_ai_analysis():
             project_key = dataiku.default_project_key()
             project = client.get_project(project_key)
 
-            dip_home = _dip_home()
+            if client_user_message:
+                # Frontend provided the pre-built user message — use it directly
+                user_message = client_user_message
+                log_chars = len(user_message)
+            else:
+                # Fallback: build user message from cache/disk (backward compat)
+                dip_home = _dip_home()
 
-            def loader():
-                log_content = None
-                try:
-                    log_content = client.get_log('backend.log')
-                except Exception:
-                    log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
-                return _parse_log_errors(log_content)
+                def loader():
+                    log_content = None
+                    try:
+                        log_content = client.get_log('backend.log')
+                    except Exception:
+                        log_content = _safe_read_text(os.path.join(dip_home, 'run', 'backend.log'))
+                    return _parse_log_errors(log_content)
 
-            log_data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
-            raw_errors = log_data.get('rawLogErrors', [])
+                log_data = _cache_get('log_errors', _BACKEND_SETTINGS['cache_ttl_log_errors'], loader)
+                raw_errors = log_data.get('rawLogErrors', [])
 
-            if not raw_errors:
-                yield "event: done\ndata: %s\n\n" % json.dumps({
-                    "analysis": "No log errors found to analyze.",
-                    "llmId": llm_id, "logCharsAnalyzed": 0,
-                })
-                return
+                if not raw_errors:
+                    yield "event: done\ndata: %s\n\n" % json.dumps({
+                        "analysis": "No log errors found to analyze.",
+                        "llmId": llm_id, "logCharsAnalyzed": 0,
+                    })
+                    return
 
-            error_text = '\n---\n'.join('\n'.join(block.get('data', [])) for block in raw_errors)
-            max_chars = 100_000
-            if len(error_text) > max_chars:
-                error_text = error_text[-max_chars:]
-            log_chars = len(error_text)
+                error_text = '\n---\n'.join('\n'.join(block.get('data', [])) for block in raw_errors)
+                max_chars = 100_000
+                if len(error_text) > max_chars:
+                    error_text = error_text[-max_chars:]
+                log_chars = len(error_text)
 
-            log_stats = log_data.get('logStats', {})
-            user_message = (
-                "Analyze the following DSS backend.log errors.\n"
-                "Stats: %d unique errors, %d total log lines.\n\n"
-                "```\n%s\n```"
-            ) % (log_stats.get('Unique Errors', 0), log_stats.get('Total Lines', 0), error_text)
+                log_stats = log_data.get('logStats', {})
+                user_message = (
+                    "Analyze the following DSS backend.log errors.\n"
+                    "Stats: %d unique errors, %d total log lines.\n\n"
+                    "```\n%s\n```"
+                ) % (log_stats.get('Unique Errors', 0), log_stats.get('Total Lines', 0), error_text)
 
             yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Sending to LLM"})
 
             completion = project.get_llm(llm_id).new_completion()
             completion.settings['maxOutputTokens'] = 4096
-            completion.settings['temperature'] = 0.3
+            # completion.settings['temperature'] = 0.3  # disabled – not supported by some small LLMs (e.g. GPT-5 mini/nano)
             completion.with_message(message=system_prompt, role='system')
             completion.with_message(message=user_message, role='user')
 
@@ -7689,7 +8439,7 @@ def api_dir_tree():
 @app.route('/api/settings', methods=['GET'])
 def api_settings_get():
     with _BACKEND_SETTINGS_LOCK:
-        return jsonify(dict(_BACKEND_SETTINGS))
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
 
 
 @app.route('/api/settings', methods=['PUT'])
@@ -7704,4 +8454,20 @@ def api_settings_put():
                 except (ValueError, TypeError):
                     pass
     with _BACKEND_SETTINGS_LOCK:
-        return jsonify(dict(_BACKEND_SETTINGS))
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
+
+
+@app.route('/api/settings/reset', methods=['POST'])
+def api_settings_reset():
+    with _BACKEND_SETTINGS_LOCK:
+        _BACKEND_SETTINGS.update(_BACKEND_SETTINGS_DEFAULTS)
+        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
+
+
+@app.route('/api/settings/threshold-defaults', methods=['GET'])
+def api_settings_threshold_defaults():
+    try:
+        from db_adapter import load_plugin_threshold_defaults
+        return jsonify(load_plugin_threshold_defaults())
+    except Exception:
+        return jsonify({})

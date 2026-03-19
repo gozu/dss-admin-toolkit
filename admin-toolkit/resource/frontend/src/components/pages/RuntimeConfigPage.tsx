@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useDiag } from '../../context/DiagContext';
 import { DataTable } from '../index';
+import { PluginsTable } from '../PluginsTable';
 
 interface TabDef {
   id: string;
@@ -16,6 +17,14 @@ const ALL_TABS: TabDef[] = [
   { id: 'max-running', label: 'Max Running Activities', dataKey: 'maxRunningActivities', title: 'Max Running Activities', sortNumeric: true },
   { id: 'enabled', label: 'Enabled Settings', dataKey: 'enabledSettings', title: 'Enabled Settings' },
   { id: 'resource-limits', label: 'Resource Limits', dataKey: 'resourceLimits', title: 'Resource Limits' },
+  { id: 'auth', label: 'Auth Settings', dataKey: 'authSettings', title: 'Authentication Settings' },
+  { id: 'cgroups', label: 'CGroups Config', dataKey: 'cgroupSettings', title: 'CGroups Config' },
+  { id: 'users-projects', label: 'Users by Projects', dataKey: 'usersByProjects', title: 'Users by Projects' },
+  { id: 'system-limits', label: 'System Limits', dataKey: 'systemLimits', title: 'System Limits' },
+  { id: 'container', label: 'Container Settings', dataKey: 'containerSettings', title: 'Container Settings' },
+  { id: 'integration', label: 'Integration Settings', dataKey: 'integrationSettings', title: 'Integration Settings' },
+  { id: 'proxy', label: 'Proxy Config', dataKey: 'proxySettings', title: 'Proxy Config' },
+  { id: 'user-stats', label: 'User Statistics', dataKey: 'userStats', title: 'User Statistics', sortNumeric: true },
 ];
 
 export function RuntimeConfigPage() {
@@ -29,11 +38,13 @@ export function RuntimeConfigPage() {
     });
   }, [parsedData]);
 
-  if (availableTabs.length === 0) {
+  const hasPlugins = (parsedData.plugins?.length ?? 0) > 0;
+
+  if (availableTabs.length === 0 && !hasPlugins) {
     return (
       <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
         <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center">
-          <p className="text-[var(--text-secondary)]">No runtime configuration data available.</p>
+          <p className="text-[var(--text-secondary)]">No configuration data available.</p>
         </div>
       </div>
     );
@@ -51,6 +62,9 @@ export function RuntimeConfigPage() {
             sortNumeric={tab.sortNumeric}
           />
         ))}
+      </div>
+      <div className="mt-6">
+        <PluginsTable />
       </div>
     </div>
   );

@@ -9,6 +9,26 @@ import { loadFromStorage, saveToStorage } from '../utils/storage';
 import { DEFAULT_AI_SYSTEM_PROMPT, AI_PROMPT_STORAGE_KEY } from './AiLogAnalysis';
 import type { CampaignExemption } from '../types';
 
+interface TrackingBackendStatus {
+  sql_connection_configured: boolean;
+  sql_connection_healthy: boolean | null;
+  instance_has_compatible_sql: boolean | null;
+  table_prefix: string | null;
+  effective_backend: 'sqlite' | 'sql' | 'unconfigured';
+  connection_name: string | null;
+  sqlite_exists: boolean;
+  sqlite_has_data: boolean;
+  migration_running: boolean;
+  error?: string;
+}
+
+interface MigrationResult {
+  ok: boolean;
+  results: Record<string, { source_rows?: number; inserted?: number; error?: string }>;
+  validation: Record<string, string>;
+  backend_switched: boolean;
+}
+
 interface SettingsViewProps {
   onBack: () => void;
 }
@@ -113,6 +133,7 @@ const BACKEND_FIELD_GROUPS: { group: string; fields: { key: string; label: strin
       { key: 'fe_timeout_project_footprint', label: 'Project Footprint Fetch', description: 'Frontend timeout for project footprint.', min: 30000, max: 1800000, step: 30000 },
       { key: 'fe_timeout_projects', label: 'Projects Fetch', description: 'Frontend timeout for projects list.', min: 5000, max: 300000, step: 5000 },
       { key: 'fe_timeout_logs', label: 'Logs Fetch', description: 'Frontend timeout for log errors.', min: 5000, max: 300000, step: 5000 },
+      { key: 'fe_timeout_llm_analysis', label: 'LLM Analysis', description: 'Timeout for AI log analysis LLM response.', min: 30000, max: 600000, step: 10000 },
     ],
   },
   {
@@ -210,17 +231,23 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   // Backend settings state
   const [backendSettings, setBackendSettings] = useState<BackendSettings>({});
   const [backendDefaults, setBackendDefaults] = useState<BackendSettings>({});
-  const [backendLoading, setBackendLoading] = useState(true);
+  const [backendLoading, setBackendLoading] = useState(false);
   const [backendInputs, setBackendInputs] = useState<Partial<Record<string, string>>>({});
 
   useEffect(() => {
-    fetchJson<BackendSettings>('/api/settings')
+    fetchJson<{ current: BackendSettings; defaults: BackendSettings }>('/api/settings')
       .then((data) => {
-        setBackendSettings(data);
-        setBackendDefaults(data);
+        setBackendSettings(data.current);
+        setBackendDefaults(data.defaults);
       })
       .catch(() => {})
       .finally(() => setBackendLoading(false));
+  }, []);
+
+  const resetBackendSettings = useCallback(async () => {
+    const data = await fetchJson<{ current: BackendSettings; defaults: BackendSettings }>('/api/settings/reset', { method: 'POST' });
+    setBackendSettings(data.current);
+    setBackendDefaults(data.defaults);
   }, []);
 
   const updateBackendSetting = useCallback((key: string, value: number) => {
@@ -254,7 +281,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
   // Campaign toggle state
   const [campaignSettings, setCampaignSettings] = useState<Record<string, boolean>>({});
-  const [campaignSettingsLoading, setCampaignSettingsLoading] = useState(true);
+  const [campaignSettingsLoading, setCampaignSettingsLoading] = useState(false);
 
   useEffect(() => {
     fetchJson<{ campaigns: Record<string, boolean> }>('/api/tracking/campaign-settings')
@@ -291,7 +318,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
   // Campaign exemptions state
   const [exemptions, setExemptions] = useState<CampaignExemption[]>([]);
-  const [exemptionsLoading, setExemptionsLoading] = useState(true);
+  const [exemptionsLoading, setExemptionsLoading] = useState(false);
   const [newExemptionCampaign, setNewExemptionCampaign] = useState(CAMPAIGN_IDS[0]);
   const [newExemptionKey, setNewExemptionKey] = useState('');
   const [newExemptionReason, setNewExemptionReason] = useState('');
@@ -347,6 +374,39 @@ export function SettingsView({ onBack }: SettingsViewProps) {
         .catch(() => {});
     });
   }, []);
+
+  // Tracking backend status state
+  const [backendStatus, setBackendStatus] = useState<TrackingBackendStatus | null>(null);
+  const [backendStatusLoading, setBackendStatusLoading] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationResult, setMigrationResult] = useState<MigrationResult | null>(null);
+
+  useEffect(() => {
+    fetchJson<TrackingBackendStatus>('/api/tracking/backend-status')
+      .then(setBackendStatus)
+      .catch(() => {})
+      .finally(() => setBackendStatusLoading(false));
+  }, []);
+
+  const startMigration = useCallback(async () => {
+    if (migrating) return;
+    setMigrating(true);
+    setMigrationResult(null);
+    try {
+      const res = await fetchJson<MigrationResult>('/api/tracking/migrate-to-sql', {
+        method: 'POST',
+      });
+      setMigrationResult(res);
+      // Refresh status after migration
+      fetchJson<TrackingBackendStatus>('/api/tracking/backend-status')
+        .then(setBackendStatus)
+        .catch(() => {});
+    } catch {
+      setMigrationResult({ ok: false, results: {}, validation: {}, backend_switched: false });
+    } finally {
+      setMigrating(false);
+    }
+  }, [migrating]);
 
   const handleInputChange = useCallback((key: keyof ThresholdSettings, raw: string) => {
     setInputValues((prev) => ({ ...prev, [key]: raw }));
@@ -417,11 +477,19 @@ export function SettingsView({ onBack }: SettingsViewProps) {
 
           {/* Backend Settings */}
           <section className="glass-card p-4 space-y-3">
-            <div>
-              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Backend Settings</h3>
-              <p className="text-sm text-[var(--text-muted)]">
-                Configure server-side concurrency, cache TTLs, and timeouts. Changes are sent to the backend immediately.
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-[var(--text-primary)]">Backend Settings</h3>
+                <p className="text-sm text-[var(--text-muted)]">
+                  Configure server-side concurrency, cache TTLs, and timeouts. Changes are sent to the backend immediately.
+                </p>
+              </div>
+              <button
+                onClick={resetBackendSettings}
+                className="px-3 py-1.5 rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] text-[var(--text-secondary)] transition-colors text-sm"
+              >
+                Reset to Defaults
+              </button>
             </div>
             {backendLoading ? (
               <div className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]">
@@ -565,6 +633,130 @@ export function SettingsView({ onBack }: SettingsViewProps) {
                 </p>
               )}
             </label>
+          </section>
+
+          {/* Tracking Backend Status */}
+          <section className="glass-card p-4 space-y-3">
+            <div>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Tracking Database Backend</h3>
+              <p className="text-sm text-[var(--text-muted)]">
+                View and manage the tracking storage backend. Configure a SQL connection in Plugin Settings to use an external database.
+              </p>
+            </div>
+            {backendStatusLoading ? (
+              <div className="flex items-center gap-2 py-4 text-sm text-[var(--text-muted)]">
+                <div className="w-4 h-4 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                Loading backend status...
+              </div>
+            ) : backendStatus ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="p-3 rounded-lg border border-[var(--border-glass)] bg-[var(--bg-glass)]">
+                    <span className="text-xs font-medium text-[var(--text-muted)] block mb-1">Current Backend</span>
+                    <span className={`text-sm font-semibold ${
+                      backendStatus.effective_backend === 'sql' ? 'text-[var(--neon-green)]' :
+                      backendStatus.effective_backend === 'sqlite' ? 'text-[var(--accent)]' :
+                      'text-[var(--neon-red)]'
+                    }`}>
+                      {backendStatus.effective_backend === 'sql'
+                        ? `SQL Connection: ${backendStatus.connection_name}`
+                        : backendStatus.effective_backend === 'sqlite'
+                        ? 'SQLite (local)'
+                        : backendStatus.effective_backend === 'unconfigured'
+                        ? 'Not configured'
+                        : 'Unavailable'}
+                    </span>
+                    {backendStatus.table_prefix && backendStatus.effective_backend === 'sql' && (
+                      <span className="text-xs text-[var(--text-muted)] block mt-0.5">
+                        Table Prefix: {backendStatus.table_prefix}
+                      </span>
+                    )}
+                    {backendStatus.sql_connection_healthy === false && (
+                      <span className="text-xs text-[var(--neon-red)] block mt-0.5">
+                        Connection unhealthy
+                      </span>
+                    )}
+                  </div>
+                  <div className="p-3 rounded-lg border border-[var(--border-glass)] bg-[var(--bg-glass)]">
+                    <span className="text-xs font-medium text-[var(--text-muted)] block mb-1">Local SQLite</span>
+                    {backendStatus.sqlite_exists ? (
+                      <span className="text-sm text-[var(--text-primary)]">
+                        {backendStatus.sqlite_has_data ? 'Has data' : 'Empty'}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-[var(--text-muted)]">Not found</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Migration controls */}
+                {backendStatus.connection_name && backendStatus.sqlite_has_data && backendStatus.effective_backend === 'sql' && (
+                  <div className="p-3 rounded-lg border border-[var(--neon-amber)]/30 bg-[var(--neon-amber)]/5">
+                    <p className="text-sm text-[var(--text-primary)] mb-2">
+                      A SQL connection is configured and local SQLite has data. You can migrate the data to the SQL backend.
+                    </p>
+                    <button
+                      onClick={startMigration}
+                      disabled={migrating || backendStatus.migration_running}
+                      className="px-3 py-1.5 rounded btn-primary text-sm disabled:opacity-50"
+                    >
+                      {migrating || backendStatus.migration_running ? 'Migrating...' : 'Migrate to SQL'}
+                    </button>
+                  </div>
+                )}
+                {backendStatus.connection_name && backendStatus.sqlite_has_data && backendStatus.effective_backend === 'sqlite' && (
+                  <p className="text-xs text-[var(--text-muted)] italic">
+                    SQL connection is configured but not yet active. Restart the webapp to activate, then migrate data.
+                  </p>
+                )}
+
+                {/* Migration result */}
+                {migrationResult && (
+                  <div className={`p-3 rounded-lg border ${
+                    migrationResult.ok
+                      ? 'border-[var(--neon-green)]/30 bg-[var(--neon-green)]/5'
+                      : 'border-[var(--neon-red)]/30 bg-[var(--neon-red)]/5'
+                  }`}>
+                    <p className={`text-sm font-semibold mb-2 ${
+                      migrationResult.ok ? 'text-[var(--neon-green)]' : 'text-[var(--neon-red)]'
+                    }`}>
+                      {migrationResult.ok
+                        ? 'Migration completed successfully'
+                        : 'Migration completed with issues'}
+                    </p>
+                    {migrationResult.backend_switched && (
+                      <p className="text-xs text-[var(--neon-green)] mb-2">Backend switched to SQL</p>
+                    )}
+                    <div className="overflow-auto max-h-[200px]">
+                      <table className="table-dark text-xs">
+                        <thead>
+                          <tr>
+                            <th>Table</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(migrationResult.validation).map(([table, status]) => (
+                            <tr key={table}>
+                              <td className="font-mono">{table}</td>
+                              <td className={status.startsWith('OK') ? 'text-[var(--neon-green)]' : 'text-[var(--neon-amber)]'}>
+                                {status}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {backendStatus.error && (
+                  <p className="text-xs text-[var(--neon-red)]">{backendStatus.error}</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--text-muted)] italic">Could not load backend status.</p>
+            )}
           </section>
 
           <section className="glass-card p-4 space-y-3">
