@@ -259,7 +259,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           extras={slides?.logs?.patterns?.length ? (
             <div className="report-extras-list">
               {slides.logs.patterns.slice(0, 5).map((p, i) => (
-                <div key={i} className="report-extras-item" style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>{p}</div>
+                <div key={i} className="report-extras-item" style={{ fontFamily: "'DM Mono', monospace", fontSize: '0.85rem', color: '#816948' }}>{p}</div>
               ))}
             </div>
           ) : undefined}
@@ -305,7 +305,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
               </div>
             ))}
             {(!slides?.action_plan?.priorities?.length) && (
-              <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem', paddingLeft: '1rem' }}>No action items generated.</div>
+              <div style={{ color: '#816948', fontSize: '0.9rem', paddingLeft: '1rem' }}>No action items generated.</div>
             )}
           </div>
           <SlideWatermark />
@@ -315,9 +315,9 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
         <div className={`report-slide report-slide-hero${currentSlide === 17 ? ' active' : ''}`} data-slide-index={17}>
           <div className="report-title-center">
             <img src={dkulogo} alt="Dataiku" id="dku-logo-closing" className="report-title-logo" style={{ width: 56, height: 56 }} />
-            <div style={{ fontSize: '2.25rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>Next Steps</div>
+            <div style={{ fontSize: '2.25rem', fontWeight: 800, color: '#FEFEF9', letterSpacing: '-0.03em', fontFamily: "'Spectral', serif" }}>Next Steps</div>
             <div className="report-title-divider" />
-            <div style={{ fontSize: '1rem', color: 'var(--text-secondary)', maxWidth: 500, lineHeight: 1.7, textAlign: 'center' }}>
+            <div style={{ fontSize: '1rem', color: 'rgba(254,254,249,0.7)', maxWidth: 500, lineHeight: 1.7, textAlign: 'center' }}>
               Review the recommendations with your team and prioritize based on your operational needs.
               Your Technical Account Manager is available for follow-up discussions.
             </div>
@@ -336,7 +336,7 @@ export function ReportOverlay({ reportData, parsedData, onClose }: ReportOverlay
           <button type="button" className="report-nav-btn" onClick={next} disabled={currentSlide === totalSlides - 1}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><polyline points="9 18 15 12 9 6" /></svg>
           </button>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)', marginLeft: '0.75rem', fontWeight: 500 }}>
+          <span style={{ fontSize: '0.85rem', color: 'rgba(254,254,249,0.6)', marginLeft: '0.75rem', fontWeight: 500, fontFamily: "'DM Mono', monospace" }}>
             {currentSlide + 1} <span style={{ opacity: 0.5 }}>/</span> {totalSlides}
           </span>
         </div>
@@ -373,8 +373,10 @@ interface MetricItem { value: string; label: string; color?: 'success' | 'warnin
 function SlideWatermark() {
   return (
     <div className="report-watermark">
-      <img src={dkulogo} alt="" style={{ width: 14, height: 14, opacity: 0.4 }} />
-      <span>Dataiku Health Check</span>
+      <div style={{ width: 14, height: 14, opacity: 0.5 }}>
+        <img src={dkulogo} alt="" style={{ width: '100%', height: '100%' }} />
+      </div>
+      <span style={{ fontFamily: "'DM Mono', monospace", color: '#816948' }}>&copy;2026 Dataiku Inc.</span>
     </div>
   );
 }
@@ -437,7 +439,7 @@ function RecSlide({ index, slideNum, active, title, badgeClass, badgeText, numbe
           </div>
         ))}
         {items.length === 0 && (
-          <div style={{ color: 'var(--text-tertiary)', fontSize: '0.9rem' }}>No recommendations in this category.</div>
+          <div style={{ color: '#816948', fontSize: '0.9rem' }}>No recommendations in this category.</div>
         )}
       </div>
       <SlideWatermark />
