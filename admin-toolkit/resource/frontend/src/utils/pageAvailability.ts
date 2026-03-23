@@ -45,8 +45,11 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return Array.isArray(d.projectFootprint) && d.projectFootprint.length > 0 && d.analysisLoading?.active === false
         ? 'ready'
         : 'loading';
-    case 'code-envs':
-    case 'code-env-cleaner': {
+    case 'code-env-cleaner':
+      return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
+        ? 'ready'
+        : 'loading';
+    case 'code-envs': {
       const envsLoaded = Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false;
       if (!envsLoaded) return 'loading';
       return d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0 ? 'ready' : 'partial';
