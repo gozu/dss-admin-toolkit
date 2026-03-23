@@ -311,7 +311,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
           isActive
             ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : isPartial ? 'opacity-60' : ''}`}
+        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : isPartial ? 'text-[var(--warning)] opacity-75' : ''}`}
         style={isLightUp ? { animation: 'sidebar-ready 600ms ease-out' } : undefined}
       >
         {/* Active indicator bar */}
