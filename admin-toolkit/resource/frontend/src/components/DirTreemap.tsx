@@ -205,10 +205,12 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
     setCurrentNode(null);
   }, []);
 
+  const activeExpanded = expandedNodes?.get(activeNode?.path ?? '');
+
   const chartItems = useMemo(() => {
     if (!activeNode) return [];
 
-    const effectiveChildren = expandedNodes?.get(activeNode.path)?.children || activeNode.children;
+    const effectiveChildren = activeExpanded?.children || activeNode.children;
     if (effectiveChildren.length > 0) {
       return effectiveChildren.map(child => ({
         name: child.name,
@@ -231,17 +233,17 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
       hasHiddenChildren: activeNode.hasHiddenChildren,
       _node: activeNode,
     }];
-  }, [activeNode, expandedNodes]);
+  }, [activeNode, activeExpanded]);
 
   useEffect(() => {
     if (!activeNode || !onVisibleDirectoriesChange) return;
-    const candidates = (expandedNodes?.get(activeNode.path)?.children || activeNode.children)
+    const candidates = (activeExpanded?.children || activeNode.children)
       .filter((child) => child.isDirectory && child.hasHiddenChildren)
       .sort((a, b) => b.size - a.size)
       .slice(0, 3)
       .map((child) => child.path);
     onVisibleDirectoriesChange(candidates);
-  }, [activeNode, expandedNodes, onVisibleDirectoriesChange]);
+  }, [activeNode, activeExpanded, onVisibleDirectoriesChange]);
 
   const chartData = useMemo(() => {
     if (!activeNode) return { datasets: [] };
