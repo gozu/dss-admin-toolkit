@@ -32,9 +32,10 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'directory': // manual-only, loads on user action
       return 'independent';
 
-    // Compliance depends on outreach data
+    // Compliance depends on outreach data — mirrors outreach states
     case 'tracking':
-      return outreachReady ? 'ready' : 'partial';
+      if (!outreachReady) return 'loading';
+      return allDone ? 'ready' : 'partial';
 
     // Report needs everything completely finished
     case 'report':
