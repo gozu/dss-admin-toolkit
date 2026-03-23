@@ -13,18 +13,32 @@ export type PageAvailability = 'ready' | 'partial' | 'loading' | 'independent';
  * NOTE: This is purely visual. All pages remain navigable regardless of state.
  */
 export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailability {
+  // Shared: outreach core data fully loaded?
+  const outreachReady =
+    Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 &&
+    Array.isArray(d.projectFootprint) && d.projectFootprint.length > 0 &&
+    Array.isArray(d.users) && d.users.length > 0 &&
+    d.analysisLoading?.active === false;
+  const allDone = outreachReady && d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0;
+
   switch (pageId) {
     // Always available — instant, self-loading, or independent
     case 'summary':
     case 'issues':
     case 'settings':
-    case 'tracking': // independent DB
-    case 'directory': // on-demand via apiDirTree
     case 'project-cleaner':
       return hasInactiveProjectsCache() ? 'ready' : 'loading';
     case 'plugins': // PluginComparator fetches its own data
-    case 'report': // self-contained, fetches LLMs on demand
+    case 'directory': // manual-only, loads on user action
       return 'independent';
+
+    // Compliance depends on outreach data
+    case 'tracking':
+      return outreachReady ? 'ready' : 'partial';
+
+    // Report needs everything completely finished
+    case 'report':
+      return allDone ? 'ready' : 'loading';
 
     // Phase 1 — overview data
     case 'filesystem':
