@@ -192,25 +192,39 @@ export function DbHealthPage() {
   }, []);
 
   // Actions
-  const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string) => {
+  const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string, password?: string) => {
     if (!selectedConn) return;
-    const confirmed = window.confirm(
-      `Run ${action.toUpperCase()} on table "${tableName}"?\n\nThis may take a moment on large tables.`,
-    );
-    if (!confirmed) return;
+    if (!password) {
+      const confirmed = window.confirm(
+        `Run ${action.toUpperCase()} on table "${tableName}"?\n\nThis may take a moment on large tables.`,
+      );
+      if (!confirmed) return;
+    }
 
     const key = `${action}-${tableName}`;
     setActionLoading((prev) => ({ ...prev, [key]: action }));
     try {
-      const res = await fetchJson<{ success?: boolean; error?: string }>(
+      const payload: Record<string, string> = { connection: selectedConn, table: tableName };
+      if (password) payload.password = password;
+      const res = await fetchJson<{ success?: boolean; error?: string; needsPassword?: boolean; reason?: string }>(
         `/api/tools/db-health/${action}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ connection: selectedConn, table: tableName }),
+          body: JSON.stringify(payload),
         },
       );
-      if (res.error) {
+      if (res.needsPassword) {
+        // psycopg2 unavailable — ask user for the DB password to use psql
+        const pw = window.prompt(
+          `${res.reason || 'psycopg2 not available'}\n\nEnter the unencrypted PostgreSQL password:`,
+        );
+        if (pw) {
+          setActionLoading((prev) => { const next = { ...prev }; delete next[key]; return next; });
+          return handleAction(action, tableName, pw);
+        }
+        alert(`${action.toUpperCase()} cancelled — password required.`);
+      } else if (res.error) {
         alert(`${action.toUpperCase()} failed: ${res.error}`);
       } else {
         // Refresh table data
