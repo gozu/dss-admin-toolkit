@@ -8809,31 +8809,35 @@ def api_db_health_overview():
         warnings.append('Could not fetch table stats: %s' % _sanitize_pg_error(str(exc)))
 
     # Detect write access
+    _log = logging.getLogger(__name__)
     if _ensure_psycopg2():
         conn = None
         try:
             conn = _pg_direct_connect(connection_name)
             with conn.cursor() as cur:
                 try:
-                    cur.execute("SELECT current_setting('is_superuser')")
+                    cur.execute("SELECT current_user, current_setting('is_superuser')")
                     row = cur.fetchone()
-                    if row and row[0] == 'on':
+                    _log.info("[db-health] canWrite check: user=%s is_superuser=%s", row[0] if row else '?', row[1] if row else '?')
+                    if row and row[1] == 'on':
                         result['canWrite'] = True
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.warning("[db-health] canWrite superuser check failed: %s", exc)
                 if not result['canWrite']:
                     try:
                         cur.execute("SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER')")
                         row = cur.fetchone()
                         if row and row[0]:
                             result['canWrite'] = True
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as exc:
+                        _log.info("[db-health] pg_maintain check failed (expected on PG<15): %s", exc)
+        except Exception as exc:
+            _log.warning("[db-health] canWrite detection failed (psycopg2 connect): %s", exc)
         finally:
             if conn:
                 conn.close()
+    else:
+        _log.warning("[db-health] psycopg2 not available, canWrite=False")
 
     result['warnings'] = warnings
     return jsonify(result)
