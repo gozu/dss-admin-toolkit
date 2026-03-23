@@ -894,6 +894,7 @@ interface CampaignPanelProps {
   onUnexempt?: (entityKey: string) => void;
   isEntityExempt?: (entityKey: string) => boolean;
   alwaysExpanded?: boolean;
+  hideProjects?: boolean;
   hideCodeEnvs?: boolean;
   hideObjects?: boolean;
 }
@@ -914,6 +915,7 @@ function CampaignPanel({
   onUnexempt,
   isEntityExempt,
   alwaysExpanded,
+  hideProjects,
   hideCodeEnvs,
   hideObjects,
 }: CampaignPanelProps) {
@@ -1015,7 +1017,7 @@ function CampaignPanel({
                   <th className="w-10"></th>
                   <th>Owner</th>
                   <th>Email</th>
-                  <th className="text-right">Projects</th>
+                  {!hideProjects && <th className="text-right">Projects</th>}
                   {!hideCodeEnvs && <th className="text-right">Code Envs</th>}
                   {!hideObjects && <th className="text-right">Objects</th>}
                   {onExempt && <th className="w-24 text-right">Exempt</th>}
@@ -1050,7 +1052,7 @@ function CampaignPanel({
                         <td className="font-mono text-xs text-[var(--text-secondary)]">
                           {recipient.email}
                         </td>
-                        <td className="text-right font-mono">{recipient.projectKeys.length}</td>
+                        {!hideProjects && <td className="text-right font-mono">{recipient.projectKeys.length}</td>}
                         {!hideCodeEnvs && <td className="text-right font-mono">{recipient.codeEnvNames.length}</td>}
                         {!hideObjects && <td className="text-right font-mono">{recipient.usageDetails.length}</td>}
                         {onExempt && (
@@ -1071,7 +1073,7 @@ function CampaignPanel({
                               className={exempt ? 'bg-green-500/10' : ''}
                             >
                               <td></td>
-                              <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-8 text-sm">
+                              <td colSpan={5 - (hideProjects ? 1 : 0) - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-8 text-sm">
                                 <span className="text-[var(--text-primary)]">{sin.label}</span>
                                 {sin.details && (
                                   <span className="ml-2 text-xs text-[var(--text-muted)]">
@@ -1102,7 +1104,7 @@ function CampaignPanel({
                             {sin.children?.map((child) => (
                               <tr key={`${recipient.recipientKey}:${sin.key}:${child}`}>
                                 <td></td>
-                                <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-14 text-xs text-[var(--text-muted)]">
+                                <td colSpan={5 - (hideProjects ? 1 : 0) - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-14 text-xs text-[var(--text-muted)]">
                                   {child}
                                 </td>
                                 {onExempt && onUnexempt && <td></td>}
@@ -1426,11 +1428,13 @@ export function ToolsView() {
     fetchJson<{ projects: Array<{ projectKey: string; name: string; owner: string; daysInactive: number }> }>(
       '/api/tools/inactive-projects'
     ).then((res) => {
+      const emails = new Map<string, string>();
+      for (const u of parsedData.users || []) if (u?.login) emails.set(String(u.login), String(u.email || u.login));
       const recipientsMap = new Map<string, OutreachRecipient>();
       for (const p of res.projects) {
         const owner = p.owner || 'Unknown';
         if (!recipientsMap.has(owner)) {
-          recipientsMap.set(owner, makeRecipient(owner, new Map()));
+          recipientsMap.set(owner, makeRecipient(owner, emails));
         }
         const r = recipientsMap.get(owner)!;
         r.projectKeys.push(p.projectKey);
@@ -1964,8 +1968,9 @@ export function ToolsView() {
                                 isEntityExempt(selectedConfig.id, entityKey)
                               }
                               alwaysExpanded
+                              hideProjects={selectedConfig.id === 'unused_code_env'}
                               hideCodeEnvs={selectedConfig.id === 'inactive_project'}
-                              hideObjects={selectedConfig.id === 'inactive_project'}
+                              hideObjects={selectedConfig.id === 'inactive_project' || selectedConfig.id === 'unused_code_env'}
                             />
                           );
                         })()}
