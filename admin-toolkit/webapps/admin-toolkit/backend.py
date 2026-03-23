@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zipfile
@@ -8661,19 +8662,19 @@ def api_settings_threshold_defaults():
 
 # ── DB Health ──
 
-_PG_DRIVER = None  # 'psycopg2' | 'psycopg' | None
+_PG_DRIVER = None  # 'psycopg2' | None
 _PG_DRIVER_CHECKED = False
 _dbhealth_log = logging.getLogger(__name__)
 
 
 def _ensure_pg_driver():
-    """Try to get a Python PG driver: psycopg2, psycopg, or auto-install."""
+    """Try to get psycopg2, or auto-install it."""
     global _PG_DRIVER, _PG_DRIVER_CHECKED
     if _PG_DRIVER_CHECKED:
         return _PG_DRIVER
     _PG_DRIVER_CHECKED = True
 
-    # 1. Try psycopg2 (most common)
+    # 1. Try psycopg2 (already installed)
     try:
         import psycopg2  # noqa: F401
         _PG_DRIVER = 'psycopg2'
@@ -8682,64 +8683,74 @@ def _ensure_pg_driver():
     except ImportError:
         pass
 
-    # 2. Try psycopg (v3, pure-python option)
-    try:
-        import psycopg  # noqa: F401
-        _PG_DRIVER = 'psycopg'
-        _dbhealth_log.info("[db-health] Driver: psycopg (already installed)")
-        return _PG_DRIVER
-    except ImportError:
-        pass
-
-    # 3. Try pip install with multiple strategies
+    # 2. Try pip install with multiple strategies to dodge permission issues (AlmaLinux 9 / RHEL 9)
+    _tmp_target = os.path.join(tempfile.gettempdir(), 'dku_psycopg2')
+    _datadir_target = os.path.join(os.environ.get('DIP_HOME', '/tmp'), 'lib', 'python', 'psycopg2')
     install_attempts = [
+        # default site-packages
         [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet'],
+        # user home (~/.local/lib/...)
         [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--user'],
+        # bypass PEP 668 externally-managed-environment (RHEL 9 / AlmaLinux 9)
         [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--break-system-packages'],
-        [sys.executable, '-m', 'pip', 'install', 'psycopg[binary]', '--quiet'],
-        [sys.executable, '-m', 'pip', 'install', 'psycopg[binary]', '--quiet', '--user'],
+        # into /tmp writable target
+        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _tmp_target],
+        # into DIP_HOME lib dir
+        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _datadir_target],
+        # into virtualenv prefix if we're inside one
+        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--prefix', sys.prefix],
     ]
     for cmd in install_attempts:
         try:
             subprocess.check_call(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60)
-            # Check which one is now importable
+            # --target installs need the path on sys.path before import works
+            for tgt in (_tmp_target, _datadir_target):
+                if tgt not in sys.path and os.path.isdir(tgt):
+                    sys.path.insert(0, tgt)
             try:
                 import psycopg2  # noqa: F401
                 _PG_DRIVER = 'psycopg2'
-                _dbhealth_log.info("[db-health] Driver: psycopg2 (installed via %s)", ' '.join(cmd[-2:]))
-                return _PG_DRIVER
-            except ImportError:
-                pass
-            try:
-                import psycopg  # noqa: F401
-                _PG_DRIVER = 'psycopg'
-                _dbhealth_log.info("[db-health] Driver: psycopg (installed via %s)", ' '.join(cmd[-2:]))
+                _dbhealth_log.info("[db-health] Driver: psycopg2 (installed via %s)", ' '.join(cmd))
                 return _PG_DRIVER
             except ImportError:
                 pass
         except Exception:
             pass
 
-    # 4. Try adding common site-packages paths and re-importing
+    # 3. Try adding common site-packages paths and re-importing
+    _pyver_short = sys.version[:3]
+    _pyver_tuple = '%d.%d' % sys.version_info[:2]
     for extra_path in [
+        # Debian/Ubuntu style
         '/usr/lib/python3/dist-packages',
         '/usr/local/lib/python3/dist-packages',
-        os.path.expanduser('~/.local/lib/python3/dist-packages'),
-        os.path.join(sys.prefix, 'lib', 'python%s' % sys.version[:3], 'site-packages'),
-        os.path.join(sys.prefix, 'lib', 'python%d.%d' % sys.version_info[:2], 'site-packages'),
+        # RHEL/AlmaLinux 9 style
+        '/usr/lib64/python%s/site-packages' % _pyver_tuple,
+        '/usr/lib/python%s/site-packages' % _pyver_tuple,
+        '/usr/local/lib64/python%s/site-packages' % _pyver_tuple,
+        '/usr/local/lib/python%s/site-packages' % _pyver_tuple,
+        # user installs
+        os.path.expanduser('~/.local/lib/python%s/site-packages' % _pyver_tuple),
+        os.path.expanduser('~/.local/lib64/python%s/site-packages' % _pyver_tuple),
+        # virtualenv / DSS prefix
+        os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_short, 'site-packages'),
+        os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_tuple, 'site-packages'),
+        os.path.join(sys.prefix, 'lib64', 'python%s' % _pyver_tuple, 'site-packages'),
+        # our --target directories
+        _tmp_target,
+        _datadir_target,
     ]:
         if extra_path not in sys.path and os.path.isdir(extra_path):
             sys.path.insert(0, extra_path)
-            for mod_name in ('psycopg2', 'psycopg'):
-                try:
-                    __import__(mod_name)
-                    _PG_DRIVER = mod_name
-                    _dbhealth_log.info("[db-health] Driver: %s (found at %s)", mod_name, extra_path)
-                    return _PG_DRIVER
-                except ImportError:
-                    pass
+            try:
+                __import__('psycopg2')
+                _PG_DRIVER = 'psycopg2'
+                _dbhealth_log.info("[db-health] Driver: psycopg2 (found at %s)", extra_path)
+                return _PG_DRIVER
+            except ImportError:
+                pass
 
-    _dbhealth_log.warning("[db-health] No PG driver available — pip install failed. VACUUM requires psql CLI fallback.")
+    _dbhealth_log.warning("[db-health] No PG driver available — pip install failed. Will need user-provided password for psql fallback.")
     _PG_DRIVER = None
     return _PG_DRIVER
 
@@ -8759,7 +8770,7 @@ def _get_pg_conn_params(connection_name: str) -> dict:
 
 
 def _pg_direct_connect(connection_name: str):
-    """Get a PG connection with autocommit using whatever driver is available."""
+    """Get a PG connection with autocommit using psycopg2."""
     p = _get_pg_conn_params(connection_name)
     driver = _ensure_pg_driver()
     if driver == 'psycopg2':
@@ -8771,56 +8782,51 @@ def _pg_direct_connect(connection_name: str):
         )
         conn.autocommit = True
         return conn
-    elif driver == 'psycopg':
-        import psycopg
-        conn = psycopg.connect(
-            host=p['host'], port=p['port'], dbname=p['dbname'],
-            user=p['user'], password=p['password'],
-            autocommit=True,
-        )
-        return conn
     raise ImportError("No PG driver available")
 
 
-def _pg_exec_ddl(connection_name: str, sql_template: str, table_name: str):
+def _pg_exec_ddl(connection_name: str, sql_template: str, table_name: str, user_password: str = ''):
     """Execute a DDL-like statement (VACUUM/ANALYZE) that needs autocommit.
-    Tries: 1) Python PG driver, 2) psql CLI subprocess."""
-    driver = _ensure_pg_driver()
-
-    # Strategy 1: Python driver with autocommit
-    if driver:
-        conn = _pg_direct_connect(connection_name)
-        try:
-            if driver == 'psycopg2':
-                import psycopg2.sql as psql
-                with conn.cursor() as cur:
-                    cur.execute(psql.SQL(sql_template).format(psql.Identifier(table_name)))
-            else:
-                import psycopg.sql as psql
-                with conn.cursor() as cur:
-                    cur.execute(psql.SQL(sql_template).format(psql.Identifier(table_name)))
-            return {'success': True, 'method': driver}
-        finally:
-            conn.close()
-
-    # Strategy 2: psql CLI — needs no Python driver at all
-    p = _get_pg_conn_params(connection_name)
-    # Build safe SQL — quote the identifier ourselves
+    Tries: 1) psycopg2 with autocommit, 2) psql CLI with user-provided password.
+    If psycopg2 is not available and no password is provided, returns needsPassword."""
     safe_table = '"%s"' % table_name.replace('"', '""')
     full_sql = sql_template.replace('{}', safe_table)
-    env = dict(os.environ, PGPASSWORD=p['password'] or '')
-    psql_cmd = [
-        'psql', '-h', str(p['host']), '-p', str(p['port']),
-        '-U', p['user'], '-d', p['dbname'],
-        '-c', full_sql,
-    ]
+    p = _get_pg_conn_params(connection_name)
+    errors = []
+
+    # Strategy 1: psycopg2 with autocommit
+    driver = _ensure_pg_driver()
+    if driver:
+        try:
+            conn = _pg_direct_connect(connection_name)
+            try:
+                import psycopg2.sql as pg2sql
+                with conn.cursor() as cur:
+                    cur.execute(pg2sql.SQL(sql_template).format(pg2sql.Identifier(table_name)))
+                return {'success': True, 'method': driver}
+            finally:
+                conn.close()
+        except Exception as exc:
+            errors.append('%s: %s' % (driver, str(exc)))
+
+    # Strategy 2: psql CLI with user-provided password
+    if not user_password:
+        return {'needsPassword': True, 'reason': 'psycopg2 not available — please provide the database password to use psql'}
+
     try:
-        result = subprocess.run(psql_cmd, env=env, capture_output=True, text=True, timeout=120)
+        psql_cmd = ['psql', '-h', str(p['host']), '-p', str(p['port']),
+                    '-U', p['user'], '-d', p['dbname'], '-c', full_sql]
+        result = subprocess.run(psql_cmd, env=dict(os.environ, PGPASSWORD=user_password),
+                                capture_output=True, text=True, timeout=120)
         if result.returncode == 0:
             return {'success': True, 'method': 'psql'}
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'psql failed')
+        errors.append('psql: %s' % (result.stderr.strip() or result.stdout.strip())[:200])
     except FileNotFoundError:
-        raise RuntimeError("No PG driver and psql CLI not found. Install psycopg2-binary or ensure psql is on PATH.")
+        errors.append('psql: not found on this server')
+    except Exception as exc:
+        errors.append('psql: %s' % str(exc))
+
+    raise RuntimeError('All methods failed: ' + '; '.join(errors))
 
 
 def _list_pg_connections() -> list:
@@ -8869,44 +8875,27 @@ def _validate_pg_connection(connection_name: str):
     return None
 
 
-def _pg_query_rows(connection_name: str, sql: str):
-    """Execute a read query. Tries: 1) Python PG driver, 2) psql CLI."""
-    # Strategy 1: Python PG driver
-    if _ensure_pg_driver():
-        conn = _pg_direct_connect(connection_name)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql)
-                cols = [d[0] for d in cur.description]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
-        finally:
-            conn.close()
+_ACTUAL_READ_METHOD = {}  # tracks what actually worked per connection
 
-    # Strategy 2: psql CLI
-    p = _get_pg_conn_params(connection_name)
-    env = dict(os.environ, PGPASSWORD=p['password'] or '')
-    psql_cmd = [
-        'psql', '-h', str(p['host']), '-p', str(p['port']),
-        '-U', p['user'], '-d', p['dbname'],
-        '-F', '\t', '--no-align', '-c', sql,
-    ]
-    try:
-        result = subprocess.run(psql_cmd, env=env, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or 'psql query failed')
-        all_lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
-        if len(all_lines) < 2:
-            return []
-        headers = all_lines[0].split('\t')
-        rows = []
-        for line in all_lines[1:]:
-            if line.startswith('(') and line.endswith(')'):
-                continue  # skip row count line
-            vals = line.split('\t')
-            rows.append(dict(zip(headers, vals)))
-        return rows
-    except FileNotFoundError:
-        raise RuntimeError("No PG driver available and psql CLI not found. Install psycopg2-binary or ensure psql is on PATH.")
+
+def _pg_query_rows(connection_name: str, sql: str):
+    """Execute a read query using psycopg2."""
+    driver = _ensure_pg_driver()
+    if driver:
+        try:
+            conn = _pg_direct_connect(connection_name)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    cols = [d[0] for d in cur.description]
+                    _ACTUAL_READ_METHOD[connection_name] = driver
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception as exc:
+            raise RuntimeError("psycopg2 query failed: %s" % exc)
+
+    raise RuntimeError("psycopg2 not available for connection %s" % connection_name)
 
 
 @app.route('/api/tools/db-health/connections')
@@ -8927,7 +8916,7 @@ def api_db_health_overview():
     result = {
         'dbSize': '', 'dbSizeBytes': 0, 'version': '',
         'tableCount': 0, 'totalDeadTuples': 0, 'totalLiveTuples': 0,
-        'canWrite': False, 'queryMethod': _ensure_pg_driver() or ('psql' if subprocess.run(['which', 'psql'], capture_output=True).returncode == 0 else 'none'),
+        'canWrite': False, 'queryMethod': _ensure_pg_driver() or 'none',
         'warnings': warnings,
     }
     try:
@@ -9126,7 +9115,8 @@ def api_db_health_vacuum():
         return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
 
     try:
-        result = _pg_exec_ddl(connection_name, "VACUUM {}", table_name)
+        user_password = body.get('password', '')
+        result = _pg_exec_ddl(connection_name, "VACUUM {}", table_name, user_password=user_password)
         return jsonify(result)
     except Exception as exc:
         return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
@@ -9153,17 +9143,9 @@ def api_db_health_analyze():
     except Exception as exc:
         return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
 
-    # Try _pg_exec_ddl first (psycopg2/psycopg/psql), then SQLExecutor2 fallback
     try:
-        result = _pg_exec_ddl(connection_name, "ANALYZE {}", table_name)
+        user_password = body.get('password', '')
+        result = _pg_exec_ddl(connection_name, "ANALYZE {}", table_name, user_password=user_password)
         return jsonify(result)
-    except Exception:
-        pass
-    # ANALYZE can work in a transaction, so SQLExecutor2 is a valid fallback
-    try:
-        from dataiku.core.sql import SQLExecutor2
-        ex = SQLExecutor2(connection=connection_name)
-        ex.query_to_df('ANALYZE "%s"' % table_name.replace('"', '""'))
-        return jsonify({'success': True, 'method': 'SQLExecutor2'})
     except Exception as exc:
         return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
