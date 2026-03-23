@@ -16,13 +16,6 @@ export function ApiDirTreeSection() {
     }
   }, [loadRoot, scope, projectKey, state.isLoading]);
 
-  // Auto-load on mount — no button click required
-  useEffect(() => {
-    if (!state.tree && !state.isLoading && !state.error) {
-      loadRoot({ scope, projectKey });
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => () => {
     cancelPrefetch();
   }, [cancelPrefetch]);
@@ -86,7 +79,14 @@ export function ApiDirTreeSection() {
           <h3 className="text-lg font-semibold text-neon-subtle mb-4">
             Directory Space Analysis
           </h3>
-          <p className="text-sm text-[var(--text-muted)]">Loading directory tree from server (DSS Data Directory)...</p>
+          <p className="text-sm text-[var(--text-muted)] mb-4">Analyze disk usage of the DSS Data Directory.</p>
+          <button
+            onClick={handleLoad}
+            disabled={state.isLoading}
+            className="px-4 py-2 text-sm rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] text-[var(--text-secondary)] transition-colors disabled:opacity-60"
+          >
+            {state.isLoading ? 'Loading...' : 'Load Directory Tree'}
+          </button>
         </motion.div>
       </div>
     );
