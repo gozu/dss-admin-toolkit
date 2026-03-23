@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.191",
+    "version": "0.4.192",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -38,8 +38,9 @@
         {
             "name": "dbhealth_connection",
             "label": "RuntimeDB Connection",
-            "description": "PostgreSQL connection name for DB Health tool (typically 'runtimedb').",
-            "type": "STRING",
+            "description": "PostgreSQL connection for DB Health tool (typically 'runtimedb').",
+            "type": "CONNECTION",
+            "connectionType": "PostgreSQL",
             "mandatory": false,
             "defaultValue": ""
         },
