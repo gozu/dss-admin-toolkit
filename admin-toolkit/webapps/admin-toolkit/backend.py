@@ -8666,6 +8666,25 @@ _PG_DRIVER = None  # 'psycopg2' | None
 _PG_DRIVER_CHECKED = False
 _PG_DRIVER_LOG = []  # tracks every attempt for UI visibility
 _dbhealth_log = logging.getLogger(__name__)
+_DBHEALTH_CONFIG = None  # cached DbHealthConfig
+
+
+def _get_dbhealth_config():
+    """Get cached DB Health plugin config (connection name + password)."""
+    global _DBHEALTH_CONFIG
+    if _DBHEALTH_CONFIG is None:
+        try:
+            from db_adapter import load_dbhealth_config
+            _DBHEALTH_CONFIG = load_dbhealth_config()
+        except Exception:
+            from dataclasses import dataclass
+            from typing import Optional as Opt
+            @dataclass(frozen=True)
+            class _Fallback:
+                connection_name: Opt[str] = None
+                password: Opt[str] = None
+            _DBHEALTH_CONFIG = _Fallback()
+    return _DBHEALTH_CONFIG
 
 
 def _ensure_pg_driver():
@@ -8945,7 +8964,12 @@ def _pg_query_rows(connection_name: str, sql: str, user_password: str = ''):
 @app.route('/api/tools/db-health/connections')
 def api_db_health_connections():
     try:
-        return jsonify({'connections': _list_pg_connections()})
+        cfg = _get_dbhealth_config()
+        return jsonify({
+            'connections': _list_pg_connections(),
+            'configuredConnection': cfg.connection_name or '',
+            'hasConfiguredPassword': bool(cfg.password),
+        })
     except Exception as exc:
         return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
 
@@ -8953,7 +8977,7 @@ def api_db_health_connections():
 @app.route('/api/tools/db-health/overview')
 def api_db_health_overview():
     connection_name = request.args.get('connection', '')
-    user_password = request.args.get('password', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or '' or _get_dbhealth_config().password or ''
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
@@ -9030,7 +9054,7 @@ def api_db_health_overview():
 @app.route('/api/tools/db-health/tables')
 def api_db_health_tables():
     connection_name = request.args.get('connection', '')
-    user_password = request.args.get('password', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or ''
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
@@ -9067,7 +9091,7 @@ def api_db_health_tables():
 @app.route('/api/tools/db-health/per-project')
 def api_db_health_per_project():
     connection_name = request.args.get('connection', '')
-    user_password = request.args.get('password', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or ''
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
@@ -9171,7 +9195,7 @@ def api_db_health_vacuum():
     if not table_name:
         return jsonify({'error': 'Missing table parameter'}), 400
 
-    user_password = body.get('password', '')
+    user_password = body.get('password', '') or _get_dbhealth_config().password or ''
 
     # Whitelist: validate table name against pg_stat_user_tables
     try:
@@ -9202,7 +9226,7 @@ def api_db_health_analyze():
     if not table_name:
         return jsonify({'error': 'Missing table parameter'}), 400
 
-    user_password = body.get('password', '')
+    user_password = body.get('password', '') or _get_dbhealth_config().password or ''
 
     # Whitelist: validate table name against pg_stat_user_tables
     try:

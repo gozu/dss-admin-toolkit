@@ -137,12 +137,13 @@ export function DbHealthPage() {
   // Load connections on mount
   useEffect(() => {
     setConnLoading(true);
-    fetchJson<{ connections: PgConnection[] }>('/api/tools/db-health/connections')
+    fetchJson<{ connections: PgConnection[]; configuredConnection?: string; hasConfiguredPassword?: boolean }>('/api/tools/db-health/connections')
       .then((data) => {
         setConnections(data.connections || []);
         if (data.connections?.length) {
-          const runtimeDb = data.connections.find((c) => c.name.toLowerCase() === 'runtimedb');
-          setSelectedConn(runtimeDb ? runtimeDb.name : data.connections[0].name);
+          const configured = data.configuredConnection;
+          const match = configured && data.connections.find((c) => c.name === configured);
+          setSelectedConn(match ? match.name : data.connections[0].name);
         }
         setConnError(null);
       })
