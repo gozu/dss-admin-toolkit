@@ -4124,10 +4124,6 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
 
     if not children and not details:
         file_count = max(file_count, 1)
-    if not children and locations:
-        # Some DSS footprint leaves only expose "locations". We mark them expandable
-        # and lazily expand through filesystem views on demand.
-        has_hidden = True
 
     return {
         'name': name,
