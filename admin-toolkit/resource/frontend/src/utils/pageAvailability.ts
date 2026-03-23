@@ -29,6 +29,7 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return hasInactiveProjectsCache() ? 'ready' : 'loading';
     case 'plugins': // PluginComparator fetches its own data
     case 'directory': // manual-only, loads on user action
+    case 'db-health': // self-fetching, queries PG directly
       return 'independent';
 
     // Compliance depends on outreach data — mirrors outreach states

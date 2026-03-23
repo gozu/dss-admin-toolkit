@@ -728,6 +728,7 @@ export type PageId =
   | 'plugins'
   | 'tracking'
   | 'report'
+  | 'db-health'
   | 'settings';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
