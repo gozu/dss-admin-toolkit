@@ -409,7 +409,7 @@ export function DbHealthPage() {
                         <button
                           onClick={() => handleAction('vacuum', t.name)}
                           disabled={!overview?.canWrite || !!actionLoading[`vacuum-${t.name}`]}
-                          title={overview?.canWrite ? `Run VACUUM on ${t.name}` : 'No write access on this connection'}
+                          title={!overview?.canWrite ? 'No write access on this connection' : overview?.queryMethod === 'SQLExecutor2' ? 'VACUUM may fail via SQLExecutor2 (needs psycopg2 for autocommit)' : `Run VACUUM on ${t.name}`}
                           className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           {actionLoading[`vacuum-${t.name}`] ? '...' : 'VACUUM'}
