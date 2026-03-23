@@ -6973,7 +6973,7 @@ def api_tools_email_preview():
             'to': to_email,
             'projectKeys': project_keys,
             'codeEnvNames': code_env_names,
-            'projectKeyForSend': recipient.get('projectKeyForSend') or (project_keys[0] if project_keys else None),
+            'projectKeyForSend': recipient.get('projectKeyForSend') or (project_keys[0] if project_keys else None) or os.environ.get('DKU_CURRENT_PROJECT_KEY', ''),
             'objectCount': len(usage_details),
             'subject': _render_template_text(subject_template, variables),
             'body': body_html,
@@ -7074,6 +7074,8 @@ def api_tools_email_send():
         recipient_key = str(preview.get('recipientKey') or '')
         to_email = str(preview.get('to') or '').strip()
         project_key = str(preview.get('projectKeyForSend') or '').strip()
+        if not project_key:
+            project_key = os.environ.get('DKU_CURRENT_PROJECT_KEY', '')
         subject = str(preview.get('subject') or '').strip()
         body = str(preview.get('body') or '')
 
