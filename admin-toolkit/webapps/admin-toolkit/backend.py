@@ -8664,45 +8664,44 @@ def api_settings_threshold_defaults():
 
 _PG_DRIVER = None  # 'psycopg2' | None
 _PG_DRIVER_CHECKED = False
+_PG_DRIVER_LOG = []  # tracks every attempt for UI visibility
 _dbhealth_log = logging.getLogger(__name__)
 
 
 def _ensure_pg_driver():
-    """Try to get psycopg2, or auto-install it."""
+    """Try to get psycopg2, or auto-install it. Logs every attempt to _PG_DRIVER_LOG."""
     global _PG_DRIVER, _PG_DRIVER_CHECKED
     if _PG_DRIVER_CHECKED:
         return _PG_DRIVER
     _PG_DRIVER_CHECKED = True
+    log = _PG_DRIVER_LOG
 
     # 1. Try psycopg2 (already installed)
     try:
         import psycopg2  # noqa: F401
         _PG_DRIVER = 'psycopg2'
-        _dbhealth_log.info("[db-health] Driver: psycopg2 (already installed)")
+        log.append('[OK] psycopg2 already installed')
         return _PG_DRIVER
-    except ImportError:
-        pass
+    except ImportError as exc:
+        log.append('[FAIL] import psycopg2: %s' % exc)
 
     # 2. Try pip install with multiple strategies to dodge permission issues (AlmaLinux 9 / RHEL 9)
     _tmp_target = os.path.join(tempfile.gettempdir(), 'dku_psycopg2')
     _datadir_target = os.path.join(os.environ.get('DIP_HOME', '/tmp'), 'lib', 'python', 'psycopg2')
     install_attempts = [
-        # default site-packages
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet'],
-        # user home (~/.local/lib/...)
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--user'],
-        # bypass PEP 668 externally-managed-environment (RHEL 9 / AlmaLinux 9)
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--break-system-packages'],
-        # into /tmp writable target
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _tmp_target],
-        # into DIP_HOME lib dir
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _datadir_target],
-        # into virtualenv prefix if we're inside one
-        [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--prefix', sys.prefix],
+        ('pip install (default)', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet']),
+        ('pip install --user', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--user']),
+        ('pip install --break-system-packages', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--break-system-packages']),
+        ('pip install --target %s' % _tmp_target, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _tmp_target]),
+        ('pip install --target %s' % _datadir_target, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _datadir_target]),
+        ('pip install --prefix %s' % sys.prefix, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--prefix', sys.prefix]),
     ]
-    for cmd in install_attempts:
+    for label, cmd in install_attempts:
         try:
-            subprocess.check_call(cmd, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                log.append('[FAIL] %s: %s' % (label, (result.stderr.strip() or 'exit %d' % result.returncode)[:150]))
+                continue
             # --target installs need the path on sys.path before import works
             for tgt in (_tmp_target, _datadir_target):
                 if tgt not in sys.path and os.path.isdir(tgt):
@@ -8710,47 +8709,47 @@ def _ensure_pg_driver():
             try:
                 import psycopg2  # noqa: F401
                 _PG_DRIVER = 'psycopg2'
-                _dbhealth_log.info("[db-health] Driver: psycopg2 (installed via %s)", ' '.join(cmd))
+                log.append('[OK] %s — import succeeded' % label)
                 return _PG_DRIVER
-            except ImportError:
-                pass
-        except Exception:
-            pass
+            except ImportError as exc:
+                log.append('[FAIL] %s — pip succeeded but import failed: %s' % (label, exc))
+        except Exception as exc:
+            log.append('[FAIL] %s: %s' % (label, str(exc)[:150]))
 
     # 3. Try adding common site-packages paths and re-importing
     _pyver_short = sys.version[:3]
     _pyver_tuple = '%d.%d' % sys.version_info[:2]
     for extra_path in [
-        # Debian/Ubuntu style
         '/usr/lib/python3/dist-packages',
         '/usr/local/lib/python3/dist-packages',
-        # RHEL/AlmaLinux 9 style
         '/usr/lib64/python%s/site-packages' % _pyver_tuple,
         '/usr/lib/python%s/site-packages' % _pyver_tuple,
         '/usr/local/lib64/python%s/site-packages' % _pyver_tuple,
         '/usr/local/lib/python%s/site-packages' % _pyver_tuple,
-        # user installs
         os.path.expanduser('~/.local/lib/python%s/site-packages' % _pyver_tuple),
         os.path.expanduser('~/.local/lib64/python%s/site-packages' % _pyver_tuple),
-        # virtualenv / DSS prefix
         os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_short, 'site-packages'),
         os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_tuple, 'site-packages'),
         os.path.join(sys.prefix, 'lib64', 'python%s' % _pyver_tuple, 'site-packages'),
-        # our --target directories
         _tmp_target,
         _datadir_target,
     ]:
-        if extra_path not in sys.path and os.path.isdir(extra_path):
-            sys.path.insert(0, extra_path)
-            try:
-                __import__('psycopg2')
-                _PG_DRIVER = 'psycopg2'
-                _dbhealth_log.info("[db-health] Driver: psycopg2 (found at %s)", extra_path)
-                return _PG_DRIVER
-            except ImportError:
-                pass
+        if not os.path.isdir(extra_path):
+            log.append('[SKIP] path probe %s — not a directory' % extra_path)
+            continue
+        if extra_path in sys.path:
+            log.append('[SKIP] path probe %s — already in sys.path' % extra_path)
+            continue
+        sys.path.insert(0, extra_path)
+        try:
+            __import__('psycopg2')
+            _PG_DRIVER = 'psycopg2'
+            log.append('[OK] path probe %s — import succeeded' % extra_path)
+            return _PG_DRIVER
+        except ImportError as exc:
+            log.append('[FAIL] path probe %s: %s' % (extra_path, exc))
 
-    _dbhealth_log.warning("[db-health] No PG driver available — pip install failed. Will need user-provided password for psql fallback.")
+    log.append('[RESULT] All attempts failed — will need user-provided password for psql fallback')
     _PG_DRIVER = None
     return _PG_DRIVER
 
@@ -8878,8 +8877,8 @@ def _validate_pg_connection(connection_name: str):
 _ACTUAL_READ_METHOD = {}  # tracks what actually worked per connection
 
 
-def _pg_query_rows(connection_name: str, sql: str):
-    """Execute a read query using psycopg2."""
+def _pg_query_rows(connection_name: str, sql: str, user_password: str = ''):
+    """Execute a read query. Tries psycopg2, then psql with user-provided password."""
     driver = _ensure_pg_driver()
     if driver:
         try:
@@ -8895,7 +8894,39 @@ def _pg_query_rows(connection_name: str, sql: str):
         except Exception as exc:
             raise RuntimeError("psycopg2 query failed: %s" % exc)
 
-    raise RuntimeError("psycopg2 not available for connection %s" % connection_name)
+    # psycopg2 not available — try psql with user-provided password
+    if not user_password:
+        raise RuntimeError("psycopg2 not available — password required for psql fallback")
+    p = _get_pg_conn_params(connection_name)
+    psql_cmd = [
+        'psql', '-h', str(p['host']), '-p', str(p['port']),
+        '-U', p['user'], '-d', p['dbname'],
+        '-F', '\t', '--no-align', '-c', sql,
+    ]
+    try:
+        result = subprocess.run(psql_cmd, env=dict(os.environ, PGPASSWORD=user_password),
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError("psql: %s" % (result.stderr.strip() or 'exit %d' % result.returncode)[:200])
+        all_lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
+        if len(all_lines) < 2:
+            _ACTUAL_READ_METHOD[connection_name] = 'psql'
+            return []
+        headers = all_lines[0].split('\t')
+        rows = []
+        for line in all_lines[1:]:
+            if line.startswith('(') and line.endswith(')'):
+                continue
+            vals = line.split('\t')
+            rows.append(dict(zip(headers, vals)))
+        _ACTUAL_READ_METHOD[connection_name] = 'psql'
+        return rows
+    except FileNotFoundError:
+        raise RuntimeError("psql CLI not found on this server")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("psql failed: %s" % exc)
 
 
 @app.route('/api/tools/db-health/connections')
@@ -8909,21 +8940,35 @@ def api_db_health_connections():
 @app.route('/api/tools/db-health/overview')
 def api_db_health_overview():
     connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '')
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
+
+    driver = _ensure_pg_driver()
+    # If no driver and no password provided, tell frontend to ask the user
+    if not driver and not user_password:
+        return jsonify({
+            'needsPassword': True,
+            'driverLog': list(_PG_DRIVER_LOG),
+            'reason': 'psycopg2 not available — please provide the database password to use psql',
+        })
+
     warnings = []
+    query_method = driver or ('psql' if user_password else 'none')
     result = {
         'dbSize': '', 'dbSizeBytes': 0, 'version': '',
         'tableCount': 0, 'totalDeadTuples': 0, 'totalLiveTuples': 0,
-        'canWrite': False, 'queryMethod': _ensure_pg_driver() or 'none',
+        'canWrite': False, 'queryMethod': query_method,
+        'driverLog': list(_PG_DRIVER_LOG),
         'warnings': warnings,
     }
     try:
         rows = _pg_query_rows(connection_name,
             "SELECT pg_size_pretty(pg_database_size(current_database())) as db_size,"
             " pg_database_size(current_database()) as db_size_bytes,"
-            " current_setting('server_version') as version")
+            " current_setting('server_version') as version",
+            user_password=user_password)
         if rows:
             result['dbSize'] = str(rows[0].get('db_size', ''))
             result['dbSizeBytes'] = int(rows[0].get('db_size_bytes', 0))
@@ -8935,7 +8980,8 @@ def api_db_health_overview():
         rows = _pg_query_rows(connection_name,
             "SELECT count(*) as table_count, coalesce(sum(n_dead_tup),0) as total_dead,"
             " coalesce(sum(n_live_tup),0) as total_live"
-            " FROM pg_stat_user_tables")
+            " FROM pg_stat_user_tables",
+            user_password=user_password)
         if rows:
             result['tableCount'] = int(rows[0].get('table_count', 0))
             result['totalDeadTuples'] = int(rows[0].get('total_dead', 0))
@@ -8946,7 +8992,8 @@ def api_db_health_overview():
     # Detect write access — use same query path that already works for reads
     try:
         write_rows = _pg_query_rows(connection_name,
-            "SELECT current_user as cu, current_setting('is_superuser') as su")
+            "SELECT current_user as cu, current_setting('is_superuser') as su",
+            user_password=user_password)
         if write_rows:
             cu = write_rows[0].get('cu', '')
             su = write_rows[0].get('su', '')
@@ -8955,7 +9002,8 @@ def api_db_health_overview():
         if not result['canWrite']:
             try:
                 maint_rows = _pg_query_rows(connection_name,
-                    "SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER') as m")
+                    "SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER') as m",
+                    user_password=user_password)
                 if maint_rows and maint_rows[0].get('m'):
                     result['canWrite'] = True
             except Exception:
@@ -8970,6 +9018,7 @@ def api_db_health_overview():
 @app.route('/api/tools/db-health/tables')
 def api_db_health_tables():
     connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '')
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
@@ -8984,7 +9033,8 @@ def api_db_health_tables():
             "      THEN round(n_dead_tup::numeric / (n_live_tup + n_dead_tup), 4)"
             "      ELSE 0 END as bloat_ratio,"
             " last_vacuum, last_autovacuum, last_analyze"
-            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC",
+            user_password=user_password)
         for r in rows:
             tables.append({
                 'name': str(r.get('relname', '')),
@@ -9005,6 +9055,7 @@ def api_db_health_tables():
 @app.route('/api/tools/db-health/per-project')
 def api_db_health_per_project():
     connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '')
     validation = _validate_pg_connection(connection_name)
     if validation:
         return validation
@@ -9014,14 +9065,16 @@ def api_db_health_per_project():
         # Detect RuntimeDB by checking for known tables
         detect_rows = _pg_query_rows(connection_name,
             "SELECT count(*) as cnt FROM pg_tables"
-            " WHERE schemaname='public' AND lower(tablename) IN ('dss_metadata', 'scenario_runs', 'job')")
+            " WHERE schemaname='public' AND lower(tablename) IN ('dss_metadata', 'scenario_runs', 'job')",
+            user_password=user_password)
         is_runtime = detect_rows and int(detect_rows[0].get('cnt', 0)) >= 2
         result['isRuntimeDb'] = is_runtime
 
         # Get all tables with sizes
         table_rows = _pg_query_rows(connection_name,
             "SELECT relname, pg_total_relation_size(relid) as size_bytes, n_live_tup"
-            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC",
+            user_password=user_password)
 
         if not is_runtime:
             # Not RuntimeDB — all tables go to system bucket
@@ -9043,7 +9096,8 @@ def api_db_health_per_project():
         col_rows = _pg_query_rows(connection_name,
             "SELECT table_name, column_name FROM information_schema.columns"
             " WHERE table_schema='public'"
-            " AND (column_name ILIKE '%%projectkey%%' OR column_name ILIKE '%%project_key%%')")
+            " AND (column_name ILIKE '%%projectkey%%' OR column_name ILIKE '%%project_key%%')",
+            user_password=user_password)
         table_project_col = {}
         for r in col_rows:
             tname = str(r.get('table_name', ''))
@@ -9068,7 +9122,8 @@ def api_db_health_per_project():
             try:
                 proj_rows = _pg_query_rows(connection_name,
                     "SELECT \"%s\" as pkey, count(*) as cnt FROM \"%s\" GROUP BY \"%s\""
-                    % (lookup['column'], lookup['table'], lookup['column']))
+                    % (lookup['column'], lookup['table'], lookup['column']),
+                    user_password=user_password)
                 total_rows = sum(int(pr.get('cnt', 0)) for pr in proj_rows)
                 for pr in proj_rows:
                     pkey = str(pr.get('pkey', '') or 'Unknown')
@@ -9104,10 +9159,13 @@ def api_db_health_vacuum():
     if not table_name:
         return jsonify({'error': 'Missing table parameter'}), 400
 
+    user_password = body.get('password', '')
+
     # Whitelist: validate table name against pg_stat_user_tables
     try:
         valid_tables = _pg_query_rows(connection_name,
-            "SELECT relname FROM pg_stat_user_tables")
+            "SELECT relname FROM pg_stat_user_tables",
+            user_password=user_password)
         valid_names = {str(r.get('relname', '')) for r in valid_tables}
         if table_name not in valid_names:
             return jsonify({'error': 'Invalid table name'}), 400
@@ -9115,7 +9173,6 @@ def api_db_health_vacuum():
         return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
 
     try:
-        user_password = body.get('password', '')
         result = _pg_exec_ddl(connection_name, "VACUUM {}", table_name, user_password=user_password)
         return jsonify(result)
     except Exception as exc:
@@ -9133,10 +9190,13 @@ def api_db_health_analyze():
     if not table_name:
         return jsonify({'error': 'Missing table parameter'}), 400
 
+    user_password = body.get('password', '')
+
     # Whitelist: validate table name against pg_stat_user_tables
     try:
         valid_tables = _pg_query_rows(connection_name,
-            "SELECT relname FROM pg_stat_user_tables")
+            "SELECT relname FROM pg_stat_user_tables",
+            user_password=user_password)
         valid_names = {str(r.get('relname', '')) for r in valid_tables}
         if table_name not in valid_names:
             return jsonify({'error': 'Invalid table name'}), 400
@@ -9144,7 +9204,6 @@ def api_db_health_analyze():
         return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
 
     try:
-        user_password = body.get('password', '')
         result = _pg_exec_ddl(connection_name, "ANALYZE {}", table_name, user_password=user_password)
         return jsonify(result)
     except Exception as exc:
