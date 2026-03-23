@@ -179,7 +179,6 @@ export function DbHealthPage() {
 
   // Password state (for psql fallback when psycopg2 unavailable)
   const [dbPassword, setDbPassword] = useState<string>('');
-  const [driverLog, setDriverLog] = useState<string[]>([]);
 
   // Action state
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({});
@@ -217,12 +216,9 @@ export function DbHealthPage() {
     // First check overview — it may return needsPassword
     fetchJson<DbOverview>(`/api/tools/db-health/overview?connection=${q}${pw}`)
       .then((ov) => {
-        if (ov.driverLog) setDriverLog(ov.driverLog);
         if (ov.needsPassword) {
           const userPw = window.prompt(
-            `${ov.reason || 'psycopg2 not available'}\n\n` +
-            (ov.driverLog?.length ? 'Driver detection log:\n' + ov.driverLog.join('\n') + '\n\n' : '') +
-            'Enter the unencrypted PostgreSQL password:',
+            `${ov.reason || 'psycopg2 not available'}\n\nEnter the unencrypted PostgreSQL password:`,
           );
           if (userPw) {
             setDbPassword(userPw);
@@ -432,12 +428,6 @@ export function DbHealthPage() {
       <div className="glass-card p-4">
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium text-[var(--text-secondary)]">PostgreSQL Connection</label>
-          {overview && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-glass)] border border-[var(--border-default)] text-[var(--text-secondary)]" title="Query method used to connect to the database">
-              via {overview.queryMethod}
-              {overview.canWrite ? ' (read/write)' : ' (read-only)'}
-            </span>
-          )}
           {connLoading ? (
             <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
           ) : connError ? (
@@ -459,14 +449,6 @@ export function DbHealthPage() {
           )}
         </div>
       </div>
-
-      {/* Driver Detection Log */}
-      {driverLog.length > 0 && (
-        <details className="glass-card p-3 border border-[var(--text-secondary)] text-xs text-[var(--text-secondary)]">
-          <summary className="cursor-pointer font-semibold">psycopg2 driver detection log ({driverLog.length} steps)</summary>
-          <pre className="mt-2 whitespace-pre-wrap max-h-48 overflow-y-auto">{driverLog.join('\n')}</pre>
-        </details>
-      )}
 
       {/* Warnings Banner */}
       {warnings.length > 0 && (
