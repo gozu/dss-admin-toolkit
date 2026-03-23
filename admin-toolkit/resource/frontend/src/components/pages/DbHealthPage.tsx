@@ -243,8 +243,19 @@ export function DbHealthPage() {
   /* ---------------------------------------------------------------- */
 
   const sortIcon = (key: SortKey) => {
-    if (sortKey !== key) return <span className="opacity-30 ml-1">&#8693;</span>;
-    return <span className="ml-1">{sortDir === 'asc' ? '&#9650;' : '&#9660;'}</span>;
+    if (sortKey !== key) return <span className="opacity-30 ml-1">{'\u21C5'}</span>;
+    return <span className="ml-1">{sortDir === 'asc' ? '\u25B2' : '\u25BC'}</span>;
+  };
+
+  const colTips: Record<string, string> = {
+    name: 'PostgreSQL table name',
+    totalSizeBytes: 'Total disk space including indexes and TOAST data',
+    rowCount: 'Estimated number of live rows (from pg_stat_user_tables)',
+    deadTuples: 'Rows marked for deletion but not yet reclaimed by VACUUM',
+    bloatRatio: 'Dead tuples as a percentage of total tuples — high values indicate VACUUM is needed',
+    lastVacuum: 'Last time a manual VACUUM was run on this table',
+    lastAutovacuum: 'Last time PostgreSQL autovacuum processed this table',
+    lastAnalyze: 'Last time table statistics were updated (ANALYZE)',
   };
 
   return (
@@ -338,31 +349,31 @@ export function DbHealthPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[var(--border-default)] text-left text-xs uppercase tracking-wider text-[var(--text-secondary)]">
-                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('name')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('name')} title={colTips.name}>
                     Table {sortIcon('name')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('totalSizeBytes')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('totalSizeBytes')} title={colTips.totalSizeBytes}>
                     Size {sortIcon('totalSizeBytes')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('rowCount')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('rowCount')} title={colTips.rowCount}>
                     Rows {sortIcon('rowCount')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('deadTuples')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('deadTuples')} title={colTips.deadTuples}>
                     Dead Tuples {sortIcon('deadTuples')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('bloatRatio')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none text-right" onClick={() => handleSort('bloatRatio')} title={colTips.bloatRatio}>
                     Bloat % {sortIcon('bloatRatio')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastVacuum')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastVacuum')} title={colTips.lastVacuum}>
                     Vacuum {sortIcon('lastVacuum')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastAutovacuum')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastAutovacuum')} title={colTips.lastAutovacuum}>
                     Autovacuum {sortIcon('lastAutovacuum')}
                   </th>
-                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastAnalyze')}>
+                  <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastAnalyze')} title={colTips.lastAnalyze}>
                     Analyze {sortIcon('lastAnalyze')}
                   </th>
-                  {overview?.canWrite && <th className="pb-2">Actions</th>}
+                  <th className="pb-2" title="Run VACUUM or ANALYZE on this table">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -386,26 +397,26 @@ export function DbHealthPage() {
                     <td className="py-1.5 pr-4 text-xs text-[var(--text-secondary)]">
                       {relativeTime(t.lastAnalyze)}
                     </td>
-                    {overview?.canWrite && (
-                      <td className="py-1.5">
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => handleAction('vacuum', t.name)}
-                            disabled={!!actionLoading[`vacuum-${t.name}`]}
-                            className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
-                          >
-                            {actionLoading[`vacuum-${t.name}`] ? '...' : 'VACUUM'}
-                          </button>
-                          <button
-                            onClick={() => handleAction('analyze', t.name)}
-                            disabled={!!actionLoading[`analyze-${t.name}`]}
-                            className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
-                          >
-                            {actionLoading[`analyze-${t.name}`] ? '...' : 'ANALYZE'}
-                          </button>
-                        </div>
-                      </td>
-                    )}
+                    <td className="py-1.5">
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleAction('vacuum', t.name)}
+                          disabled={!overview?.canWrite || !!actionLoading[`vacuum-${t.name}`]}
+                          title={overview?.canWrite ? `Run VACUUM on ${t.name}` : 'No write access on this connection'}
+                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          {actionLoading[`vacuum-${t.name}`] ? '...' : 'VACUUM'}
+                        </button>
+                        <button
+                          onClick={() => handleAction('analyze', t.name)}
+                          disabled={!overview?.canWrite || !!actionLoading[`analyze-${t.name}`]}
+                          title={overview?.canWrite ? `Run ANALYZE on ${t.name}` : 'No write access on this connection'}
+                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          {actionLoading[`analyze-${t.name}`] ? '...' : 'ANALYZE'}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
