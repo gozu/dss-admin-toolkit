@@ -147,7 +147,7 @@ function TableRow({ t, overview, actionLoading, handleAction }: {
           <button
             onClick={() => handleAction('analyze', t.name)}
             disabled={!overview?.canWrite || !!actionLoading[`analyze-${t.name}`]}
-            title={!overview?.canWrite ? 'No write access on this connection' : `Optimize ${t.name} — runs PostgreSQL ANALYZE to update query planner statistics for faster queries`}
+            title={!overview?.canWrite ? 'No write access on this connection' : 'Runs PostgreSQL ANALYZE to update query planner statistics for faster queries'}
             className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
           >
             {actionLoading[`analyze-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'Optimize'}
