@@ -1910,11 +1910,36 @@ def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
 
 
 
+_FOOTPRINT_SCALAR_KEYS = frozenset({
+    'size', 'nbFiles', 'nbFolders', 'nbErrors',
+    'projectKey', 'name', 'language', 'type',
+    'result',
+})
+
+
 def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
     details = footprint.get('details')
     if isinstance(details, dict):
         return details
-    return {}
+    # Sections with 'items' array -> expand items as named children
+    items = footprint.get('items')
+    if isinstance(items, list):
+        result: Dict[str, Any] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get('projectKey') or item.get('name') or '').strip()
+            if item_name:
+                result[item_name] = item
+        return result
+    # Otherwise children are dict-valued keys (excluding metadata scalars)
+    result = {}
+    for key, val in footprint.items():
+        if key in _FOOTPRINT_SCALAR_KEYS:
+            continue
+        if isinstance(val, dict):
+            result[key] = val
+    return result
 
 
 def _footprint_size(footprint: Any) -> int:
