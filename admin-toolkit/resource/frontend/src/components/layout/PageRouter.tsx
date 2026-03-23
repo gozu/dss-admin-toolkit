@@ -30,6 +30,9 @@ const CodeEnvCleanerLazy = lazy(() =>
 const ReportPage = lazy(() =>
   import('../pages/ReportPage').then((m) => ({ default: m.ReportPage })),
 );
+const DbHealthPage = lazy(() =>
+  import('../pages/DbHealthPage').then((m) => ({ default: m.DbHealthPage })),
+);
 
 function LoadingSpinner() {
   return (
@@ -84,6 +87,8 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
       return <TrackingView />;
     case 'report':
       return <ReportPage />;
+    case 'db-health':
+      return <DbHealthPage />;
     case 'settings':
       return <SettingsView onBack={onBackToSummary} />;
     default:

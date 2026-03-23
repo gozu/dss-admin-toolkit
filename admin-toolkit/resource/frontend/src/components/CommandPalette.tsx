@@ -33,6 +33,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'outreach', label: 'Outreach', section: 'Tools', keywords: ['email', 'campaign', 'owner'] },
   { id: 'tracking', label: 'Compliance', section: 'Tools', keywords: ['tracking', 'compliance', 'audit', 'issues'] },
   { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
+  { id: 'db-health', label: 'DB Health', section: 'Tools', keywords: ['postgres', 'database', 'vacuum', 'tables', 'runtimedb', 'bloat'] },
 ];
 
 const SECTION_ICONS: Record<string, string> = {

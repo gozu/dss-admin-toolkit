@@ -8657,3 +8657,401 @@ def api_settings_threshold_defaults():
         return jsonify(load_plugin_threshold_defaults())
     except Exception:
         return jsonify({})
+
+
+# ── DB Health ──
+
+_PSYCOPG2_AVAILABLE = None  # lazy init
+
+
+def _ensure_psycopg2():
+    """Try to import psycopg2, auto-install psycopg2-binary if missing."""
+    global _PSYCOPG2_AVAILABLE
+    if _PSYCOPG2_AVAILABLE is not None:
+        return _PSYCOPG2_AVAILABLE
+    try:
+        import psycopg2  # noqa: F401
+        _PSYCOPG2_AVAILABLE = True
+    except ImportError:
+        try:
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet'])
+            import psycopg2  # noqa: F401
+            _PSYCOPG2_AVAILABLE = True
+        except Exception:
+            _PSYCOPG2_AVAILABLE = False
+    return _PSYCOPG2_AVAILABLE
+
+
+def _pg_direct_connect(connection_name: str):
+    """Get a psycopg2 connection with autocommit for a DSS PostgreSQL connection."""
+    import psycopg2
+    client = dataiku.api_client()
+    defn = client.get_connection(connection_name).get_definition()
+    params = defn.get('params', {})
+    conn = psycopg2.connect(
+        host=params.get('host', 'localhost'),
+        port=int(params.get('port', 5432)),
+        dbname=params.get('db', params.get('database', params.get('dbname', ''))),
+        user=params.get('user', ''),
+        password=params.get('password', ''),
+        options='-c statement_timeout=60000',
+    )
+    conn.autocommit = True
+    return conn
+
+
+def _list_pg_connections() -> list:
+    """Return PostgreSQL connections with metadata."""
+    def _loader():
+        try:
+            client = dataiku.api_client()
+            all_conns = client.list_connections()
+            result = []
+            items = all_conns.items() if isinstance(all_conns, dict) else [(c.get('name'), c) for c in all_conns]
+            for name, info in items:
+                if not isinstance(info, dict):
+                    continue
+                conn_type = info.get('type', '')
+                if conn_type != 'PostgreSQL':
+                    continue
+                params = info.get('params', {})
+                result.append({
+                    'name': name,
+                    'type': conn_type,
+                    'host': params.get('host', ''),
+                    'port': params.get('port', 5432),
+                    'db': params.get('db', params.get('database', params.get('dbname', ''))),
+                })
+            return result
+        except Exception as exc:
+            logging.getLogger(__name__).warning("[db-health] list_connections failed: %s", exc)
+            return []
+    return _cache_get('_pg_connections', 300, _loader)
+
+
+def _sanitize_pg_error(err_msg: str) -> str:
+    """Strip internal paths and IPs from PostgreSQL error messages."""
+    sanitized = re.sub(r'(/[^\s:]+)+', '<path>', str(err_msg))
+    sanitized = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '<ip>', sanitized)
+    return sanitized
+
+
+def _validate_pg_connection(connection_name: str):
+    """Validate connection name against known PostgreSQL connections. Returns error response or None."""
+    if not connection_name:
+        return jsonify({'error': 'Missing connection parameter'}), 400
+    known = [c['name'] for c in _list_pg_connections()]
+    if connection_name not in known:
+        return jsonify({'error': 'Unknown or non-PostgreSQL connection'}), 400
+    return None
+
+
+def _pg_query_rows(connection_name: str, sql: str):
+    """Execute a read query via psycopg2 or SQLExecutor2 fallback. Returns list of dicts."""
+    if _ensure_psycopg2():
+        conn = _pg_direct_connect(connection_name)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+        finally:
+            conn.close()
+    else:
+        from dataiku.core.sql import SQLExecutor2
+        ex = SQLExecutor2(connection=connection_name)
+        df = ex.query_to_df(sql)
+        return df.to_dict(orient='records')
+
+
+@app.route('/api/tools/db-health/connections')
+def api_db_health_connections():
+    try:
+        return jsonify({'connections': _list_pg_connections()})
+    except Exception as exc:
+        return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+
+
+@app.route('/api/tools/db-health/overview')
+def api_db_health_overview():
+    connection_name = request.args.get('connection', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    warnings = []
+    result = {
+        'dbSize': '', 'dbSizeBytes': 0, 'version': '',
+        'tableCount': 0, 'totalDeadTuples': 0, 'totalLiveTuples': 0,
+        'canWrite': False, 'warnings': warnings,
+    }
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT pg_size_pretty(pg_database_size(current_database())) as db_size,"
+            " pg_database_size(current_database()) as db_size_bytes,"
+            " current_setting('server_version') as version")
+        if rows:
+            result['dbSize'] = str(rows[0].get('db_size', ''))
+            result['dbSizeBytes'] = int(rows[0].get('db_size_bytes', 0))
+            result['version'] = str(rows[0].get('version', ''))
+    except Exception as exc:
+        warnings.append('Could not fetch database size: %s' % _sanitize_pg_error(str(exc)))
+
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT count(*) as table_count, coalesce(sum(n_dead_tup),0) as total_dead,"
+            " coalesce(sum(n_live_tup),0) as total_live"
+            " FROM pg_stat_user_tables")
+        if rows:
+            result['tableCount'] = int(rows[0].get('table_count', 0))
+            result['totalDeadTuples'] = int(rows[0].get('total_dead', 0))
+            result['totalLiveTuples'] = int(rows[0].get('total_live', 0))
+    except Exception as exc:
+        warnings.append('Could not fetch table stats: %s' % _sanitize_pg_error(str(exc)))
+
+    # Detect write access
+    if _ensure_psycopg2():
+        conn = None
+        try:
+            conn = _pg_direct_connect(connection_name)
+            with conn.cursor() as cur:
+                try:
+                    cur.execute("SELECT current_setting('is_superuser')")
+                    row = cur.fetchone()
+                    if row and row[0] == 'on':
+                        result['canWrite'] = True
+                except Exception:
+                    pass
+                if not result['canWrite']:
+                    try:
+                        cur.execute("SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER')")
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            result['canWrite'] = True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            if conn:
+                conn.close()
+
+    result['warnings'] = warnings
+    return jsonify(result)
+
+
+@app.route('/api/tools/db-health/tables')
+def api_db_health_tables():
+    connection_name = request.args.get('connection', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    warnings = []
+    tables = []
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT relname, pg_size_pretty(pg_total_relation_size(relid)) as total_size,"
+            " pg_total_relation_size(relid) as total_size_bytes,"
+            " n_live_tup, n_dead_tup,"
+            " CASE WHEN n_live_tup + n_dead_tup > 0"
+            "      THEN round(n_dead_tup::numeric / (n_live_tup + n_dead_tup), 4)"
+            "      ELSE 0 END as bloat_ratio,"
+            " last_vacuum, last_autovacuum, last_analyze"
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")
+        for r in rows:
+            tables.append({
+                'name': str(r.get('relname', '')),
+                'totalSize': str(r.get('total_size', '')),
+                'totalSizeBytes': int(r.get('total_size_bytes', 0)),
+                'rowCount': int(r.get('n_live_tup', 0)),
+                'deadTuples': int(r.get('n_dead_tup', 0)),
+                'bloatRatio': float(r.get('bloat_ratio', 0)),
+                'lastVacuum': str(r.get('last_vacuum', '') or ''),
+                'lastAutovacuum': str(r.get('last_autovacuum', '') or ''),
+                'lastAnalyze': str(r.get('last_analyze', '') or ''),
+            })
+    except Exception as exc:
+        warnings.append('Could not fetch table details: %s' % _sanitize_pg_error(str(exc)))
+    return jsonify({'tables': tables, 'warnings': warnings})
+
+
+@app.route('/api/tools/db-health/per-project')
+def api_db_health_per_project():
+    connection_name = request.args.get('connection', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    warnings = []
+    result = {'projects': [], 'system': {}, 'isRuntimeDb': False, 'warnings': warnings}
+    try:
+        # Detect RuntimeDB by checking for known tables
+        detect_rows = _pg_query_rows(connection_name,
+            "SELECT count(*) as cnt FROM pg_tables"
+            " WHERE schemaname='public' AND lower(tablename) IN ('dss_metadata', 'scenario_runs', 'job')")
+        is_runtime = detect_rows and int(detect_rows[0].get('cnt', 0)) >= 2
+        result['isRuntimeDb'] = is_runtime
+
+        # Get all tables with sizes
+        table_rows = _pg_query_rows(connection_name,
+            "SELECT relname, pg_total_relation_size(relid) as size_bytes, n_live_tup"
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")
+
+        if not is_runtime:
+            # Not RuntimeDB — all tables go to system bucket
+            system_tables = []
+            total_bytes = 0
+            for r in table_rows:
+                sz = int(r.get('size_bytes', 0))
+                total_bytes += sz
+                system_tables.append({
+                    'name': str(r.get('relname', '')),
+                    'sizeBytes': sz,
+                    'rowCount': int(r.get('n_live_tup', 0)),
+                })
+            result['system'] = {'tables': system_tables, 'totalBytes': total_bytes}
+            result['warnings'] = warnings
+            return jsonify(result)
+
+        # RuntimeDB — find project columns
+        col_rows = _pg_query_rows(connection_name,
+            "SELECT table_name, column_name FROM information_schema.columns"
+            " WHERE table_schema='public'"
+            " AND (column_name ILIKE '%%projectkey%%' OR column_name ILIKE '%%project_key%%')")
+        table_project_col = {}
+        for r in col_rows:
+            tname = str(r.get('table_name', ''))
+            cname = str(r.get('column_name', ''))
+            if tname and cname:
+                table_project_col[tname.lower()] = {'table': tname, 'column': cname}
+
+        project_sizes: Dict[str, Dict[str, Any]] = {}
+        system_tables = []
+        system_total = 0
+
+        for r in table_rows:
+            relname = str(r.get('relname', ''))
+            sz = int(r.get('size_bytes', 0))
+            row_count = int(r.get('n_live_tup', 0))
+            lookup = table_project_col.get(relname.lower())
+            if not lookup:
+                system_total += sz
+                system_tables.append({'name': relname, 'sizeBytes': sz, 'rowCount': row_count})
+                continue
+            # Query per-project breakdown for this table
+            try:
+                proj_rows = _pg_query_rows(connection_name,
+                    "SELECT \"%s\" as pkey, count(*) as cnt FROM \"%s\" GROUP BY \"%s\""
+                    % (lookup['column'], lookup['table'], lookup['column']))
+                total_rows = sum(int(pr.get('cnt', 0)) for pr in proj_rows)
+                for pr in proj_rows:
+                    pkey = str(pr.get('pkey', '') or 'Unknown')
+                    cnt = int(pr.get('cnt', 0))
+                    # Estimate size proportional to row count
+                    est_size = int(sz * cnt / total_rows) if total_rows > 0 else 0
+                    if pkey not in project_sizes:
+                        project_sizes[pkey] = {'projectKey': pkey, 'sizeBytes': 0, 'tableCount': 0, 'rowCount': 0}
+                    project_sizes[pkey]['sizeBytes'] += est_size
+                    project_sizes[pkey]['tableCount'] += 1
+                    project_sizes[pkey]['rowCount'] += cnt
+            except Exception as exc:
+                warnings.append('Could not break down table %s: %s' % (relname, _sanitize_pg_error(str(exc))))
+                system_total += sz
+                system_tables.append({'name': relname, 'sizeBytes': sz, 'rowCount': row_count})
+
+        result['projects'] = sorted(project_sizes.values(), key=lambda p: p['sizeBytes'], reverse=True)
+        result['system'] = {'tables': system_tables, 'totalBytes': system_total}
+    except Exception as exc:
+        warnings.append('Per-project query failed: %s' % _sanitize_pg_error(str(exc)))
+    result['warnings'] = warnings
+    return jsonify(result)
+
+
+@app.route('/api/tools/db-health/vacuum', methods=['POST'])
+def api_db_health_vacuum():
+    body = request.get_json(force=True, silent=True) or {}
+    connection_name = body.get('connection', '')
+    table_name = body.get('table', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    if not table_name:
+        return jsonify({'error': 'Missing table parameter'}), 400
+
+    # Whitelist: validate table name against pg_stat_user_tables
+    try:
+        valid_tables = _pg_query_rows(connection_name,
+            "SELECT relname FROM pg_stat_user_tables")
+        valid_names = {str(r.get('relname', '')) for r in valid_tables}
+        if table_name not in valid_names:
+            return jsonify({'error': 'Invalid table name'}), 400
+    except Exception as exc:
+        return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
+
+    # Attempt 1: psycopg2 with autocommit
+    if _ensure_psycopg2():
+        conn = None
+        try:
+            import psycopg2.sql as psql
+            conn = _pg_direct_connect(connection_name)
+            with conn.cursor() as cur:
+                cur.execute(psql.SQL("VACUUM {}").format(psql.Identifier(table_name)))
+            return jsonify({'success': True, 'method': 'psycopg2'})
+        except Exception as exc:
+            return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+        finally:
+            if conn:
+                conn.close()
+
+    # Attempt 2: SQLExecutor2 fallback (likely fails for VACUUM)
+    try:
+        from dataiku.core.sql import SQLExecutor2
+        ex = SQLExecutor2(connection=connection_name)
+        ex.query_to_df('VACUUM "%s"' % table_name.replace('"', '""'))
+        return jsonify({'success': True, 'method': 'executor'})
+    except Exception as exc:
+        return jsonify({'error': 'VACUUM not supported through this connection: %s' % _sanitize_pg_error(str(exc))}), 500
+
+
+@app.route('/api/tools/db-health/analyze', methods=['POST'])
+def api_db_health_analyze():
+    body = request.get_json(force=True, silent=True) or {}
+    connection_name = body.get('connection', '')
+    table_name = body.get('table', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    if not table_name:
+        return jsonify({'error': 'Missing table parameter'}), 400
+
+    # Whitelist: validate table name against pg_stat_user_tables
+    try:
+        valid_tables = _pg_query_rows(connection_name,
+            "SELECT relname FROM pg_stat_user_tables")
+        valid_names = {str(r.get('relname', '')) for r in valid_tables}
+        if table_name not in valid_names:
+            return jsonify({'error': 'Invalid table name'}), 400
+    except Exception as exc:
+        return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
+
+    # Attempt 1: psycopg2 with autocommit
+    if _ensure_psycopg2():
+        conn = None
+        try:
+            import psycopg2.sql as psql
+            conn = _pg_direct_connect(connection_name)
+            with conn.cursor() as cur:
+                cur.execute(psql.SQL("ANALYZE {}").format(psql.Identifier(table_name)))
+            return jsonify({'success': True, 'method': 'psycopg2'})
+        except Exception as exc:
+            return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+        finally:
+            if conn:
+                conn.close()
+
+    # Attempt 2: SQLExecutor2 fallback
+    try:
+        from dataiku.core.sql import SQLExecutor2
+        ex = SQLExecutor2(connection=connection_name)
+        ex.query_to_df('ANALYZE "%s"' % table_name.replace('"', '""'))
+        return jsonify({'success': True, 'method': 'executor'})
+    except Exception as exc:
+        return jsonify({'error': 'ANALYZE not supported through this connection: %s' % _sanitize_pg_error(str(exc))}), 500
