@@ -1,12 +1,13 @@
 import type { ParsedData, PageId } from '../types';
 import { hasInactiveProjectsCache } from '../components/InactiveProjectCleaner';
 
-export type PageAvailability = 'ready' | 'loading' | 'independent';
+export type PageAvailability = 'ready' | 'partial' | 'loading' | 'independent';
 
 /**
  * Returns visual availability state for sidebar dimming.
  * - 'independent': always full color (instant data, self-fetching, or always-available)
- * - 'ready': data loaded — full color
+ * - 'ready': all data loaded — full color + light-up animation
+ * - 'partial': core data loaded, supplementary still loading — reduced opacity
  * - 'loading': data not yet loaded — show dimmed
  *
  * NOTE: This is purely visual. All pages remain navigable regardless of state.
@@ -45,10 +46,11 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
         ? 'ready'
         : 'loading';
     case 'code-envs':
-    case 'code-env-cleaner':
-      return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
-        ? 'ready'
-        : 'loading';
+    case 'code-env-cleaner': {
+      const envsLoaded = Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false;
+      if (!envsLoaded) return 'loading';
+      return d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0 ? 'ready' : 'partial';
+    }
     case 'code-envs-comparison':
       return d.codeEnvsCompare != null
         ? 'ready'
