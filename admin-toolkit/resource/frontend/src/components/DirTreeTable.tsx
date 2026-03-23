@@ -75,9 +75,13 @@ function TreeRow({
   visibleCount.current++;
 
   const isExpanded = expanded.has(node.path);
-  const hasChildren = node.isDirectory && (node.children.length > 0 || node.hasHiddenChildren);
-  const hasHiddenChildren = node.hasHiddenChildren;
   const lazyExpandedNode = lazyExpandedNodes?.get(node.path);
+  const hasChildren = node.isDirectory && (
+    lazyExpandedNode
+      ? lazyExpandedNode.children.length > 0
+      : (node.children.length > 0 || node.hasHiddenChildren)
+  );
+  const hasHiddenChildren = node.hasHiddenChildren && !lazyExpandedNode;
   const indent = depth * 20;
 
   // Use lazy-expanded children if available, otherwise use regular children
@@ -162,7 +166,7 @@ function TreeRow({
         <td className="py-2 px-3 text-right">
           <span className="font-mono text-sm text-[var(--text-muted)]">
             {node.isDirectory ? node.fileCount.toLocaleString() : '-'}
-            {hasHiddenChildren && !lazyExpandedNode && (
+            {hasHiddenChildren && (
               <span className="text-[var(--neon-amber)] ml-1" title="Has more files (click to expand)">+</span>
             )}
           </span>
@@ -173,7 +177,7 @@ function TreeRow({
             {node.isDirectory ? (
               <>
                 {effectiveChildren.length}
-                {hasHiddenChildren && !lazyExpandedNode && (
+                {hasHiddenChildren && (
                   <span className="text-[var(--neon-amber)] ml-1" title="Has more items (click to expand)">+</span>
                 )}
               </>
