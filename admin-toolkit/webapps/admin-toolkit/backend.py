@@ -8768,15 +8768,16 @@ def _get_pg_conn_params(connection_name: str) -> dict:
     }
 
 
-def _pg_direct_connect(connection_name: str):
+def _pg_direct_connect(connection_name: str, user_password: str = ''):
     """Get a PG connection with autocommit using psycopg2."""
     p = _get_pg_conn_params(connection_name)
     driver = _ensure_pg_driver()
     if driver == 'psycopg2':
         import psycopg2
+        pw = user_password or p['password']
         conn = psycopg2.connect(
             host=p['host'], port=p['port'], dbname=p['dbname'],
-            user=p['user'], password=p['password'],
+            user=p['user'], password=pw,
             options='-c statement_timeout=60000',
         )
         conn.autocommit = True
@@ -8797,7 +8798,7 @@ def _pg_exec_ddl(connection_name: str, sql_template: str, table_name: str, user_
     driver = _ensure_pg_driver()
     if driver:
         try:
-            conn = _pg_direct_connect(connection_name)
+            conn = _pg_direct_connect(connection_name, user_password=user_password)
             try:
                 import psycopg2.sql as pg2sql
                 with conn.cursor() as cur:
@@ -8806,11 +8807,14 @@ def _pg_exec_ddl(connection_name: str, sql_template: str, table_name: str, user_
             finally:
                 conn.close()
         except Exception as exc:
+            err_str = str(exc).lower()
+            if not user_password and ('password authentication failed' in err_str or 'fe_sendauth' in err_str):
+                return {'needsPassword': True, 'reason': 'Database auth failed — please provide the password'}
             errors.append('%s: %s' % (driver, str(exc)))
 
     # Strategy 2: psql CLI with user-provided password
     if not user_password:
-        return {'needsPassword': True, 'reason': 'psycopg2 not available — please provide the database password to use psql'}
+        return {'needsPassword': True, 'reason': 'psycopg2 not available — please provide the database password'}
 
     try:
         psql_cmd = ['psql', '-h', str(p['host']), '-p', str(p['port']),
@@ -8877,12 +8881,17 @@ def _validate_pg_connection(connection_name: str):
 _ACTUAL_READ_METHOD = {}  # tracks what actually worked per connection
 
 
+class _NeedsPasswordError(RuntimeError):
+    """Raised when DB auth fails and user must provide password."""
+    pass
+
+
 def _pg_query_rows(connection_name: str, sql: str, user_password: str = ''):
-    """Execute a read query. Tries psycopg2, then psql with user-provided password."""
+    """Execute a read query. Tries psycopg2 (with user password if given), then psql fallback."""
     driver = _ensure_pg_driver()
     if driver:
         try:
-            conn = _pg_direct_connect(connection_name)
+            conn = _pg_direct_connect(connection_name, user_password=user_password)
             try:
                 with conn.cursor() as cur:
                     cur.execute(sql)
@@ -8892,11 +8901,15 @@ def _pg_query_rows(connection_name: str, sql: str, user_password: str = ''):
             finally:
                 conn.close()
         except Exception as exc:
+            err_str = str(exc).lower()
+            # Auth failure with stored password — ask user for the real one
+            if not user_password and ('password authentication failed' in err_str or 'fe_sendauth' in err_str):
+                raise _NeedsPasswordError("psycopg2 auth failed: %s" % exc)
             raise RuntimeError("psycopg2 query failed: %s" % exc)
 
     # psycopg2 not available — try psql with user-provided password
     if not user_password:
-        raise RuntimeError("psycopg2 not available — password required for psql fallback")
+        raise _NeedsPasswordError("psycopg2 not available — password required for psql fallback")
     p = _get_pg_conn_params(connection_name)
     psql_cmd = [
         'psql', '-h', str(p['host']), '-p', str(p['port']),
@@ -8946,13 +8959,6 @@ def api_db_health_overview():
         return validation
 
     driver = _ensure_pg_driver()
-    # If no driver and no password provided, tell frontend to ask the user
-    if not driver and not user_password:
-        return jsonify({
-            'needsPassword': True,
-            'driverLog': list(_PG_DRIVER_LOG),
-            'reason': 'psycopg2 not available — please provide the database password to use psql',
-        })
 
     warnings = []
     query_method = driver or ('psql' if user_password else 'none')
@@ -8973,6 +8979,12 @@ def api_db_health_overview():
             result['dbSize'] = str(rows[0].get('db_size', ''))
             result['dbSizeBytes'] = int(rows[0].get('db_size_bytes', 0))
             result['version'] = str(rows[0].get('version', ''))
+    except _NeedsPasswordError as exc:
+        return jsonify({
+            'needsPassword': True,
+            'driverLog': list(_PG_DRIVER_LOG),
+            'reason': str(exc),
+        })
     except Exception as exc:
         warnings.append('Could not fetch database size: %s' % _sanitize_pg_error(str(exc)))
 
