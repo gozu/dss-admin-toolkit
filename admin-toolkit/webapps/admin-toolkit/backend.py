@@ -8782,7 +8782,8 @@ def api_db_health_overview():
     result = {
         'dbSize': '', 'dbSizeBytes': 0, 'version': '',
         'tableCount': 0, 'totalDeadTuples': 0, 'totalLiveTuples': 0,
-        'canWrite': False, 'warnings': warnings,
+        'canWrite': False, 'queryMethod': 'psycopg2' if _ensure_psycopg2() else 'SQLExecutor2',
+        'warnings': warnings,
     }
     try:
         rows = _pg_query_rows(connection_name,
@@ -8808,36 +8809,25 @@ def api_db_health_overview():
     except Exception as exc:
         warnings.append('Could not fetch table stats: %s' % _sanitize_pg_error(str(exc)))
 
-    # Detect write access
-    _log = logging.getLogger(__name__)
-    if _ensure_psycopg2():
-        conn = None
-        try:
-            conn = _pg_direct_connect(connection_name)
-            with conn.cursor() as cur:
-                try:
-                    cur.execute("SELECT current_user, current_setting('is_superuser')")
-                    row = cur.fetchone()
-                    _log.info("[db-health] canWrite check: user=%s is_superuser=%s", row[0] if row else '?', row[1] if row else '?')
-                    if row and row[1] == 'on':
-                        result['canWrite'] = True
-                except Exception as exc:
-                    _log.warning("[db-health] canWrite superuser check failed: %s", exc)
-                if not result['canWrite']:
-                    try:
-                        cur.execute("SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER')")
-                        row = cur.fetchone()
-                        if row and row[0]:
-                            result['canWrite'] = True
-                    except Exception as exc:
-                        _log.info("[db-health] pg_maintain check failed (expected on PG<15): %s", exc)
-        except Exception as exc:
-            _log.warning("[db-health] canWrite detection failed (psycopg2 connect): %s", exc)
-        finally:
-            if conn:
-                conn.close()
-    else:
-        _log.warning("[db-health] psycopg2 not available, canWrite=False")
+    # Detect write access — use same query path that already works for reads
+    try:
+        write_rows = _pg_query_rows(connection_name,
+            "SELECT current_user as cu, current_setting('is_superuser') as su")
+        if write_rows:
+            cu = write_rows[0].get('cu', '')
+            su = write_rows[0].get('su', '')
+            if su == 'on':
+                result['canWrite'] = True
+        if not result['canWrite']:
+            try:
+                maint_rows = _pg_query_rows(connection_name,
+                    "SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER') as m")
+                if maint_rows and maint_rows[0].get('m'):
+                    result['canWrite'] = True
+            except Exception:
+                pass  # pg_maintain role may not exist on PG < 15
+    except Exception:
+        pass
 
     result['warnings'] = warnings
     return jsonify(result)

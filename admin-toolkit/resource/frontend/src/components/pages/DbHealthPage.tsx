@@ -21,6 +21,7 @@ interface DbOverview {
   totalDeadTuples: number;
   totalLiveTuples: number;
   canWrite: boolean;
+  queryMethod: string;
   warnings?: string[];
 }
 
@@ -264,6 +265,12 @@ export function DbHealthPage() {
       <div className="glass-card p-4">
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium text-[var(--text-secondary)]">PostgreSQL Connection</label>
+          {overview && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-glass)] border border-[var(--border-default)] text-[var(--text-secondary)]" title="Query method used to connect to the database">
+              via {overview.queryMethod}
+              {overview.canWrite ? ' (read/write)' : ' (read-only)'}
+            </span>
+          )}
           {connLoading ? (
             <div className="w-5 h-5 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
           ) : connError ? (
