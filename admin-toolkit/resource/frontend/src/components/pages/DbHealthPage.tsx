@@ -38,15 +38,19 @@ interface TableInfo {
 
 interface ProjectBreakdown {
   projectKey: string;
-  totalSizeBytes: number;
-  totalSize: string;
+  sizeBytes: number;
   tableCount: number;
   rowCount: number;
 }
 
+interface SystemBucket {
+  tables: { name: string; rowCount: number; sizeBytes: number }[];
+  totalBytes: number;
+}
+
 interface PerProjectResponse {
   projects: ProjectBreakdown[];
-  system: ProjectBreakdown;
+  system: SystemBucket;
   isRuntimeDb: boolean;
   warnings?: string[];
 }
@@ -68,6 +72,14 @@ function relativeTime(iso: string | null): string {
   const days = Math.floor(hrs / 24);
   if (days < 30) return `${days}d ago`;
   return d.toLocaleDateString();
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'kB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
 function bloatColor(ratio: number): string {
@@ -220,8 +232,8 @@ export function DbHealthPage() {
   const maxProjectSize = useMemo(() => {
     if (!perProject) return 1;
     const allSizes = [
-      ...perProject.projects.map((p) => p.totalSizeBytes),
-      perProject.system?.totalSizeBytes ?? 0,
+      ...perProject.projects.map((p) => p.sizeBytes),
+      perProject.system?.totalBytes ?? 0,
     ];
     return Math.max(...allSizes, 1);
   }, [perProject]);
@@ -417,23 +429,23 @@ export function DbHealthPage() {
               {perProject.system && (
                 <ProjectBar
                   label="System / Shared"
-                  size={perProject.system.totalSize}
-                  sizeBytes={perProject.system.totalSizeBytes}
-                  tableCount={perProject.system.tableCount}
-                  rowCount={perProject.system.rowCount}
+                  size={formatBytes(perProject.system.totalBytes)}
+                  sizeBytes={perProject.system.totalBytes}
+                  tableCount={perProject.system.tables.length}
+                  rowCount={perProject.system.tables.reduce((s, t) => s + t.rowCount, 0)}
                   maxBytes={maxProjectSize}
                   isSystem
                 />
               )}
               {/* Projects sorted by size */}
               {[...perProject.projects]
-                .sort((a, b) => b.totalSizeBytes - a.totalSizeBytes)
+                .sort((a, b) => b.sizeBytes - a.sizeBytes)
                 .map((p) => (
                   <ProjectBar
                     key={p.projectKey}
                     label={p.projectKey}
-                    size={p.totalSize}
-                    sizeBytes={p.totalSizeBytes}
+                    size={formatBytes(p.sizeBytes)}
+                    sizeBytes={p.sizeBytes}
                     tableCount={p.tableCount}
                     rowCount={p.rowCount}
                     maxBytes={maxProjectSize}
