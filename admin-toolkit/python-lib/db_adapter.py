@@ -49,6 +49,28 @@ def load_tracking_backend_config() -> TrackingBackendConfig:
         return TrackingBackendConfig(table_prefix='adtk')
 
 
+@dataclass(frozen=True)
+class DbHealthConfig:
+    """Plugin-level configuration for DB Health tool."""
+    connection_name: Optional[str] = None
+    password: Optional[str] = None
+
+
+def load_dbhealth_config() -> DbHealthConfig:
+    """Read DB Health config from plugin settings."""
+    try:
+        import dataiku
+        client = dataiku.api_client()
+        raw = client.get_plugin('admin-toolkit').get_settings().get_raw()
+        config = raw.get('config', {}) if isinstance(raw, dict) else {}
+        conn = (config.get('dbhealth_connection') or '').strip() or None
+        pw = (config.get('dbhealth_password') or '').strip() or None
+        return DbHealthConfig(connection_name=conn, password=pw)
+    except Exception as exc:
+        _log.debug("Could not load dbhealth config: %s", exc)
+        return DbHealthConfig()
+
+
 _PERF_MAP = {
     'perf_parallel_workers_default': ('parallel_workers_default', int),
     'perf_parallel_workers_max': ('parallel_workers_max', int),

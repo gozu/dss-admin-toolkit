@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.189",
+    "version": "0.4.191",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -27,6 +27,27 @@
             "label": "Table Name Prefix",
             "description": "Prefix for tracking table names (e.g. 'adtk' \u2192 adtk_runs). Leave empty for no prefix.",
             "type": "STRING",
+            "mandatory": false,
+            "defaultValue": ""
+        },
+        {
+            "name": "sep_dbhealth",
+            "label": "DB Health",
+            "type": "SEPARATOR"
+        },
+        {
+            "name": "dbhealth_connection",
+            "label": "RuntimeDB Connection",
+            "description": "PostgreSQL connection name for DB Health tool (typically 'runtimedb').",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": ""
+        },
+        {
+            "name": "dbhealth_password",
+            "label": "DB Password (unencrypted)",
+            "description": "Unencrypted PostgreSQL password. Required when psycopg2 cannot use the DSS-stored (encrypted) password.",
+            "type": "PASSWORD",
             "mandatory": false,
             "defaultValue": ""
         },
