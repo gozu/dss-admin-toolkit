@@ -226,12 +226,6 @@ export function DbHealthPage() {
   const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string, password?: string) => {
     if (!selectedConn) return;
     const effectivePw = password ?? dbPassword;
-    if (!password) {
-      const confirmed = window.confirm(
-        `Run ${action.toUpperCase()} on table "${tableName}"?\n\nThis may take a moment on large tables.`,
-      );
-      if (!confirmed) return;
-    }
 
     const key = `${action}-${tableName}`;
     setActionLoading((prev) => ({ ...prev, [key]: action }));
@@ -464,18 +458,18 @@ export function DbHealthPage() {
                         <button
                           onClick={() => handleAction('vacuum', t.name)}
                           disabled={!overview?.canWrite || !!actionLoading[`vacuum-${t.name}`]}
-                          title={!overview?.canWrite ? 'No write access on this connection' : overview?.queryMethod === 'SQLExecutor2' ? 'VACUUM may fail via SQLExecutor2 (needs psycopg2 for autocommit)' : `Run VACUUM on ${t.name}`}
-                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={!overview?.canWrite ? 'No write access on this connection' : `Run VACUUM on ${t.name}`}
+                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
                         >
-                          {actionLoading[`vacuum-${t.name}`] ? '...' : 'VACUUM'}
+                          {actionLoading[`vacuum-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'VACUUM'}
                         </button>
                         <button
                           onClick={() => handleAction('analyze', t.name)}
                           disabled={!overview?.canWrite || !!actionLoading[`analyze-${t.name}`]}
-                          title={overview?.canWrite ? `Run ANALYZE on ${t.name}` : 'No write access on this connection'}
-                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed"
+                          title={!overview?.canWrite ? 'No write access on this connection' : `Run ANALYZE on ${t.name}`}
+                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
                         >
-                          {actionLoading[`analyze-${t.name}`] ? '...' : 'ANALYZE'}
+                          {actionLoading[`analyze-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'ANALYZE'}
                         </button>
                       </div>
                     </td>
