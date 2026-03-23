@@ -1,0 +1,9 @@
+# Exclude from git archive (deploy zips) but keep in repo
+resource/frontend/package-lock.json export-ignore
+resource/frontend/src/ export-ignore
+resource/frontend/tests/ export-ignore
+resource/frontend/.prettierrc export-ignore
+resource/frontend/eslint.config.js export-ignore
+resource/frontend/playwright.config.ts export-ignore
+resource/frontend/tsconfig*.json export-ignore
+resource/frontend/vite.config.ts export-ignore
