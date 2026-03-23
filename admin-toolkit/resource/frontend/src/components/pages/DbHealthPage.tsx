@@ -23,6 +23,9 @@ interface DbOverview {
   canWrite: boolean;
   queryMethod: string;
   warnings?: string[];
+  needsPassword?: boolean;
+  driverLog?: string[];
+  reason?: string;
 }
 
 interface TableInfo {
@@ -120,6 +123,10 @@ export function DbHealthPage() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  // Password state (for psql fallback when psycopg2 unavailable)
+  const [dbPassword, setDbPassword] = useState<string>('');
+  const [driverLog, setDriverLog] = useState<string[]>([]);
+
   // Action state
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({});
 
@@ -134,7 +141,8 @@ export function DbHealthPage() {
       .then((data) => {
         setConnections(data.connections || []);
         if (data.connections?.length) {
-          setSelectedConn(data.connections[0].name);
+          const runtimeDb = data.connections.find((c) => c.name.toLowerCase() === 'runtimedb');
+          setSelectedConn(runtimeDb ? runtimeDb.name : data.connections[0].name);
         }
         setConnError(null);
       })
@@ -142,28 +150,50 @@ export function DbHealthPage() {
       .finally(() => setConnLoading(false));
   }, []);
 
-  // Load data when connection changes
+  // Load data when connection or password changes
   useEffect(() => {
     if (!selectedConn) return;
     setDataLoading(true);
     setDataError(null);
     setWarnings([]);
     const q = encodeURIComponent(selectedConn);
-    Promise.all([
-      fetchJson<DbOverview>(`/api/tools/db-health/overview?connection=${q}`),
-      fetchJson<{ tables: TableInfo[]; warnings?: string[] }>(`/api/tools/db-health/tables?connection=${q}`),
-      fetchJson<PerProjectResponse>(`/api/tools/db-health/per-project?connection=${q}`),
-    ])
-      .then(([ov, tb, pp]) => {
+    const pw = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
+
+    // First check overview — it may return needsPassword
+    fetchJson<DbOverview>(`/api/tools/db-health/overview?connection=${q}${pw}`)
+      .then((ov) => {
+        if (ov.driverLog) setDriverLog(ov.driverLog);
+        if (ov.needsPassword) {
+          const userPw = window.prompt(
+            `${ov.reason || 'psycopg2 not available'}\n\n` +
+            (ov.driverLog?.length ? 'Driver detection log:\n' + ov.driverLog.join('\n') + '\n\n' : '') +
+            'Enter the unencrypted PostgreSQL password:',
+          );
+          if (userPw) {
+            setDbPassword(userPw);
+            // Re-fetch will trigger via the dbPassword dependency
+          } else {
+            setDataError('Password required — psycopg2 could not be installed.');
+          }
+          setDataLoading(false);
+          return;
+        }
         setOverview(ov);
-        setTables(tb.tables || []);
-        setPerProject(pp);
-        const w = [...(ov.warnings || []), ...(tb.warnings || []), ...(pp.warnings || [])];
-        setWarnings(w);
+        // Overview succeeded — fetch tables and per-project in parallel
+        const pw2 = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
+        return Promise.all([
+          fetchJson<{ tables: TableInfo[]; warnings?: string[] }>(`/api/tools/db-health/tables?connection=${q}${pw2}`),
+          fetchJson<PerProjectResponse>(`/api/tools/db-health/per-project?connection=${q}${pw2}`),
+        ]).then(([tb, pp]) => {
+          setTables(tb.tables || []);
+          setPerProject(pp);
+          const w = [...(ov.warnings || []), ...(tb.warnings || []), ...(pp.warnings || [])];
+          setWarnings(w);
+        });
       })
       .catch((err) => setDataError(String(err)))
       .finally(() => setDataLoading(false));
-  }, [selectedConn]);
+  }, [selectedConn, dbPassword]);
 
   // Sort tables
   const sortedTables = useMemo(() => {
@@ -194,6 +224,7 @@ export function DbHealthPage() {
   // Actions
   const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string, password?: string) => {
     if (!selectedConn) return;
+    const effectivePw = password ?? dbPassword;
     if (!password) {
       const confirmed = window.confirm(
         `Run ${action.toUpperCase()} on table "${tableName}"?\n\nThis may take a moment on large tables.`,
@@ -205,7 +236,7 @@ export function DbHealthPage() {
     setActionLoading((prev) => ({ ...prev, [key]: action }));
     try {
       const payload: Record<string, string> = { connection: selectedConn, table: tableName };
-      if (password) payload.password = password;
+      if (effectivePw) payload.password = effectivePw;
       const res = await fetchJson<{ success?: boolean; error?: string; needsPassword?: boolean; reason?: string }>(
         `/api/tools/db-health/${action}`,
         {
@@ -215,11 +246,11 @@ export function DbHealthPage() {
         },
       );
       if (res.needsPassword) {
-        // psycopg2 unavailable — ask user for the DB password to use psql
         const pw = window.prompt(
           `${res.reason || 'psycopg2 not available'}\n\nEnter the unencrypted PostgreSQL password:`,
         );
         if (pw) {
+          setDbPassword(pw);
           setActionLoading((prev) => { const next = { ...prev }; delete next[key]; return next; });
           return handleAction(action, tableName, pw);
         }
@@ -229,7 +260,8 @@ export function DbHealthPage() {
       } else {
         // Refresh table data
         const q = encodeURIComponent(selectedConn);
-        const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}`);
+        const pw2 = effectivePw ? `&password=${encodeURIComponent(effectivePw)}` : '';
+        const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}${pw2}`);
         setTables(tb.tables || []);
       }
     } catch (err) {
@@ -241,7 +273,7 @@ export function DbHealthPage() {
         return next;
       });
     }
-  }, [selectedConn]);
+  }, [selectedConn, dbPassword]);
 
   // Per-project bar widths
   const maxProjectSize = useMemo(() => {
@@ -306,6 +338,14 @@ export function DbHealthPage() {
           )}
         </div>
       </div>
+
+      {/* Driver Detection Log */}
+      {driverLog.length > 0 && (
+        <details className="glass-card p-3 border border-[var(--text-secondary)] text-xs text-[var(--text-secondary)]">
+          <summary className="cursor-pointer font-semibold">psycopg2 driver detection log ({driverLog.length} steps)</summary>
+          <pre className="mt-2 whitespace-pre-wrap max-h-48 overflow-y-auto">{driverLog.join('\n')}</pre>
+        </details>
+      )}
 
       {/* Warnings Banner */}
       {warnings.length > 0 && (
