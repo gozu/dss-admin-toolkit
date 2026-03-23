@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.200",
+    "version": "0.4.201",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -51,6 +51,75 @@
             "type": "PASSWORD",
             "mandatory": false,
             "defaultValue": ""
+        },
+        {
+            "name": "sep_thresholds",
+            "label": "Threshold Defaults",
+            "type": "SEPARATOR"
+        },
+        {
+            "name": "thresh_inactive_project_days",
+            "label": "Inactive Project Days",
+            "description": "Projects inactive longer than this are flagged.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 180
+        },
+        {
+            "name": "thresh_filesystem_warning_pct",
+            "label": "Filesystem Warning %",
+            "description": "Filesystem usage above this triggers a warning.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 70
+        },
+        {
+            "name": "thresh_filesystem_critical_pct",
+            "label": "Filesystem Critical %",
+            "description": "Filesystem usage above this triggers a critical alert.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 90
+        },
+        {
+            "name": "thresh_code_env_count_unhealthy",
+            "label": "Code Env Count Unhealthy",
+            "description": "Projects with more code envs than this are flagged unhealthy.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1
+        },
+        {
+            "name": "thresh_empty_project_kb",
+            "label": "Empty Project Size (KB)",
+            "description": "Projects larger than this (in KB) are not considered empty.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1024
+        },
+        {
+            "name": "thresh_health_warning_below",
+            "label": "Health Warning Below",
+            "description": "Overall health score below this triggers a warning.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 80
+        },
+        {
+            "name": "thresh_health_critical_below",
+            "label": "Health Critical Below",
+            "description": "Overall health score below this is critical.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 50
+        },
+        {
+            "name": "thresh_deprecated_python_prefixes",
+            "label": "Deprecated Python Prefixes",
+            "description": "Comma-separated version prefixes to flag (e.g. 2.,3.6,3.7).",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": "2.,3.6,3.7"
         },
         {
             "name": "sep_performance",
@@ -136,75 +205,6 @@
             "type": "INT",
             "mandatory": false,
             "defaultValue": 500
-        },
-        {
-            "name": "sep_thresholds",
-            "label": "Threshold Defaults",
-            "type": "SEPARATOR"
-        },
-        {
-            "name": "thresh_inactive_project_days",
-            "label": "Inactive Project Days",
-            "description": "Projects inactive longer than this are flagged.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 180
-        },
-        {
-            "name": "thresh_filesystem_warning_pct",
-            "label": "Filesystem Warning %",
-            "description": "Filesystem usage above this triggers a warning.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 70
-        },
-        {
-            "name": "thresh_filesystem_critical_pct",
-            "label": "Filesystem Critical %",
-            "description": "Filesystem usage above this triggers a critical alert.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 90
-        },
-        {
-            "name": "thresh_code_env_count_unhealthy",
-            "label": "Code Env Count Unhealthy",
-            "description": "Projects with more code envs than this are flagged unhealthy.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 1
-        },
-        {
-            "name": "thresh_empty_project_bytes",
-            "label": "Empty Project Size (bytes)",
-            "description": "Projects larger than this are not considered empty.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 1048576
-        },
-        {
-            "name": "thresh_health_warning_below",
-            "label": "Health Warning Below",
-            "description": "Overall health score below this triggers a warning.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 80
-        },
-        {
-            "name": "thresh_health_critical_below",
-            "label": "Health Critical Below",
-            "description": "Overall health score below this is critical.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 50
-        },
-        {
-            "name": "thresh_deprecated_python_prefixes",
-            "label": "Deprecated Python Prefixes",
-            "description": "Comma-separated version prefixes to flag (e.g. 2.,3.6,3.7).",
-            "type": "STRING",
-            "mandatory": false,
-            "defaultValue": "2.,3.6,3.7"
         }
     ]
 }

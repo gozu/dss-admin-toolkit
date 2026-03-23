@@ -89,7 +89,7 @@ _THRESH_MAP = {
     'thresh_filesystem_warning_pct': ('filesystemWarningPct', int),
     'thresh_filesystem_critical_pct': ('filesystemCriticalPct', int),
     'thresh_code_env_count_unhealthy': ('codeEnvCountUnhealthy', int),
-    'thresh_empty_project_bytes': ('emptyProjectBytes', int),
+    'thresh_empty_project_kb': ('emptyProjectBytes', lambda v: int(v) * 1024),
     'thresh_health_warning_below': ('healthWarningBelow', int),
     'thresh_health_critical_below': ('healthCriticalBelow', int),
     'thresh_deprecated_python_prefixes': ('deprecatedPythonPrefixes', str),
