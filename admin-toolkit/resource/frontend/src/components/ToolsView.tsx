@@ -1378,8 +1378,9 @@ export function ToolsView() {
   }, [parsedData, thresholds.codeEnvCountUnhealthy, thresholds.codeStudioCountUnhealthy, restoreFromSource]);
 
   // Effect 2: Fetch API outreach data in background — triggers server-side tracking ingest
-  // and enriches data with real mail channels. Runs once on mount.
+  // and enriches data with real mail channels. Skipped if app-level loader already fetched.
   useEffect(() => {
+    if (parsedData.outreachApiLoaded) return;
     fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
       setData((prev) => {
         if (!prev) {
