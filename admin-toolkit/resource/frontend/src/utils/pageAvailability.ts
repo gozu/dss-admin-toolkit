@@ -55,18 +55,18 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return d.codeEnvsCompare != null
         ? 'ready'
         : 'loading';
-    case 'outreach':
-      return (
+    case 'outreach': {
+      const outreachCore =
         Array.isArray(d.codeEnvs) &&
         d.codeEnvs.length > 0 &&
         Array.isArray(d.projectFootprint) &&
         d.projectFootprint.length > 0 &&
         Array.isArray(d.users) &&
         d.users.length > 0 &&
-        d.analysisLoading?.active === false
-      )
-        ? 'ready'
-        : 'loading';
+        d.analysisLoading?.active === false;
+      if (!outreachCore) return 'loading';
+      return d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0 ? 'ready' : 'partial';
+    }
 
     default:
       return 'independent';
