@@ -1183,7 +1183,6 @@ export function ToolsView() {
   const { parsedData, activePage } = state;
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
-  const [_apiDataLoaded, setApiDataLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(null);
 
@@ -1414,10 +1413,10 @@ export function ToolsView() {
         }
         return merged;
       });
-      setApiDataLoaded(true);
+      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
       log(`API outreach data loaded: channels=${apiData.mailChannels?.length ?? 0}, apiUnusedCodeEnvs=${apiData.summary?.unusedCodeEnvCount ?? 0}, apiUnusedRecipients=${apiData.unusedCodeEnvRecipients?.length ?? 0}`);
     }).catch((err) => {
-      setApiDataLoaded(true);
+      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
       log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps

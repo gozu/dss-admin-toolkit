@@ -19,7 +19,6 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     Array.isArray(d.projectFootprint) && d.projectFootprint.length > 0 &&
     Array.isArray(d.users) && d.users.length > 0 &&
     d.analysisLoading?.active === false;
-  const allDone = outreachReady && d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0;
 
   switch (pageId) {
     // Always available — instant, self-loading, or independent
@@ -35,11 +34,11 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     // Compliance depends on outreach data — mirrors outreach states
     case 'tracking':
       if (!outreachReady) return 'loading';
-      return allDone ? 'ready' : 'partial';
+      return d.outreachApiLoaded ? 'ready' : 'partial';
 
     // Report needs everything completely finished
     case 'report':
-      return allDone ? 'ready' : 'loading';
+      return (outreachReady && d.outreachApiLoaded) ? 'ready' : 'loading';
 
     // Phase 1 — overview data
     case 'filesystem':
@@ -73,18 +72,9 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return d.codeEnvsCompare != null
         ? 'ready'
         : 'loading';
-    case 'outreach': {
-      const outreachCore =
-        Array.isArray(d.codeEnvs) &&
-        d.codeEnvs.length > 0 &&
-        Array.isArray(d.projectFootprint) &&
-        d.projectFootprint.length > 0 &&
-        Array.isArray(d.users) &&
-        d.users.length > 0 &&
-        d.analysisLoading?.active === false;
-      if (!outreachCore) return 'loading';
-      return d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0 ? 'ready' : 'partial';
-    }
+    case 'outreach':
+      if (!outreachReady) return 'loading';
+      return d.outreachApiLoaded ? 'ready' : 'partial';
 
     default:
       return 'independent';
