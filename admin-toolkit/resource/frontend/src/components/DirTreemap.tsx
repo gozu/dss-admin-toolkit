@@ -220,6 +220,7 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
         fileCount: child.fileCount,
         fullPath: child.path,
         hasHiddenChildren: child.hasHiddenChildren,
+        childCount: child.children.length,
         _node: child,
       }));
     }
@@ -231,6 +232,7 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
       fileCount: activeNode.fileCount,
       fullPath: activeNode.path,
       hasHiddenChildren: activeNode.hasHiddenChildren,
+      childCount: activeNode.children.length,
       _node: activeNode,
     }];
   }, [activeNode, activeExpanded]);
@@ -301,7 +303,7 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
         borderWidth: 1,
         callbacks: {
           title: () => '',
-          label: (ctx: { raw?: { _data?: { name?: string; size?: number; isDir?: boolean; fileCount?: number; hasHiddenChildren?: boolean } } }) => {
+          label: (ctx: { raw?: { _data?: { name?: string; size?: number; isDir?: boolean; fileCount?: number; hasHiddenChildren?: boolean; childCount?: number } } }) => {
             const raw = ctx.raw?._data;
             if (!raw) return '';
             const lines = [
@@ -309,8 +311,9 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisib
               `Size: ${formatSize(raw.size || 0)}`,
             ];
             if (raw.isDir) {
+              const isDrillable = (raw.childCount ?? 0) > 0 || raw.hasHiddenChildren;
               lines.push(`Files: ${raw.fileCount?.toLocaleString() || 0}${raw.hasHiddenChildren ? '+' : ''}`);
-              lines.push('Click to drill down');
+              lines.push(isDrillable ? 'Click to drill down' : 'Drilldown limit reached');
             }
             return lines;
           },
