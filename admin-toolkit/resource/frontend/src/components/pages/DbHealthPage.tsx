@@ -324,15 +324,29 @@ export function DbHealthPage() {
     }
   }, [selectedConn, dbPassword]);
 
-  // Per-project bar widths
+  // Per-project: split into main (>=5KB) and small (<5KB)
+  const SMALL_PROJECT_THRESHOLD = 5 * 1024; // 5 KB
+  const projectGroups = useMemo(() => {
+    if (!perProject) return { main: [] as ProjectBreakdown[], small: [] as ProjectBreakdown[] };
+    const sorted = [...perProject.projects].sort((a, b) => b.sizeBytes - a.sizeBytes);
+    const main: ProjectBreakdown[] = [];
+    const small: ProjectBreakdown[] = [];
+    for (const p of sorted) {
+      if (p.sizeBytes < SMALL_PROJECT_THRESHOLD) small.push(p);
+      else main.push(p);
+    }
+    return { main, small };
+  }, [perProject]);
+
+  // Per-project bar widths (based on main projects + system only)
   const maxProjectSize = useMemo(() => {
     if (!perProject) return 1;
     const allSizes = [
-      ...perProject.projects.map((p) => p.sizeBytes),
+      ...projectGroups.main.map((p) => p.sizeBytes),
       perProject.system?.totalBytes ?? 0,
     ];
     return Math.max(...allSizes, 1);
-  }, [perProject]);
+  }, [perProject, projectGroups.main]);
 
   /* ---------------------------------------------------------------- */
   /*  Render                                                           */
@@ -373,7 +387,7 @@ export function DbHealthPage() {
   }, [sortedTables]);
 
   // Collapsed state for folders
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({ system: true, small: true });
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({ system: true, small: true, smallProjects: true });
   const toggleGroup = useCallback((group: string) => {
     setCollapsedGroups((prev) => ({ ...prev, [group]: !prev[group] }));
   }, []);
@@ -620,20 +634,41 @@ export function DbHealthPage() {
                   isSystem
                 />
               )}
-              {/* Projects sorted by size */}
-              {[...perProject.projects]
-                .sort((a, b) => b.sizeBytes - a.sizeBytes)
-                .map((p) => (
-                  <ProjectBar
-                    key={p.projectKey}
-                    label={p.projectKey}
-                    size={formatBytes(p.sizeBytes)}
-                    sizeBytes={p.sizeBytes}
-                    tableCount={p.tableCount}
-                    rowCount={p.rowCount}
-                    maxBytes={maxProjectSize}
-                  />
-                ))}
+              {/* Main projects (>=5KB) */}
+              {projectGroups.main.map((p) => (
+                <ProjectBar
+                  key={p.projectKey}
+                  label={p.projectKey}
+                  size={formatBytes(p.sizeBytes)}
+                  sizeBytes={p.sizeBytes}
+                  tableCount={p.tableCount}
+                  rowCount={p.rowCount}
+                  maxBytes={maxProjectSize}
+                />
+              ))}
+              {/* Small projects (<5KB) — collapsed by default */}
+              {projectGroups.small.length > 0 && (
+                <>
+                  <button
+                    onClick={() => toggleGroup('smallProjects')}
+                    className="flex items-center gap-1 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors py-1"
+                  >
+                    <span>{collapsedGroups.smallProjects ? '\u25B6' : '\u25BC'}</span>
+                    Small Projects &lt;5 kB ({projectGroups.small.length})
+                  </button>
+                  {!collapsedGroups.smallProjects && projectGroups.small.map((p) => (
+                    <ProjectBar
+                      key={p.projectKey}
+                      label={p.projectKey}
+                      size={formatBytes(p.sizeBytes)}
+                      sizeBytes={p.sizeBytes}
+                      tableCount={p.tableCount}
+                      rowCount={p.rowCount}
+                      maxBytes={maxProjectSize}
+                    />
+                  ))}
+                </>
+              )}
               {perProject.projects.length === 0 && (
                 <p className="text-sm text-[var(--text-secondary)]">
                   No project-attributed data found. All tables are in the System / Shared bucket.
