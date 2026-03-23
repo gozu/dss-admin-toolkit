@@ -29,6 +29,8 @@ CAMPAIGN_REQUIRED_SECTIONS: Dict[str, List[str]] = {
     'large_flow': ['projects', 'project_footprint'],
     'orphan_notebooks': ['projects', 'project_footprint'],
     'overshared_project': ['projects'],
+    'inactive_project': ['projects'],
+    'unused_code_env': ['code_envs'],
 }
 
 _SCHEMA_V1 = """
@@ -1138,6 +1140,8 @@ def extract_findings_from_outreach_data(
         'large_flow': ('largeFlowRecipients', 'project', _extract_project_findings_large_flow),
         'orphan_notebooks': ('orphanNotebookRecipients', 'project', _extract_project_findings_orphan),
         'overshared_project': ('oversharedProjectRecipients', 'project', _extract_project_findings_overshared),
+        'inactive_project': ('inactiveProjectRecipients', 'project', _extract_inactive_project_findings),
+        'unused_code_env': ('unusedCodeEnvRecipients', 'code_env', _extract_unused_code_env_findings),
     }
 
     for campaign_id, (recipients_key, entity_type, extractor) in _CAMPAIGN_MAP.items():
@@ -1420,6 +1424,49 @@ def _extract_project_findings_orphan(recipient, campaign_id, entity_type, owner,
             'metrics_json': {
                 'notebookCount': proj.get('notebookCount'),
                 'recipeCount': proj.get('recipeCount'),
+            },
+        })
+    return results
+
+
+def _extract_inactive_project_findings(recipient, campaign_id, entity_type, owner, email):
+    results = []
+    for proj in (recipient.get('projects') or []):
+        if not isinstance(proj, dict):
+            continue
+        pkey = str(proj.get('projectKey') or '')
+        if not pkey:
+            continue
+        results.append({
+            'campaign_id': campaign_id,
+            'entity_type': entity_type,
+            'entity_key': pkey,
+            'entity_name': proj.get('name'),
+            'owner_login': owner,
+            'owner_email': email,
+            'metrics_json': {'daysInactive': proj.get('daysInactive')},
+        })
+    return results
+
+
+def _extract_unused_code_env_findings(recipient, campaign_id, entity_type, owner, email):
+    results = []
+    for env in (recipient.get('codeEnvs') or []):
+        if not isinstance(env, dict):
+            continue
+        env_key = str(env.get('key') or env.get('name') or '')
+        if not env_key:
+            continue
+        results.append({
+            'campaign_id': campaign_id,
+            'entity_type': entity_type,
+            'entity_key': env_key,
+            'entity_name': env.get('name'),
+            'owner_login': owner,
+            'owner_email': email,
+            'metrics_json': {
+                'name': env.get('name'),
+                'language': env.get('language'),
             },
         })
     return results
