@@ -105,6 +105,60 @@ type SortKey = 'name' | 'totalSizeBytes' | 'rowCount' | 'deadTuples' | 'bloatRat
 type SortDir = 'asc' | 'desc';
 
 /* ------------------------------------------------------------------ */
+/*  Table Row                                                          */
+/* ------------------------------------------------------------------ */
+
+function TableRow({ t, overview, actionLoading, handleAction }: {
+  t: TableInfo;
+  overview: DbOverview | null;
+  actionLoading: Record<string, string>;
+  handleAction: (action: 'vacuum' | 'analyze', tableName: string, password?: string) => void;
+}) {
+  return (
+    <tr className="border-b border-[var(--border-default)]/30 hover:bg-[var(--bg-glass-hover)]">
+      <td className="py-1.5 pr-4 font-mono text-xs text-[var(--text-primary)]">{t.name}</td>
+      <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.totalSize}</td>
+      <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.rowCount.toLocaleString()}</td>
+      <td className="py-1.5 pr-4 text-right" style={{ color: t.deadTuples > 1000 ? 'var(--neon-yellow)' : 'var(--text-secondary)' }}>
+        {t.deadTuples.toLocaleString()}
+      </td>
+      <td className="py-1.5 pr-4 text-right font-mono" style={{ color: bloatColor(t.bloatRatio) }}>
+        {(t.bloatRatio * 100).toFixed(1)}%
+      </td>
+      <td className="py-1.5 pr-4 text-xs" style={{ color: vacuumAgeColor(t.lastVacuum) }}>
+        {relativeTime(t.lastVacuum)}
+      </td>
+      <td className="py-1.5 pr-4 text-xs" style={{ color: vacuumAgeColor(t.lastAutovacuum) }}>
+        {relativeTime(t.lastAutovacuum)}
+      </td>
+      <td className="py-1.5 pr-4 text-xs text-[var(--text-secondary)]">
+        {relativeTime(t.lastAnalyze)}
+      </td>
+      <td className="py-1.5">
+        <div className="flex gap-1">
+          <button
+            onClick={() => handleAction('vacuum', t.name)}
+            disabled={!overview?.canWrite || !!actionLoading[`vacuum-${t.name}`]}
+            title={!overview?.canWrite ? 'No write access on this connection' : `Run VACUUM on ${t.name} — reclaims disk space from dead tuples`}
+            className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+          >
+            {actionLoading[`vacuum-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'Vacuum'}
+          </button>
+          <button
+            onClick={() => handleAction('analyze', t.name)}
+            disabled={!overview?.canWrite || !!actionLoading[`analyze-${t.name}`]}
+            title={!overview?.canWrite ? 'No write access on this connection' : `Optimize ${t.name} — runs PostgreSQL ANALYZE to update query planner statistics for faster queries`}
+            className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+          >
+            {actionLoading[`analyze-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'Optimize'}
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -297,8 +351,66 @@ export function DbHealthPage() {
     bloatRatio: 'Dead tuples as a percentage of total tuples — high values indicate VACUUM is needed',
     lastVacuum: 'Last time a manual VACUUM was run on this table',
     lastAutovacuum: 'Last time PostgreSQL autovacuum processed this table',
-    lastAnalyze: 'Last time table statistics were updated (ANALYZE)',
+    lastAnalyze: 'Last time table statistics were updated (PostgreSQL ANALYZE)',
   };
+
+  // Group tables into folders
+  const SMALL_THRESHOLD = 5000;
+  const tableGroups = useMemo(() => {
+    const system: TableInfo[] = [];
+    const small: TableInfo[] = [];
+    const main: TableInfo[] = [];
+    for (const t of sortedTables) {
+      if (t.name.startsWith('pg_') || t.name.startsWith('sql_') || t.name.startsWith('information_schema')) {
+        system.push(t);
+      } else if (t.rowCount < SMALL_THRESHOLD && t.totalSizeBytes < 65536) {
+        small.push(t);
+      } else {
+        main.push(t);
+      }
+    }
+    return { main, system, small };
+  }, [sortedTables]);
+
+  // Collapsed state for folders
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({ system: true, small: true });
+  const toggleGroup = useCallback((group: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [group]: !prev[group] }));
+  }, []);
+
+  // Bulk vacuum + optimize all
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState('');
+  const handleBulkAction = useCallback(async () => {
+    if (!selectedConn || !tables.length) return;
+    setBulkRunning(true);
+    const total = tables.length;
+    let done = 0;
+    for (const t of tables) {
+      setBulkProgress(`${done + 1}/${total}: ${t.name}`);
+      try {
+        const effectivePw = dbPassword;
+        const payload: Record<string, string> = { connection: selectedConn, table: t.name };
+        if (effectivePw) payload.password = effectivePw;
+        await fetchJson(`/api/tools/db-health/vacuum`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        await fetchJson(`/api/tools/db-health/analyze`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch { /* continue on error */ }
+      done++;
+    }
+    setBulkProgress('');
+    setBulkRunning(false);
+    // Refresh table data
+    const q = encodeURIComponent(selectedConn);
+    const pw = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
+    const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}${pw}`);
+    setTables(tb.tables || []);
+  }, [selectedConn, tables, dbPassword]);
 
   return (
     <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col gap-4">
@@ -400,7 +512,21 @@ export function DbHealthPage() {
       {/* Tables Table */}
       {tables.length > 0 && !dataLoading && (
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium text-[var(--text-secondary)] mb-3">Table Breakdown</h3>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-medium text-[var(--text-secondary)]">Table Breakdown</h3>
+            {overview?.canWrite && (
+              <button
+                onClick={handleBulkAction}
+                disabled={bulkRunning}
+                title="Run VACUUM followed by ANALYZE on every table"
+                className="px-3 py-1 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                {bulkRunning ? (
+                  <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />{bulkProgress}</>
+                ) : 'Vacuum & Optimize All'}
+              </button>
+            )}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -427,54 +553,44 @@ export function DbHealthPage() {
                     Autovacuum {sortIcon('lastAutovacuum')}
                   </th>
                   <th className="pb-2 pr-4 cursor-pointer select-none" onClick={() => handleSort('lastAnalyze')} title={colTips.lastAnalyze}>
-                    Analyze {sortIcon('lastAnalyze')}
+                    Optimized {sortIcon('lastAnalyze')}
                   </th>
-                  <th className="pb-2" title="Run VACUUM or ANALYZE on this table">Actions</th>
+                  <th className="pb-2" title="Run VACUUM or Optimize (PostgreSQL ANALYZE) on this table">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {sortedTables.map((t) => (
-                  <tr key={t.name} className="border-b border-[var(--border-default)]/30 hover:bg-[var(--bg-glass-hover)]">
-                    <td className="py-1.5 pr-4 font-mono text-xs text-[var(--text-primary)]">{t.name}</td>
-                    <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.totalSize}</td>
-                    <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.rowCount.toLocaleString()}</td>
-                    <td className="py-1.5 pr-4 text-right" style={{ color: t.deadTuples > 1000 ? 'var(--neon-yellow)' : 'var(--text-secondary)' }}>
-                      {t.deadTuples.toLocaleString()}
-                    </td>
-                    <td className="py-1.5 pr-4 text-right font-mono" style={{ color: bloatColor(t.bloatRatio) }}>
-                      {(t.bloatRatio * 100).toFixed(1)}%
-                    </td>
-                    <td className="py-1.5 pr-4 text-xs" style={{ color: vacuumAgeColor(t.lastVacuum) }}>
-                      {relativeTime(t.lastVacuum)}
-                    </td>
-                    <td className="py-1.5 pr-4 text-xs" style={{ color: vacuumAgeColor(t.lastAutovacuum) }}>
-                      {relativeTime(t.lastAutovacuum)}
-                    </td>
-                    <td className="py-1.5 pr-4 text-xs text-[var(--text-secondary)]">
-                      {relativeTime(t.lastAnalyze)}
-                    </td>
-                    <td className="py-1.5">
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => handleAction('vacuum', t.name)}
-                          disabled={!overview?.canWrite || !!actionLoading[`vacuum-${t.name}`]}
-                          title={!overview?.canWrite ? 'No write access on this connection' : `Run VACUUM on ${t.name}`}
-                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                        >
-                          {actionLoading[`vacuum-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'VACUUM'}
-                        </button>
-                        <button
-                          onClick={() => handleAction('analyze', t.name)}
-                          disabled={!overview?.canWrite || !!actionLoading[`analyze-${t.name}`]}
-                          title={!overview?.canWrite ? 'No write access on this connection' : `Run ANALYZE on ${t.name}`}
-                          className="px-2 py-0.5 text-xs rounded bg-[var(--bg-glass)] hover:bg-[var(--bg-glass-hover)] border border-[var(--border-default)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
-                        >
-                          {actionLoading[`analyze-${t.name}`] ? <><span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />Running</> : 'ANALYZE'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                {/* Main tables */}
+                {tableGroups.main.map((t) => (
+                  <TableRow key={t.name} t={t} overview={overview} actionLoading={actionLoading} handleAction={handleAction} />
                 ))}
+                {/* System tables folder */}
+                {tableGroups.system.length > 0 && (
+                  <>
+                    <tr className="cursor-pointer hover:bg-[var(--bg-glass-hover)]" onClick={() => toggleGroup('system')}>
+                      <td colSpan={9} className="py-2 text-xs font-medium text-[var(--text-secondary)]">
+                        <span className="mr-1">{collapsedGroups.system ? '\u25B6' : '\u25BC'}</span>
+                        System Tables ({tableGroups.system.length})
+                      </td>
+                    </tr>
+                    {!collapsedGroups.system && tableGroups.system.map((t) => (
+                      <TableRow key={t.name} t={t} overview={overview} actionLoading={actionLoading} handleAction={handleAction} />
+                    ))}
+                  </>
+                )}
+                {/* Small tables folder */}
+                {tableGroups.small.length > 0 && (
+                  <>
+                    <tr className="cursor-pointer hover:bg-[var(--bg-glass-hover)]" onClick={() => toggleGroup('small')}>
+                      <td colSpan={9} className="py-2 text-xs font-medium text-[var(--text-secondary)]">
+                        <span className="mr-1">{collapsedGroups.small ? '\u25B6' : '\u25BC'}</span>
+                        Small Tables &lt;5k rows ({tableGroups.small.length})
+                      </td>
+                    </tr>
+                    {!collapsedGroups.small && tableGroups.small.map((t) => (
+                      <TableRow key={t.name} t={t} overview={overview} actionLoading={actionLoading} handleAction={handleAction} />
+                    ))}
+                  </>
+                )}
               </tbody>
             </table>
           </div>
