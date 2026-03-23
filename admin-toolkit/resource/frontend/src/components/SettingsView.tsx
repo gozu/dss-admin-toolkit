@@ -42,7 +42,7 @@ const mainFields: FieldDef[] = [
   { key: 'filesystemCriticalPct', label: 'Filesystem Critical %', description: 'Filesystem usage above this triggers a critical alert.', min: 0, max: 100, step: 5 },
   { key: 'largeFlowThreshold', label: 'Large Flow Threshold', description: 'Flows with more objects than this are flagged.', min: 1, max: 1000, step: 10 },
   { key: 'inactiveProjectDays', label: 'Inactive Project Days', description: 'Projects inactive for more days than this are flagged.', min: 30, max: 730, step: 30 },
-  { key: 'emptyProjectBytes', label: 'Empty Project Size (bytes)', description: 'Projects larger than this are not considered empty.', min: 0, max: 10485760, step: 1024 },
+  { key: 'emptyProjectBytes', label: 'Empty Project Size (KB)', description: 'Projects larger than this (in KB) are not considered empty.', min: 0, max: 10240, step: 1 },
   { key: 'orphanNotebookMinCount', label: 'Orphan Notebook Min Count', description: 'Minimum notebook count to flag orphan notebooks.', min: 1, max: 50, step: 1 },
   { key: 'highFreqScenarioMinutes', label: 'High-Freq Scenario (min)', description: 'Scenarios running more often than this are flagged.', min: 1, max: 1440, step: 5 },
   { key: 'deprecatedPythonPrefixes', label: 'Deprecated Python Prefixes', description: 'Comma-separated version prefixes to flag (e.g. 2.,3.6,3.7).', min: 0, max: 0, step: 0, type: 'text' },
