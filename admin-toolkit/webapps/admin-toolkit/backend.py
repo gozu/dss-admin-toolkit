@@ -5877,6 +5877,7 @@ def _do_tracking_ingest(db, data):
         'orphan_notebooks': 'orphanNotebookRecipients',
         'overshared_project': 'oversharedProjectRecipients',
         'inactive_project': 'inactiveProjectRecipients',
+        'unused_code_env': 'unusedCodeEnvRecipients',
     }
     campaign_summaries = []
     findings_by_campaign = {}
