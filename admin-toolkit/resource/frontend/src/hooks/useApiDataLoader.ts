@@ -1423,12 +1423,12 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           log(`TIMING_TABLE:${rows.join(';;')}`);
         }
         log('Live data load completed');
+        dispatch({ type: 'SET_PARSED_DATA', payload: { dataReady: true } });
         if (deferredTails.length > 0) {
           log(`Awaiting ${deferredTails.length} deferred tail requests`);
           await Promise.allSettled(deferredTails);
           log('Deferred tails resolved');
         }
-        dispatch({ type: 'SET_PARSED_DATA', payload: { dataReady: true } });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         log(`Live data load failed: ${message}`, 'error');

@@ -254,7 +254,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
     for (const section of NAV_SECTIONS) {
       for (const item of section.items) {
         const avail = getPageAvailability(parsedData, item.id);
-        if (prev[item.id] === 'loading' && (avail === 'ready' || avail === 'independent')) {
+        if ((prev[item.id] === 'loading' || prev[item.id] === 'partial') && (avail === 'ready' || avail === 'independent')) {
           newlyReady.push(item.id);
         }
         prev[item.id] = avail;
@@ -295,6 +295,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
     const badgeCount = getBadgeCount(item.badge);
     const avail = getPageAvailability(parsedData, item.id);
     const isDimmed = avail === 'loading';
+    const isPartial = avail === 'partial';
     const isLightUp = lightUpPages.has(item.id);
 
     return (
@@ -310,7 +311,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
           isActive
             ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : ''}`}
+        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : isPartial ? 'opacity-60' : ''}`}
         style={isLightUp ? { animation: 'sidebar-ready 600ms ease-out' } : undefined}
       >
         {/* Active indicator bar */}
