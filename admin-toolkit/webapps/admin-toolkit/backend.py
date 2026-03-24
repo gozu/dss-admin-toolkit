@@ -6281,7 +6281,22 @@ def api_tools_outreach_data():
         def _fetch_project_scenarios(p_key: str) -> Tuple[str, Optional[list]]:
             local_client = _thread_client()
             try:
-                return (p_key, _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/'))
+                bulk = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/')
+                # Bulk list doesn't include triggers; fetch full definition for active scenarios
+                enriched = []
+                for sc in bulk:
+                    if sc.get('active'):
+                        try:
+                            full = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/{sc["id"]}')
+                            # Preserve lastScenarioRun from bulk (not in individual endpoint)
+                            if 'lastScenarioRun' in sc and 'lastScenarioRun' not in full:
+                                full['lastScenarioRun'] = sc['lastScenarioRun']
+                            enriched.append(full)
+                        except Exception:
+                            enriched.append(sc)
+                    else:
+                        enriched.append(sc)
+                return (p_key, enriched)
             except Exception:
                 return (p_key, None)
 
@@ -6345,7 +6360,7 @@ def api_tools_outreach_data():
                         continue
                     params = trigger.get('params') or {}
                     if isinstance(params, dict):
-                        period = params.get('repeatEvery') or params.get('frequency') or params.get('period')
+                        period = params.get('repeatFrequency') or params.get('repeatEvery') or params.get('period')
                         minutes = _parse_trigger_period_minutes(period)
                         if minutes and (min_period_minutes is None or minutes < min_period_minutes):
                             min_period_minutes = minutes
