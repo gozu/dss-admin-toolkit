@@ -18,7 +18,6 @@ interface PageDef {
 const PAGE_DEFS: PageDef[] = [
   { id: 'summary', label: 'Summary', section: 'Overview', keywords: ['health', 'score', 'overview', 'dashboard'] },
   { id: 'issues', label: 'Issues', section: 'Overview', keywords: ['disabled', 'features', 'alerts', 'problems'] },
-  { id: 'settings', label: 'Settings', section: 'Overview', keywords: ['config', 'threshold', 'preference'] },
   { id: 'filesystem', label: 'Filesystem', section: 'System', keywords: ['disk', 'storage', 'mount', 'partition'] },
   { id: 'memory', label: 'Memory', section: 'System', keywords: ['ram', 'swap', 'memory', 'usage'] },
   { id: 'connections', label: 'Connections', section: 'Monitoring', keywords: ['database', 'connector', 'type'] },

@@ -21,9 +21,6 @@ const ToolsView = lazy(() => import('../ToolsView').then((m) => ({ default: m.To
 const TrackingView = lazy(() =>
   import('../TrackingView').then((m) => ({ default: m.TrackingView })),
 );
-const SettingsView = lazy(() =>
-  import('../SettingsView').then((m) => ({ default: m.SettingsView })),
-);
 const CodeEnvCleanerLazy = lazy(() =>
   import('../CodeEnvCleaner').then((m) => ({ default: m.CodeEnvCleaner })),
 );
@@ -53,7 +50,7 @@ const crossfadeTransition = {
   ease: 'easeInOut' as const,
 };
 
-function renderPage(activePage: PageId, onBackToSummary: () => void): React.ReactNode {
+function renderPage(activePage: PageId): React.ReactNode {
   switch (activePage) {
     case 'summary':
       return <SummaryPage />;
@@ -89,15 +86,13 @@ function renderPage(activePage: PageId, onBackToSummary: () => void): React.Reac
       return <ReportPage />;
     case 'db-health':
       return <DbHealthPage />;
-    case 'settings':
-      return <SettingsView onBack={onBackToSummary} />;
     default:
       return <SummaryPage />;
   }
 }
 
 export function PageRouter() {
-  const { state, setActivePage, addDebugLog } = useDiag();
+  const { state, addDebugLog } = useDiag();
   const { activePage } = state;
   const prevPageRef = useRef(activePage);
 
@@ -107,10 +102,6 @@ export function PageRouter() {
       prevPageRef.current = activePage;
     }
   }, [activePage, addDebugLog]);
-
-  const handleBackToSummary = () => {
-    setActivePage('summary');
-  };
 
   return (
     <AnimatePresence mode="wait">
@@ -124,7 +115,7 @@ export function PageRouter() {
         className="flex-1 flex flex-col"
       >
         <Suspense fallback={<LoadingSpinner />}>
-          {renderPage(activePage, handleBackToSummary)}
+          {renderPage(activePage)}
         </Suspense>
       </motion.div>
     </AnimatePresence>

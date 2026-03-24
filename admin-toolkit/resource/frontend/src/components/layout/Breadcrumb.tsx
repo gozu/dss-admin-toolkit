@@ -9,7 +9,6 @@ interface SectionInfo {
 const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   summary: { label: 'Overview', firstPage: 'summary' },
   issues: { label: 'Overview', firstPage: 'summary' },
-  settings: { label: 'Overview', firstPage: 'summary' },
   filesystem: { label: 'System', firstPage: 'filesystem' },
   memory: { label: 'System', firstPage: 'filesystem' },
   connections: { label: 'Monitoring', firstPage: 'connections' },
@@ -47,7 +46,6 @@ const PAGE_LABELS: Record<PageId, string> = {
   tracking: 'Compliance',
   report: 'Report',
   'db-health': 'DB Health',
-  settings: 'Settings',
 };
 
 export function Breadcrumb() {

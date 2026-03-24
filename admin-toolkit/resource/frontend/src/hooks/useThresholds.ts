@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 
 export interface ThresholdSettings {
   // === Main Settings ===
@@ -89,13 +89,11 @@ const DEFAULT_THRESHOLDS: ThresholdSettings = {
   syntaxHighlightMaxKB: 500,
 };
 
-const STORAGE_KEY = 'diagparser.thresholds';
-
 let listeners: Array<() => void> = [];
 let cached: ThresholdSettings | null = null;
 let serverDefaults: Partial<ThresholdSettings> = {};
 
-// Fetch plugin.json threshold defaults once on module load
+// Fetch plugin param defaults once on module load
 fetch('/api/settings/threshold-defaults')
   .then((r) => (r.ok ? r.json() : {}))
   .then((data: Partial<ThresholdSettings>) => {
@@ -109,24 +107,8 @@ fetch('/api/settings/threshold-defaults')
 
 function read(): ThresholdSettings {
   if (cached) return cached;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    const stored = raw ? JSON.parse(raw) : {};
-    cached = { ...DEFAULT_THRESHOLDS, ...serverDefaults, ...stored };
-  } catch {
-    cached = { ...DEFAULT_THRESHOLDS, ...serverDefaults };
-  }
-  return cached as ThresholdSettings;
-}
-
-function write(next: ThresholdSettings) {
-  cached = next;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-  for (const fn of listeners) fn();
+  cached = { ...DEFAULT_THRESHOLDS, ...serverDefaults };
+  return cached;
 }
 
 function subscribe(cb: () => void) {
@@ -142,15 +124,5 @@ function getSnapshot(): ThresholdSettings {
 
 export function useThresholds() {
   const thresholds = useSyncExternalStore(subscribe, getSnapshot);
-
-  const setThreshold = useCallback(<K extends keyof ThresholdSettings>(key: K, value: ThresholdSettings[K]) => {
-    const current = read();
-    write({ ...current, [key]: value });
-  }, []);
-
-  const resetDefaults = useCallback(() => {
-    write({ ...DEFAULT_THRESHOLDS, ...serverDefaults });
-  }, []);
-
-  return { thresholds, setThreshold, resetDefaults, defaults: { ...DEFAULT_THRESHOLDS, ...serverDefaults } };
+  return { thresholds, defaults: DEFAULT_THRESHOLDS };
 }

@@ -8657,28 +8657,6 @@ def api_settings_get():
         return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
 
 
-@app.route('/api/settings', methods=['PUT'])
-def api_settings_put():
-    body = request.get_json(force=True, silent=True) or {}
-    with _BACKEND_SETTINGS_LOCK:
-        for key, value in body.items():
-            if key in _BACKEND_SETTINGS:
-                expected_type = type(_BACKEND_SETTINGS[key])
-                try:
-                    _BACKEND_SETTINGS[key] = expected_type(value)
-                except (ValueError, TypeError):
-                    pass
-    with _BACKEND_SETTINGS_LOCK:
-        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
-
-
-@app.route('/api/settings/reset', methods=['POST'])
-def api_settings_reset():
-    with _BACKEND_SETTINGS_LOCK:
-        _BACKEND_SETTINGS.update(_BACKEND_SETTINGS_DEFAULTS)
-        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
-
-
 @app.route('/api/settings/threshold-defaults', methods=['GET'])
 def api_settings_threshold_defaults():
     try:

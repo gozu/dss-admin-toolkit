@@ -24,7 +24,6 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     // Always available — instant, self-loading, or independent
     case 'summary':
     case 'issues':
-    case 'settings':
     case 'project-cleaner':
       return hasInactiveProjectsCache() ? 'ready' : 'loading';
     case 'plugins': // PluginComparator fetches its own data

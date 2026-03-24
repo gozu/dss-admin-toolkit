@@ -82,6 +82,21 @@ _PERF_MAP = {
     'perf_cache_ttl_code_envs': ('cache_ttl_code_envs', int),
     'perf_codenvclean_thread_max': ('codenvclean_thread_max', int),
     'perf_tracking_issue_page_size': ('tracking_issue_page_size', int),
+    'perf_cache_ttl_connections': ('cache_ttl_connections', int),
+    'perf_cache_ttl_users': ('cache_ttl_users', int),
+    'perf_cache_ttl_license': ('cache_ttl_license', int),
+    'perf_cache_ttl_usage_full': ('cache_ttl_usage_full', int),
+    'perf_cache_ttl_outreach': ('cache_ttl_outreach', int),
+    'perf_cache_ttl_inactive': ('cache_ttl_inactive', int),
+    'perf_cache_ttl_plugins': ('cache_ttl_plugins', int),
+    'perf_cache_ttl_log_errors': ('cache_ttl_log_errors', int),
+    'perf_cache_ttl_dir_tree': ('cache_ttl_dir_tree', int),
+    'perf_fe_timeout_code_envs': ('fe_timeout_code_envs', int),
+    'perf_fe_timeout_project_footprint': ('fe_timeout_project_footprint', int),
+    'perf_fe_timeout_projects': ('fe_timeout_projects', int),
+    'perf_fe_timeout_logs': ('fe_timeout_logs', int),
+    'perf_fe_timeout_llm_analysis': ('fe_timeout_llm_analysis', int),
+    'perf_sqlite_connect_timeout': ('sqlite_connect_timeout', int),
 }
 
 _THRESH_MAP = {
@@ -96,6 +111,29 @@ _THRESH_MAP = {
     'thresh_code_studio_count_unhealthy': ('codeStudioCountUnhealthy', int),
     'thresh_orphan_notebook_min': ('orphanNotebookMin', int),
     'thresh_large_flow_objects': ('largeFlowObjects', int),
+    'thresh_high_freq_scenario_minutes': ('highFreqScenarioMinutes', int),
+    'thresh_disabled_features_cutoff': ('disabledFeaturesSeverityCutoff', int),
+    'thresh_open_files_minimum': ('openFilesMinimum', int),
+    'thresh_java_heap_minimum_mb': ('javaHeapMinimumMB', int),
+    'thresh_python_critical_below': ('pythonCriticalBelow', str),
+    'thresh_python_warning_below': ('pythonWarningBelow', str),
+    'thresh_spark_version_minimum': ('sparkVersionMinimum', int),
+    'thresh_project_count_warning': ('projectCountWarning', int),
+    'weight_code_envs': ('weightCodeEnvs', float),
+    'weight_project_footprint': ('weightProjectFootprint', float),
+    'weight_system_capacity': ('weightSystemCapacity', float),
+    'weight_security_isolation': ('weightSecurityIsolation', float),
+    'weight_version_currency': ('weightVersionCurrency', float),
+    'weight_runtime_config': ('weightRuntimeConfig', float),
+    'log_lines_before': ('logLinesBefore', int),
+    'log_lines_after': ('logLinesAfter', int),
+    'log_grouping_window_sec': ('logTimeThresholdSec', int),
+    'log_max_errors': ('logMaxErrors', int),
+    'log_ai_system_prompt': ('aiLogAnalysisPrompt', str),
+    'scan_large_file_threshold_gb': ('largeFileThresholdGB', int),
+    'scan_dir_tree_default_depth': ('dirTreeDefaultDepth', int),
+    'scan_file_viewer_max_lines': ('fileViewerMaxLines', int),
+    'scan_syntax_highlight_max_kb': ('syntaxHighlightMaxKB', int),
 }
 
 _OUTREACH_THRESH_MAP = {
@@ -105,6 +143,7 @@ _OUTREACH_THRESH_MAP = {
     'thresh_code_studio_count_unhealthy': ('code_studio_count_unhealthy', int),
     'thresh_orphan_notebook_min': ('orphan_notebook_min', int),
     'thresh_large_flow_objects': ('large_flow_objects', int),
+    'thresh_high_freq_scenario_minutes': ('high_freq_scenario_minutes', int),
 }
 
 
