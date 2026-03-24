@@ -6320,9 +6320,12 @@ def api_tools_outreach_data():
                     except Exception:
                         scenario_results.append((futures[future], None))
 
-        def _parse_trigger_period_minutes(period: Any) -> Optional[float]:
+        _FREQ_UNIT_TO_MINUTES = {'Minutely': 1, 'Hourly': 60, 'Daily': 1440, 'Weekly': 10080, 'Monthly': 43200}
+
+        def _parse_trigger_period_minutes(period: Any, freq_unit: str = '') -> Optional[float]:
             if isinstance(period, (int, float)) and period > 0:
-                return float(period)
+                multiplier = _FREQ_UNIT_TO_MINUTES.get(freq_unit, 1)
+                return float(period) * multiplier
             return None
 
         for p_key, bulk_scenarios in scenario_results:
@@ -6361,7 +6364,8 @@ def api_tools_outreach_data():
                     params = trigger.get('params') or {}
                     if isinstance(params, dict):
                         period = params.get('repeatFrequency') or params.get('repeatEvery') or params.get('period')
-                        minutes = _parse_trigger_period_minutes(period)
+                        freq_unit = str(params.get('frequency') or '')
+                        minutes = _parse_trigger_period_minutes(period, freq_unit)
                         if minutes and (min_period_minutes is None or minutes < min_period_minutes):
                             min_period_minutes = minutes
                 sc_entry = {
