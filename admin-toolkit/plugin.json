@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.201",
+    "version": "0.4.202",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -172,7 +172,7 @@
             "description": "Cache TTL for overview endpoint.",
             "type": "INT",
             "mandatory": false,
-            "defaultValue": 300
+            "defaultValue": 600
         },
         {
             "name": "perf_cache_ttl_projects",
@@ -180,7 +180,7 @@
             "description": "Cache TTL for projects endpoint.",
             "type": "INT",
             "mandatory": false,
-            "defaultValue": 300
+            "defaultValue": 600
         },
         {
             "name": "perf_cache_ttl_code_envs",
@@ -188,7 +188,7 @@
             "description": "Cache TTL for code envs endpoint.",
             "type": "INT",
             "mandatory": false,
-            "defaultValue": 5
+            "defaultValue": 600
         },
         {
             "name": "perf_codenvclean_thread_max",
