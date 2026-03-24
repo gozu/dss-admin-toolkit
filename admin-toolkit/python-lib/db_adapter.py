@@ -112,6 +112,7 @@ _THRESH_MAP = {
     'thresh_orphan_notebook_min': ('orphanNotebookMin', int),
     'thresh_large_flow_objects': ('largeFlowObjects', int),
     'thresh_high_freq_scenario_minutes': ('highFreqScenarioMinutes', int),
+    'thresh_overshared_project_permissions': ('oversharedProjectPermissions', int),
     'thresh_disabled_features_cutoff': ('disabledFeaturesSeverityCutoff', int),
     'thresh_open_files_minimum': ('openFilesMinimum', int),
     'thresh_java_heap_minimum_mb': ('javaHeapMinimumMB', int),
@@ -144,6 +145,7 @@ _OUTREACH_THRESH_MAP = {
     'thresh_orphan_notebook_min': ('orphan_notebook_min', int),
     'thresh_large_flow_objects': ('large_flow_objects', int),
     'thresh_high_freq_scenario_minutes': ('high_freq_scenario_minutes', int),
+    'thresh_overshared_project_permissions': ('overshared_project_permissions', int),
 }
 
 

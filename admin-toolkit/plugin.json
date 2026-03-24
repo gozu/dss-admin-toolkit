@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.209",
+    "version": "0.4.210",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -104,6 +104,14 @@
             "type": "INT",
             "mandatory": false,
             "defaultValue": 100
+        },
+        {
+            "name": "thresh_overshared_project_permissions",
+            "label": "Overshared Project Permission Count",
+            "description": "Projects with more permission entries than this are flagged as overshared.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 10
         },
         {
             "name": "thresh_high_freq_scenario_minutes",

@@ -3962,6 +3962,18 @@ def _count_code_studios_by_project(client: Any, project_info: Dict[str, Dict[str
     return counts
 
 
+def _count_permissions_by_project(client: Any, project_info: Dict[str, Dict[str, str]]) -> Dict[str, int]:
+    """Return {project_key: permission_entry_count} for all known projects."""
+    counts: Dict[str, int] = {}
+    for pk in project_info:
+        try:
+            raw = client.get_project(pk).get_settings().get_raw()
+            counts[pk] = len(raw.get('permissions') or [])
+        except Exception:
+            counts[pk] = 0
+    return counts
+
+
 def _get_shared_project_code_env_usage(
     client: Any,
     project_info: Dict[str, Dict[str, str]],
@@ -6612,7 +6624,39 @@ def api_tools_outreach_data():
             })
         large_flow_recipients = _finalize_recipients(large_flow_recipients_map)
 
-        # 6. Orphan notebooks (high notebook count relative to recipes)
+        # 6. Overshared projects (too many permission entries)
+        overshared_project_recipients_map: Dict[str, Dict[str, Any]] = {}
+        overshared_project_count = 0
+        _overshared_thresh = _outreach_thresholds.get('overshared_project_permissions', 10)
+        overshared_perm_counts = _count_permissions_by_project(client, project_info)
+        for project_key, perm_count in overshared_perm_counts.items():
+            if perm_count <= _overshared_thresh:
+                continue
+            overshared_project_count += 1
+            meta = project_info.get(project_key) or {}
+            owner = str(meta.get('owner') or 'Unknown')
+            recipient = overshared_project_recipients_map.setdefault(
+                owner,
+                {
+                    'recipientKey': owner,
+                    'owner': owner,
+                    'email': user_email_by_login.get(owner, owner),
+                    'projectKeys': [],
+                    'codeEnvNames': [],
+                    'usageDetails': [],
+                    'projects': [],
+                },
+            )
+            if project_key:
+                recipient['projectKeys'].append(project_key)
+            recipient['projects'].append({
+                'projectKey': project_key,
+                'name': str(meta.get('name') or project_key),
+                'permissionCount': perm_count,
+            })
+        overshared_project_recipients = _finalize_recipients(overshared_project_recipients_map)
+
+        # 7. Orphan notebooks (high notebook count relative to recipes)
         orphan_notebook_recipients_map: Dict[str, Dict[str, Any]] = {}
         orphan_notebook_count = 0
         for row in project_rows:
@@ -6738,7 +6782,7 @@ def api_tools_outreach_data():
         ]
 
         app.logger.info(
-            "[tools] outreach-data loaded projects=%s unhealthyProjects=%s unhealthyCodeEnvs=%s codeStudio=%s autoScenarios=%s disabledUser=%s deprecatedEnv=%s defaultEnv=%s scenarioFreq=%s scenarioFailing=%s empty=%s largeFlow=%s orphanNotebooks=%s inactive=%s unusedCodeEnv=%s channels=%s",
+            "[tools] outreach-data loaded projects=%s unhealthyProjects=%s unhealthyCodeEnvs=%s codeStudio=%s autoScenarios=%s disabledUser=%s deprecatedEnv=%s defaultEnv=%s scenarioFreq=%s scenarioFailing=%s empty=%s largeFlow=%s orphanNotebooks=%s inactive=%s unusedCodeEnv=%s overshared=%s channels=%s",
             len(project_rows),
             len(unhealthy_projects),
             len(unhealthy_code_envs),
@@ -6754,6 +6798,7 @@ def api_tools_outreach_data():
             orphan_notebook_count,
             inactive_project_count,
             unused_code_env_count,
+            overshared_project_count,
             len(mail_channels),
         )
 
@@ -6778,6 +6823,7 @@ def api_tools_outreach_data():
                 'scenarioFailingCount': scenario_failing_count,
                 'inactiveProjectCount': inactive_project_count,
                 'unusedCodeEnvCount': unused_code_env_count,
+                'oversharedProjectCount': overshared_project_count,
             },
             'mailChannels': mail_channels,
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
@@ -6791,7 +6837,7 @@ def api_tools_outreach_data():
             'disabledUserRecipients': disabled_user_recipients,
             'deprecatedCodeEnvRecipients': deprecated_code_env_recipients,
             'defaultCodeEnvRecipients': default_code_env_recipients,
-            'oversharedProjectRecipients': [],
+            'oversharedProjectRecipients': overshared_project_recipients,
             'scenarioFrequencyRecipients': scenario_frequency_recipients,
             'emptyProjectRecipients': empty_project_recipients,
             'largeFlowRecipients': large_flow_recipients,
