@@ -6282,22 +6282,33 @@ def api_tools_outreach_data():
             local_client = _thread_client()
             try:
                 bulk = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/')
+                app.logger.info("[outreach:scenarios] %s bulk=%s", p_key,
+                                len(bulk) if isinstance(bulk, list) else type(bulk).__name__)
+                if not isinstance(bulk, list):
+                    return (p_key, None)
                 # Bulk list doesn't include triggers; fetch full definition for active scenarios
                 enriched = []
                 for sc in bulk:
                     if sc.get('active'):
                         try:
                             full = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/{sc["id"]}')
-                            # Preserve lastScenarioRun from bulk (not in individual endpoint)
-                            if 'lastScenarioRun' in sc and 'lastScenarioRun' not in full:
-                                full['lastScenarioRun'] = sc['lastScenarioRun']
-                            enriched.append(full)
-                        except Exception:
+                            if isinstance(full, dict) and 'triggers' in full:
+                                # Preserve lastScenarioRun from bulk (not in individual endpoint)
+                                if 'lastScenarioRun' in sc and 'lastScenarioRun' not in full:
+                                    full['lastScenarioRun'] = sc['lastScenarioRun']
+                                enriched.append(full)
+                                app.logger.info("[outreach:scenarios] %s/%s enriched triggers=%d", p_key, sc.get('id'), len(full.get('triggers', [])))
+                            else:
+                                enriched.append(sc)
+                                app.logger.info("[outreach:scenarios] %s/%s enrich returned %s, using bulk", p_key, sc.get('id'), type(full).__name__)
+                        except Exception as e:
+                            app.logger.warning("[outreach:scenarios] %s/%s enrich failed: %s", p_key, sc.get('id'), e)
                             enriched.append(sc)
                     else:
                         enriched.append(sc)
                 return (p_key, enriched)
-            except Exception:
+            except Exception as e:
+                app.logger.warning("[outreach:scenarios] %s FAILED: %s", p_key, e)
                 return (p_key, None)
 
         scenario_project_keys = list(project_info.keys())
