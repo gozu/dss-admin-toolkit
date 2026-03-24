@@ -3947,8 +3947,19 @@ def _collect_project_code_env_usage(
         'usageBreakdownByProject': usage_breakdown_by_project,
         'usageDetailsByProject': usage_details_by_project,
         'envMetaByKey': env_meta_by_key,
-        'codeStudioCountByProject': {},
+        'codeStudioCountByProject': _count_code_studios_by_project(client, project_info),
     }
+
+
+def _count_code_studios_by_project(client: Any, project_info: Dict[str, Dict[str, str]]) -> Dict[str, int]:
+    """Return {project_key: code_studio_count} for all known projects."""
+    counts: Dict[str, int] = {}
+    for pk in project_info:
+        try:
+            counts[pk] = len(client.get_project(pk).list_code_studios())
+        except Exception:
+            counts[pk] = 0
+    return counts
 
 
 def _get_shared_project_code_env_usage(
