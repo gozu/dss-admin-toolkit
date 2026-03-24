@@ -6300,11 +6300,7 @@ def api_tools_outreach_data():
             except Exception:
                 return (p_key, None)
 
-        scenario_project_keys = []
-        for meta in project_info.values():
-            p_key = str(meta.get('key') or meta.get('projectKey') or '')
-            if p_key:
-                scenario_project_keys.append(p_key)
+        scenario_project_keys = list(project_info.keys())
 
         scenario_workers = min(_parallel_workers(5), max(1, len(scenario_project_keys)))
         scenario_results: List[Tuple[str, Optional[list]]] = []
