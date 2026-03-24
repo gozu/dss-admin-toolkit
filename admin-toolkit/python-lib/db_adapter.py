@@ -93,6 +93,18 @@ _THRESH_MAP = {
     'thresh_health_warning_below': ('healthWarningBelow', int),
     'thresh_health_critical_below': ('healthCriticalBelow', int),
     'thresh_deprecated_python_prefixes': ('deprecatedPythonPrefixes', str),
+    'thresh_code_studio_count_unhealthy': ('codeStudioCountUnhealthy', int),
+    'thresh_orphan_notebook_min': ('orphanNotebookMin', int),
+    'thresh_large_flow_objects': ('largeFlowObjects', int),
+}
+
+_OUTREACH_THRESH_MAP = {
+    'thresh_inactive_project_days': ('inactive_project_days', int),
+    'thresh_empty_project_kb': ('empty_project_bytes', lambda v: int(v) * 1024),
+    'thresh_code_env_count_unhealthy': ('code_env_count_unhealthy', int),
+    'thresh_code_studio_count_unhealthy': ('code_studio_count_unhealthy', int),
+    'thresh_orphan_notebook_min': ('orphan_notebook_min', int),
+    'thresh_large_flow_objects': ('large_flow_objects', int),
 }
 
 
@@ -131,6 +143,20 @@ def load_plugin_threshold_defaults() -> dict:
         if val is not None and val != '':
             try:
                 result[thresh_key] = cast(val)
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
+def load_plugin_outreach_thresholds() -> dict:
+    """Read outreach detection thresholds from plugin params for backend use."""
+    config = _get_plugin_config()
+    result = {}
+    for param_key, (key, cast) in _OUTREACH_THRESH_MAP.items():
+        val = config.get(param_key)
+        if val is not None and val != '':
+            try:
+                result[key] = cast(val)
             except (ValueError, TypeError):
                 pass
     return result

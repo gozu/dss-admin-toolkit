@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.205",
+    "version": "0.4.207",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -53,8 +53,8 @@
             "defaultValue": ""
         },
         {
-            "name": "sep_thresholds",
-            "label": "Threshold Defaults",
+            "name": "sep_outreach_thresholds",
+            "label": "Outreach Thresholds",
             "type": "SEPARATOR"
         },
         {
@@ -64,6 +64,51 @@
             "type": "INT",
             "mandatory": false,
             "defaultValue": 180
+        },
+        {
+            "name": "thresh_code_env_count_unhealthy",
+            "label": "Code Env Sprawl Threshold",
+            "description": "Projects with more code envs than this are flagged.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1
+        },
+        {
+            "name": "thresh_code_studio_count_unhealthy",
+            "label": "Code Studio Sprawl Threshold",
+            "description": "Projects with more code studios than this are flagged.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 7
+        },
+        {
+            "name": "thresh_empty_project_kb",
+            "label": "Empty Project Size (KB)",
+            "description": "Projects larger than this (in KB) are not considered empty.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 1024
+        },
+        {
+            "name": "thresh_orphan_notebook_min",
+            "label": "Orphan Notebook Minimum",
+            "description": "Minimum notebook count in a project before orphan check triggers.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 5
+        },
+        {
+            "name": "thresh_large_flow_objects",
+            "label": "Large Flow Object Count",
+            "description": "Projects with more flow objects than this are flagged as large flows.",
+            "type": "INT",
+            "mandatory": false,
+            "defaultValue": 100
+        },
+        {
+            "name": "sep_health_scoring",
+            "label": "Health & Scoring",
+            "type": "SEPARATOR"
         },
         {
             "name": "thresh_filesystem_warning_pct",
@@ -80,22 +125,6 @@
             "type": "INT",
             "mandatory": false,
             "defaultValue": 90
-        },
-        {
-            "name": "thresh_code_env_count_unhealthy",
-            "label": "Code Env Count Unhealthy",
-            "description": "Projects with more code envs than this are flagged unhealthy.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 1
-        },
-        {
-            "name": "thresh_empty_project_kb",
-            "label": "Empty Project Size (KB)",
-            "description": "Projects larger than this (in KB) are not considered empty.",
-            "type": "INT",
-            "mandatory": false,
-            "defaultValue": 1024
         },
         {
             "name": "thresh_health_warning_below",

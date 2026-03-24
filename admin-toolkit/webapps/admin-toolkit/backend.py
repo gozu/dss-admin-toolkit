@@ -84,6 +84,13 @@ except Exception:
 # Snapshot after plugin merge — used as reset target
 _BACKEND_SETTINGS_DEFAULTS: Dict[str, Any] = dict(_BACKEND_SETTINGS)
 
+# Load outreach detection thresholds from plugin params
+try:
+    from db_adapter import load_plugin_outreach_thresholds as _load_outreach_thresh
+    _outreach_thresholds: Dict[str, Any] = _load_outreach_thresh()
+except Exception:
+    _outreach_thresholds = {}
+
 # ── Tracking database (optional, graceful fallback) ──
 try:
     from tracking import TrackingDB, extract_findings_from_outreach_data
@@ -6199,7 +6206,8 @@ def api_tools_outreach_data():
         code_env_recipients.sort(key=lambda row: len(row.get('codeEnvNames') or []), reverse=True)
 
         # Code Studio outreach
-        unhealthy_code_studio_projects = [row for row in project_rows if _coerce_int(row.get('codeStudioCount'), 0) > 7]
+        _cs_thresh = _outreach_thresholds.get('code_studio_count_unhealthy', 7)
+        unhealthy_code_studio_projects = [row for row in project_rows if _coerce_int(row.get('codeStudioCount'), 0) > _cs_thresh]
         code_studio_recipients_map: Dict[str, Dict[str, Any]] = {}
         for row in unhealthy_code_studio_projects:
             owner = str(row.get('owner') or 'Unknown')
@@ -6533,7 +6541,8 @@ def api_tools_outreach_data():
             total_bytes = _coerce_int(row.get('totalBytes'), 0)
             usage_breakdown = row.get('usageBreakdown') or {}
             total_objects = sum(_coerce_int(v, 0) for v in usage_breakdown.values())
-            if code_env_count > 0 or code_studio_count > 0 or total_bytes > 1048576 or total_objects > 0:
+            _empty_bytes = _outreach_thresholds.get('empty_project_bytes', 1048576)
+            if code_env_count > 0 or code_studio_count > 0 or total_bytes > _empty_bytes or total_objects > 0:
                 continue
             empty_project_count += 1
             owner = str(row.get('owner') or 'Unknown')
@@ -6562,7 +6571,7 @@ def api_tools_outreach_data():
         # 5. Large flow projects (many objects)
         large_flow_recipients_map: Dict[str, Dict[str, Any]] = {}
         large_flow_count = 0
-        large_flow_threshold = 100
+        large_flow_threshold = _outreach_thresholds.get('large_flow_objects', 100)
         for row in project_rows:
             usage_breakdown = row.get('usageBreakdown') or {}
             total_objects = sum(_coerce_int(v, 0) for v in usage_breakdown.values())
@@ -6599,7 +6608,8 @@ def api_tools_outreach_data():
             usage_breakdown = row.get('usageBreakdown') or {}
             notebook_count = _coerce_int(usage_breakdown.get('NOTEBOOK') or usage_breakdown.get('notebook'), 0)
             recipe_count = _coerce_int(usage_breakdown.get('RECIPE') or usage_breakdown.get('recipe'), 0)
-            if notebook_count < 5 or notebook_count <= recipe_count:
+            _orphan_min = _outreach_thresholds.get('orphan_notebook_min', 5)
+            if notebook_count < _orphan_min or notebook_count <= recipe_count:
                 continue
             orphan_notebook_count += 1
             owner = str(row.get('owner') or 'Unknown')
@@ -6629,7 +6639,7 @@ def api_tools_outreach_data():
         # 7. Inactive projects (no recent modification, no active scenarios, no deployed bundles)
         inactive_project_recipients_map: Dict[str, Dict[str, Any]] = {}
         inactive_project_count = 0
-        inactive_threshold_days = 180
+        inactive_threshold_days = _outreach_thresholds.get('inactive_project_days', 180)
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         for row in project_rows:
             project_key = str(row.get('projectKey') or '')
@@ -7985,7 +7995,7 @@ def api_tools_inactive_projects():
     def _load():
         client = dataiku.api_client()
         catalog = _list_projects_catalog(client)
-        inactive_threshold_days = 180
+        inactive_threshold_days = _outreach_thresholds.get('inactive_project_days', 180)
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         results = []
         for entry in catalog:
