@@ -86,7 +86,7 @@ class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
-    _TARGET_SCHEMA_VERSION = 4
+    _TARGET_SCHEMA_VERSION = 5
 
     def __init__(self, connection_name: str, table_prefix: Optional[str] = None):
         self._connection_name = connection_name
@@ -147,7 +147,26 @@ class SQLTrackingDB:
             executor = self._get_executor()
             ddl = self._get_ddl_statements()
             executor.query_to_df("SELECT 1", pre_queries=ddl, post_queries=['COMMIT'])
+            # V5 migration: add snapshot columns to existing run_health_metrics tables
+            self._migrate_v5(executor)
             self._initialized = True
+
+    def _migrate_v5(self, executor) -> None:
+        """Add V5 snapshot columns to run_health_metrics if missing (idempotent)."""
+        t = self._t('run_health_metrics')
+        v5_columns = [
+            'plugins_json TEXT',
+            'connections_json TEXT',
+            'filesystem_mounts_json TEXT',
+            'user_profile_stats_json TEXT',
+            'os_info TEXT',
+            'spark_version TEXT',
+        ]
+        for col_def in v5_columns:
+            try:
+                executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN {col_def}")
+            except Exception:
+                pass  # column already exists
 
     def _get_ddl_statements(self) -> List[str]:
         """Return list of CREATE TABLE/INDEX statements."""
@@ -205,7 +224,13 @@ class SQLTrackingDB:
                 license_concurrent_users_pct    DOUBLE PRECISION,
                 license_projects_pct            DOUBLE PRECISION,
                 license_connections_pct         DOUBLE PRECISION,
-                license_expiry_date             TEXT
+                license_expiry_date             TEXT,
+                plugins_json                    TEXT,
+                connections_json                TEXT,
+                filesystem_mounts_json          TEXT,
+                user_profile_stats_json         TEXT,
+                os_info                         TEXT,
+                spark_version                   TEXT
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('run_campaign_summaries')} (
                 run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
@@ -388,6 +413,7 @@ class SQLTrackingDB:
         sections: Dict[str, Dict[str, Any]],
         health_metrics: Optional[Dict[str, Any]] = None,
         campaign_summaries: Optional[List[Dict[str, Any]]] = None,
+        snapshot_data: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Ingest a complete run. Returns the new run_id."""
         self._init_tables()
@@ -432,6 +458,11 @@ class SQLTrackingDB:
         # Health metrics
         if health_metrics:
             hm = health_metrics
+            snap = snapshot_data or {}
+            plugins_json = _L(json.dumps(snap['plugins'])) if snap.get('plugins') is not None else 'NULL'
+            connections_json = _L(json.dumps(snap['connections'])) if snap.get('connections') is not None else 'NULL'
+            filesystem_mounts_json = _L(json.dumps(snap['filesystem_mounts'])) if snap.get('filesystem_mounts') is not None else 'NULL'
+            user_profile_stats_json = _L(json.dumps(snap['user_profile_stats'])) if snap.get('user_profile_stats') is not None else 'NULL'
             pre.append(
                 f"INSERT INTO {self._t('run_health_metrics')} "
                 f"(run_id, cpu_cores, memory_total_mb, memory_used_mb, "
@@ -443,7 +474,10 @@ class SQLTrackingDB:
                 f"configuration_score, security_isolation_score, "
                 f"license_named_users_pct, license_concurrent_users_pct, "
                 f"license_projects_pct, license_connections_pct, "
-                f"license_expiry_date) "
+                f"license_expiry_date, "
+                f"plugins_json, connections_json, "
+                f"filesystem_mounts_json, user_profile_stats_json, "
+                f"os_info, spark_version) "
                 f"VALUES ({run_id}, {_int_val(hm.get('cpu_cores'))}, {_int_val(hm.get('memory_total_mb'))}, "
                 f"{_int_val(hm.get('memory_used_mb'))}, {_int_val(hm.get('memory_available_mb'))}, "
                 f"{_int_val(hm.get('swap_total_mb'))}, {_int_val(hm.get('swap_used_mb'))}, "
@@ -454,7 +488,10 @@ class SQLTrackingDB:
                 f"{_float_val(hm.get('configuration_score'))}, {_float_val(hm.get('security_isolation_score'))}, "
                 f"{_float_val(hm.get('license_named_users_pct'))}, {_float_val(hm.get('license_concurrent_users_pct'))}, "
                 f"{_float_val(hm.get('license_projects_pct'))}, {_float_val(hm.get('license_connections_pct'))}, "
-                f"{_L(hm.get('license_expiry_date'))})"
+                f"{_L(hm.get('license_expiry_date'))}, "
+                f"{plugins_json}, {connections_json}, "
+                f"{filesystem_mounts_json}, {user_profile_stats_json}, "
+                f"{_L(snap.get('os_info'))}, {_L(snap.get('spark_version'))})"
             )
 
         # Campaign summaries
