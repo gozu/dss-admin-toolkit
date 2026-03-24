@@ -6282,8 +6282,6 @@ def api_tools_outreach_data():
             local_client = _thread_client()
             try:
                 bulk = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/')
-                app.logger.info("[outreach:scenarios] %s bulk=%s", p_key,
-                                len(bulk) if isinstance(bulk, list) else type(bulk).__name__)
                 if not isinstance(bulk, list):
                     return (p_key, None)
                 # Bulk list doesn't include triggers; fetch full definition for active scenarios
@@ -6293,26 +6291,20 @@ def api_tools_outreach_data():
                         try:
                             full = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/{sc["id"]}')
                             if isinstance(full, dict) and 'triggers' in full:
-                                # Preserve lastScenarioRun from bulk (not in individual endpoint)
                                 if 'lastScenarioRun' in sc and 'lastScenarioRun' not in full:
                                     full['lastScenarioRun'] = sc['lastScenarioRun']
                                 enriched.append(full)
-                                app.logger.info("[outreach:scenarios] %s/%s enriched triggers=%d", p_key, sc.get('id'), len(full.get('triggers', [])))
                             else:
                                 enriched.append(sc)
-                                app.logger.info("[outreach:scenarios] %s/%s enrich returned %s, using bulk", p_key, sc.get('id'), type(full).__name__)
-                        except Exception as e:
-                            app.logger.warning("[outreach:scenarios] %s/%s enrich failed: %s", p_key, sc.get('id'), e)
+                        except Exception:
                             enriched.append(sc)
                     else:
                         enriched.append(sc)
                 return (p_key, enriched)
-            except Exception as e:
-                app.logger.warning("[outreach:scenarios] %s FAILED: %s", p_key, e)
+            except Exception:
                 return (p_key, None)
 
         scenario_project_keys = list(project_info.keys())
-        _scenario_debug = []
 
         scenario_workers = min(_parallel_workers(5), max(1, len(scenario_project_keys)))
         scenario_results: List[Tuple[str, Optional[list]]] = []
@@ -6337,7 +6329,6 @@ def api_tools_outreach_data():
             return None
 
         for p_key, bulk_scenarios in scenario_results:
-            _scenario_debug.append({'pk': p_key, 'type': type(bulk_scenarios).__name__, 'len': len(bulk_scenarios) if isinstance(bulk_scenarios, list) else None})
             if not isinstance(bulk_scenarios, list):
                 continue
             meta = project_info.get(p_key) or {}
@@ -6852,10 +6843,6 @@ def api_tools_outreach_data():
                 'inactiveProjectCount': inactive_project_count,
                 'unusedCodeEnvCount': unused_code_env_count,
                 'oversharedProjectCount': overshared_project_count,
-                '_scenarioDebug': _scenario_debug,
-                '_scenarioProjectKeys': len(scenario_project_keys),
-                '_scenarioWorkers': scenario_workers,
-                '_scenarioResults': len(scenario_results),
             },
             'mailChannels': mail_channels,
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
