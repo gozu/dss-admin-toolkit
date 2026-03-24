@@ -1209,8 +1209,6 @@ export function ToolsView() {
     loadFromStorage('campaignSelectedKeys', {}),
   );
 
-  const hasRestoredRecipientsRef = useRef(false);
-
   const [previewCampaign, setPreviewCampaign] = useState<CampaignId>('project');
   const [previewItems, setPreviewItems] = useState<EmailPreviewItem[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1347,12 +1345,11 @@ export function ToolsView() {
         }
         return next;
       });
-      if (!hasRestoredRecipientsRef.current) {
-        hasRestoredRecipientsRef.current = true;
+      {
         setSelectedKeys((prev) => {
           const next = { ...prev };
           for (const config of CAMPAIGN_CONFIGS) {
-            if (next[config.id] !== undefined) continue;
+            if (next[config.id] !== undefined && next[config.id].length > 0) continue;
             const recipients = getRecipients(source, config);
             next[config.id] = recipients.map((r) => r.recipientKey);
           }
@@ -1371,7 +1368,28 @@ export function ToolsView() {
     };
     const localSeed = buildOutreachDataFromParsedData(parsedData, outreachThresholds);
     if (localSeed) {
-      setData(localSeed);
+      setData((prev) => {
+        if (!prev) return localSeed;
+        // Merge: localSeed updates locally-derivable fields, prev keeps API/enrichment data
+        const merged: OutreachData = {
+          ...prev,
+          ...localSeed,
+          summary: { ...prev.summary, ...localSeed.summary },
+          mailChannels: prev.mailChannels?.length ? prev.mailChannels : localSeed.mailChannels,
+          templates: prev.templates ?? localSeed.templates,
+        };
+        for (const config of CAMPAIGN_CONFIGS) {
+          const rKey = config.recipientsKey as keyof OutreachData;
+          const sKey = config.summaryKey as keyof OutreachData['summary'];
+          const localR = (localSeed as any)[rKey] as OutreachRecipient[] | undefined;
+          const prevR = (prev as any)[rKey] as OutreachRecipient[] | undefined;
+          if ((!localR || localR.length === 0) && prevR && prevR.length > 0) {
+            (merged as any)[rKey] = prevR;
+            (merged.summary as any)[sKey] = (prev.summary as any)[sKey];
+          }
+        }
+        return merged;
+      });
       restoreFromSource(localSeed);
       setIsLoading(false);
     }

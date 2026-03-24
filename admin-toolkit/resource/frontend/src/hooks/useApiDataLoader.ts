@@ -304,16 +304,18 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
       try {
         const overviewStart = nowMs();
+        const overviewStartTs = new Date().toISOString().slice(11, 19);
         log('GET /api/overview');
         const overview = await fetchJson<OverviewResponse>('/api/overview');
-        log(`GET /api/overview OK (${fmtMs(overviewStart)})`);
+        log(`GET /api/overview OK (${fmtMs(overviewStart)}) [${overviewStartTs}→${new Date().toISOString().slice(11, 19)}]`);
         recordTiming('/api/overview', nowMs() - overviewStart);
         let rawSettings: Record<string, unknown> = {};
         try {
           const settingsStart = nowMs();
+          const settingsStartTs = new Date().toISOString().slice(11, 19);
           log('GET /api/settings/raw');
           rawSettings = await fetchJson<Record<string, unknown>>('/api/settings/raw');
-          log(`GET /api/settings/raw OK (${fmtMs(settingsStart)})`);
+          log(`GET /api/settings/raw OK (${fmtMs(settingsStart)}) [${settingsStartTs}→${new Date().toISOString().slice(11, 19)}]`);
           recordTiming('/api/settings/raw', nowMs() - settingsStart);
         } catch {
           log('GET /api/settings/raw failed, continuing with defaults', 'warn');
@@ -529,14 +531,16 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         log('Phase 3 starting');
         const timed = <T>(path: string, timeoutMs: number): Promise<T> => {
           const started = nowMs();
+          const startTs = new Date().toISOString().slice(11, 19);
           log(`GET ${path}`);
           return withTimeout(fetchJson<T>(path), path, timeoutMs).then(
             (value) => {
-              log(`GET ${path} OK (${fmtMs(started)})`);
+              log(`GET ${path} OK (${fmtMs(started)}) [${startTs}→${new Date().toISOString().slice(11, 19)}]`);
               recordTiming(path, nowMs() - started);
               return value;
             },
             (err) => {
+              log(`GET ${path} FAIL (${fmtMs(started)}) [${startTs}→${new Date().toISOString().slice(11, 19)}]`);
               recordTiming(path, nowMs() - started, 'fail');
               throw err;
             },
