@@ -6312,6 +6312,7 @@ def api_tools_outreach_data():
                 return (p_key, None)
 
         scenario_project_keys = list(project_info.keys())
+        _scenario_debug = []
 
         scenario_workers = min(_parallel_workers(5), max(1, len(scenario_project_keys)))
         scenario_results: List[Tuple[str, Optional[list]]] = []
@@ -6336,6 +6337,7 @@ def api_tools_outreach_data():
             return None
 
         for p_key, bulk_scenarios in scenario_results:
+            _scenario_debug.append({'pk': p_key, 'type': type(bulk_scenarios).__name__, 'len': len(bulk_scenarios) if isinstance(bulk_scenarios, list) else None})
             if not isinstance(bulk_scenarios, list):
                 continue
             meta = project_info.get(p_key) or {}
@@ -6850,6 +6852,10 @@ def api_tools_outreach_data():
                 'inactiveProjectCount': inactive_project_count,
                 'unusedCodeEnvCount': unused_code_env_count,
                 'oversharedProjectCount': overshared_project_count,
+                '_scenarioDebug': _scenario_debug,
+                '_scenarioProjectKeys': len(scenario_project_keys),
+                '_scenarioWorkers': scenario_workers,
+                '_scenarioResults': len(scenario_results),
             },
             'mailChannels': mail_channels,
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
