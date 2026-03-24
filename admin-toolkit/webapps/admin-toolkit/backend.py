@@ -5832,16 +5832,20 @@ def _do_tracking_ingest(db, data):
 
     users_data = (_CACHE.get('users', {}).get('value') or {})
     projects_data = (_CACHE.get('projects', {}).get('value') or {})
+    plugins_data = (_CACHE.get('plugins', {}).get('value') or {})
+    connections_data = (_CACHE.get('connections', {}).get('value') or {})
     user_list = users_data.get('users') or []
     project_list = projects_data.get('projects') or []
 
     run_data = {
         'dss_version': overview.get('dssVersion'),
         'python_version': overview.get('pythonVersion'),
-        'user_count': users_data.get('userCount'),
-        'enabled_user_count': users_data.get('enabledUserCount'),
-        'project_count': projects_data.get('projectCount'),
-        'code_env_count': (data.get('summary') or {}).get('unhealthyCodeEnvCount'),
+        'user_count': (users_data.get('userStats') or {}).get('Total Users'),
+        'enabled_user_count': (users_data.get('userStats') or {}).get('Enabled Users'),
+        'project_count': len(projects_data.get('projects') or []),
+        'code_env_count': (_CACHE.get('code_envs', {}).get('value') or {}).get('totalEnvCount'),
+        'plugin_count': plugins_data.get('pluginsCount'),
+        'connection_count': len(connections_data.get('connectionDetails') or []),
     }
 
     mem_info = overview.get('memoryInfo') or {}
@@ -5850,10 +5854,11 @@ def _do_tracking_ingest(db, data):
     max_fs_pct = 0.0
     max_fs_mount = ''
     for fs in mounts:
-        pct = fs.get('usePct', 0)
-        if isinstance(pct, (int, float)) and pct > max_fs_pct:
+        raw_pct = fs.get('Use%', '0')
+        pct = float(str(raw_pct).rstrip('%')) if raw_pct else 0
+        if pct > max_fs_pct:
             max_fs_pct = pct
-            max_fs_mount = fs.get('mountedOn', '')
+            max_fs_mount = fs.get('Mounted on', '')
     health_metrics = {
         'cpu_cores': overview.get('cpuCores'),
         'memory_total_mb': mem_info.get('totalMB'),
@@ -5863,6 +5868,18 @@ def _do_tracking_ingest(db, data):
         'swap_used_mb': mem_info.get('swapUsedMB'),
         'max_filesystem_pct': max_fs_pct if max_fs_pct else None,
         'max_filesystem_mount': max_fs_mount or None,
+    }
+
+    snapshot_data = {
+        'plugins': plugins_data.get('pluginDetails'),
+        'connections': {
+            'typeCounts': connections_data.get('connections'),
+            'details': connections_data.get('connectionDetails'),
+        } if connections_data.get('connectionDetails') else None,
+        'filesystem_mounts': mounts or None,
+        'user_profile_stats': users_data.get('userStats'),
+        'os_info': overview.get('osInfo'),
+        'spark_version': overview.get('sparkVersion'),
     }
 
     _campaign_recipient_keys = {
@@ -5937,6 +5954,7 @@ def _do_tracking_ingest(db, data):
         sections=sections,
         health_metrics=health_metrics,
         campaign_summaries=campaign_summaries,
+        snapshot_data=snapshot_data,
     )
     app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
                     run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)

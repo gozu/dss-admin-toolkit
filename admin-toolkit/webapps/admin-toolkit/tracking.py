@@ -296,6 +296,16 @@ _SCHEMA_V4 = [
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
 ]
 
+_SCHEMA_V5 = [
+    "ALTER TABLE run_health_metrics ADD COLUMN plugins_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN connections_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN filesystem_mounts_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN user_profile_stats_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN os_info TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN spark_version TEXT",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))",
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -347,6 +357,15 @@ class TrackingDB:
                     except Exception:
                         pass  # table may already exist
                 self._conn.commit()
+            # V5 migration: snapshot data columns on run_health_metrics
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 5:
+                for stmt in _SCHEMA_V5:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # column may already exist
+                self._conn.commit()
         return self._conn
 
     # ------------------------------------------------------------------
@@ -366,6 +385,7 @@ class TrackingDB:
         sections: Dict[str, Dict[str, Any]],
         health_metrics: Optional[Dict[str, Any]] = None,
         campaign_summaries: Optional[List[Dict[str, Any]]] = None,
+        snapshot_data: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Ingest a complete run. Returns the new run_id."""
         now = _now_iso()
@@ -414,6 +434,7 @@ class TrackingDB:
 
                 # 3. INSERT run_health_metrics
                 if health_metrics:
+                    snap = snapshot_data or {}
                     conn.execute(
                         """INSERT INTO run_health_metrics (
                                run_id, cpu_cores, memory_total_mb, memory_used_mb,
@@ -425,8 +446,11 @@ class TrackingDB:
                                configuration_score, security_isolation_score,
                                license_named_users_pct, license_concurrent_users_pct,
                                license_projects_pct, license_connections_pct,
-                               license_expiry_date)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               license_expiry_date,
+                               plugins_json, connections_json,
+                               filesystem_mounts_json, user_profile_stats_json,
+                               os_info, spark_version)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             run_id,
                             health_metrics.get('cpu_cores'),
@@ -450,6 +474,12 @@ class TrackingDB:
                             health_metrics.get('license_projects_pct'),
                             health_metrics.get('license_connections_pct'),
                             health_metrics.get('license_expiry_date'),
+                            json.dumps(snap['plugins']) if snap.get('plugins') is not None else None,
+                            json.dumps(snap['connections']) if snap.get('connections') is not None else None,
+                            json.dumps(snap['filesystem_mounts']) if snap.get('filesystem_mounts') is not None else None,
+                            json.dumps(snap['user_profile_stats']) if snap.get('user_profile_stats') is not None else None,
+                            snap.get('os_info'),
+                            snap.get('spark_version'),
                         ),
                     )
 
@@ -704,7 +734,17 @@ class TrackingDB:
             hm = conn.execute(
                 'SELECT * FROM run_health_metrics WHERE run_id = ?', (run_id,),
             ).fetchone()
-            result['health_metrics'] = dict(hm) if hm else None
+            if hm:
+                hm_dict = dict(hm)
+                for jcol in ('plugins_json', 'connections_json', 'filesystem_mounts_json', 'user_profile_stats_json'):
+                    if hm_dict.get(jcol):
+                        try:
+                            hm_dict[jcol] = json.loads(hm_dict[jcol])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                result['health_metrics'] = hm_dict
+            else:
+                result['health_metrics'] = None
 
             # Sections
             secs = conn.execute(
