@@ -21,11 +21,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def _q(prefix: Optional[str], table: str) -> str:
-    """Prefix a table name (e.g. 'adtk' + 'runs' → 'adtk_runs')."""
-    if prefix:
-        return f"{prefix}_{table}"
-    return table
+def _q(prefix: Optional[str], table: str, schema: Optional[str] = None) -> str:
+    """Prefix a table name, optionally schema-qualified."""
+    name = f"{prefix}_{table}" if prefix else table
+    if schema:
+        return f"{schema}.{name}"
+    return name
 
 
 def _L(val) -> str:
@@ -88,9 +89,10 @@ class SQLTrackingDB:
     # Current schema version this code expects
     _TARGET_SCHEMA_VERSION = 5
 
-    def __init__(self, connection_name: str, table_prefix: Optional[str] = None):
+    def __init__(self, connection_name: str, table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._connection_name = connection_name
         self._prefix = table_prefix
+        self._schema = schema
         self._lock = threading.Lock()
         self._initialized = False
 
@@ -116,8 +118,8 @@ class SQLTrackingDB:
         return rows[0] if rows else None
 
     def _t(self, table: str) -> str:
-        """Shortcut: prefix table name."""
-        return _q(self._prefix, table)
+        """Shortcut: prefix + schema-qualify table name."""
+        return _q(self._prefix, table, self._schema)
 
     def _idx(self, name: str) -> str:
         """Prefix an index name."""
@@ -149,7 +151,46 @@ class SQLTrackingDB:
             executor.query_to_df("SELECT 1", pre_queries=ddl, post_queries=['COMMIT'])
             # V5 migration: add snapshot columns to existing run_health_metrics tables
             self._migrate_v5(executor)
+            # Schema migration: move tables from default schema if schema is configured
+            if self._schema:
+                self._migrate_from_default_schema(executor)
             self._initialized = True
+
+    def _migrate_from_default_schema(self, executor) -> None:
+        """Copy data from unqualified tables to schema-qualified tables, then drop old."""
+        for table in _ALL_TABLES:
+            old = _q(self._prefix, table)
+            new = _q(self._prefix, table, self._schema)
+            try:
+                old_rows = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {old}")
+                if not old_rows:
+                    continue
+                old_count = old_rows['cnt']
+            except Exception:
+                continue  # old table doesn't exist, skip
+            try:
+                new_rows = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {new}")
+                if new_rows and new_rows['cnt'] > 0:
+                    continue  # new table already has data, skip
+            except Exception:
+                continue  # new table doesn't exist yet, skip
+            try:
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"INSERT INTO {new} SELECT * FROM {old}"],
+                                     post_queries=['COMMIT'])
+                verify = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {new}")
+                verify_count = verify['cnt'] if verify else 0
+                if verify_count != old_count:
+                    _log.error("[sql_tracking] schema migration: row count mismatch for %s "
+                               "(old=%d, new=%d) — keeping old table", table, old_count, verify_count)
+                    continue
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"DROP TABLE {old}"],
+                                     post_queries=['COMMIT'])
+                _log.info("[sql_tracking] schema migration: migrated %d rows from %s → %s",
+                          old_count, old, new)
+            except Exception as exc:
+                _log.error("[sql_tracking] schema migration failed for %s: %s", table, exc)
 
     def _migrate_v5(self, executor) -> None:
         """Add V5 snapshot columns to run_health_metrics if missing (idempotent)."""

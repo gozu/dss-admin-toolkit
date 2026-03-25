@@ -29,17 +29,19 @@ def _L(val) -> str:
     return "'" + str(val).replace("'", "''") + "'"
 
 
-def _q(prefix: Optional[str], table: str) -> str:
-    """Prefix a table name (e.g. 'adtk' + 'api_cache' → 'adtk_api_cache')."""
-    if prefix:
-        return f"{prefix}_{table}"
-    return table
+def _q(prefix: Optional[str], table: str, schema: Optional[str] = None) -> str:
+    """Prefix a table name, optionally schema-qualified."""
+    name = f"{prefix}_{table}" if prefix else table
+    if schema:
+        return f"{schema}.{name}"
+    return name
 
 
 class SdkApiCache:
-    def __init__(self, connection_name: Optional[str], table_prefix: Optional[str] = None):
+    def __init__(self, connection_name: Optional[str], table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._conn = connection_name
         self._prefix = table_prefix
+        self._schema = schema
         self._mem: Dict[Tuple[str, str], Tuple[float, Any]] = {}  # (instance_id, key) → (fetched_at, value)
         self._mem_lock = threading.Lock()
         self._stats = {'hits_mem': 0, 'hits_sql': 0, 'misses': 0, 'writes': 0, 'sql_ms': 0.0}
@@ -49,7 +51,7 @@ class SdkApiCache:
     def _init_tables(self) -> None:
         if not self._conn:
             return
-        tbl = _q(self._prefix, 'api_cache')
+        tbl = _q(self._prefix, 'api_cache', self._schema)
         sql = (
             f"CREATE TABLE IF NOT EXISTS {tbl} ("
             f"  instance_id   VARCHAR(255)  NOT NULL,"
@@ -64,13 +66,50 @@ class SdkApiCache:
             import dataiku
             executor = dataiku.SQLExecutor2(connection=self._conn)
             executor.query_to_df("SELECT 1", pre_queries=[sql], post_queries=['COMMIT'])
+            if self._schema:
+                self._migrate_from_default_schema(executor)
         except Exception as exc:
             _log.warning("[sdk_cache] _init_tables failed: %s", exc)
+
+    def _migrate_from_default_schema(self, executor) -> None:
+        """Copy api_cache data from default schema to configured schema, then drop old."""
+        old = _q(self._prefix, 'api_cache')
+        new = _q(self._prefix, 'api_cache', self._schema)
+        try:
+            old_df = executor.query_to_df(f"SELECT COUNT(*) AS cnt FROM {old}")
+            old_count = old_df.to_dict('records')[0]['cnt'] if old_df is not None and not old_df.empty else 0
+            if old_count == 0:
+                return
+        except Exception:
+            return  # old table doesn't exist
+        try:
+            new_df = executor.query_to_df(f"SELECT COUNT(*) AS cnt FROM {new}")
+            new_count = new_df.to_dict('records')[0]['cnt'] if new_df is not None and not new_df.empty else 0
+            if new_count > 0:
+                return  # already has data
+        except Exception:
+            return
+        try:
+            executor.query_to_df("SELECT 1",
+                                 pre_queries=[f"INSERT INTO {new} SELECT * FROM {old}"],
+                                 post_queries=['COMMIT'])
+            verify_df = executor.query_to_df(f"SELECT COUNT(*) AS cnt FROM {new}")
+            verify_count = verify_df.to_dict('records')[0]['cnt'] if verify_df is not None and not verify_df.empty else 0
+            if verify_count != old_count:
+                _log.error("[sdk_cache] schema migration: row count mismatch (old=%d, new=%d) — keeping old table",
+                           old_count, verify_count)
+                return
+            executor.query_to_df("SELECT 1",
+                                 pre_queries=[f"DROP TABLE {old}"],
+                                 post_queries=['COMMIT'])
+            _log.info("[sdk_cache] schema migration: migrated %d rows from %s → %s", old_count, old, new)
+        except Exception as exc:
+            _log.error("[sdk_cache] schema migration failed: %s", exc)
 
     def _sql_get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         if not self._conn:
             return None
-        tbl = _q(self._prefix, 'api_cache')
+        tbl = _q(self._prefix, 'api_cache', self._schema)
         now_ms = int(time.time() * 1000)
         min_fetched_at = now_ms - (ttl_seconds * 1000)
         sql = (
@@ -101,7 +140,7 @@ class SdkApiCache:
     def _sql_set(self, instance_id: str, cache_key: str, ttl_seconds: int, value: Any) -> None:
         if not self._conn:
             return
-        tbl = _q(self._prefix, 'api_cache')
+        tbl = _q(self._prefix, 'api_cache', self._schema)
         now_ms = int(time.time() * 1000)
         try:
             response_json = json.dumps(value)
@@ -215,7 +254,7 @@ class SdkApiCache:
                 self._mem[(instance_id, k)] = (now, items[k])
         if not self._conn:
             return
-        tbl = _q(self._prefix, 'api_cache')
+        tbl = _q(self._prefix, 'api_cache', self._schema)
         now_ms = int(now * 1000)
         keys = list(items.keys())
         t0 = time.time()
@@ -307,7 +346,7 @@ class SdkApiCache:
                 del self._mem[k]
         if not self._conn:
             return
-        tbl = _q(self._prefix, 'api_cache')
+        tbl = _q(self._prefix, 'api_cache', self._schema)
         sql = f"DELETE FROM {tbl} WHERE instance_id = {_L(instance_id)}"
         try:
             import dataiku

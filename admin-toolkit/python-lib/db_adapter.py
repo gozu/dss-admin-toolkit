@@ -13,6 +13,7 @@ from typing import Optional
 _log = logging.getLogger(__name__)
 
 _PREFIX_RE = re.compile(r'^[a-z][a-z0-9_]{0,20}$')
+_SCHEMA_RE = re.compile(r'^[a-z][a-z0-9_]{0,62}$')
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class TrackingBackendConfig:
     """Plugin-level configuration for the tracking backend."""
     connection_name: Optional[str] = None
     table_prefix: Optional[str] = None
+    schema: Optional[str] = None
 
 
 def load_tracking_backend_config() -> TrackingBackendConfig:
@@ -43,7 +45,15 @@ def load_tracking_backend_config() -> TrackingBackendConfig:
             prefix = raw_prefix
         else:
             prefix = 'adtk'
-        return TrackingBackendConfig(connection_name=conn, table_prefix=prefix)
+        raw_schema = (config.get('tracking_schema') or '').strip().lower()
+        schema = None
+        if raw_schema:
+            if not _SCHEMA_RE.match(raw_schema):
+                _log.warning("Invalid schema name %r — must match %s. Ignoring.",
+                             raw_schema, _SCHEMA_RE.pattern)
+            else:
+                schema = raw_schema
+        return TrackingBackendConfig(connection_name=conn, table_prefix=prefix, schema=schema)
     except Exception as exc:
         _log.debug("Could not load plugin config (expected in dev): %s", exc)
         return TrackingBackendConfig(table_prefix='adtk')
@@ -205,7 +215,7 @@ def load_plugin_outreach_thresholds() -> dict:
 
 def create_sdk_cache(config: TrackingBackendConfig) -> 'SdkApiCache':
     from sdk_cache import SdkApiCache
-    return SdkApiCache(config.connection_name, config.table_prefix)
+    return SdkApiCache(config.connection_name, config.table_prefix, config.schema)
 
 
 def create_tracking_backend(config: TrackingBackendConfig, sqlite_path: str):
@@ -215,10 +225,10 @@ def create_tracking_backend(config: TrackingBackendConfig, sqlite_path: str):
     Otherwise returns the SQLite-based TrackingDB.
     """
     if config.connection_name:
-        _log.info("Using SQL backend: connection=%s table_prefix=%s",
-                   config.connection_name, config.table_prefix)
+        _log.info("Using SQL backend: connection=%s table_prefix=%s schema=%s",
+                   config.connection_name, config.table_prefix, config.schema)
         from sql_tracking import SQLTrackingDB
-        return SQLTrackingDB(config.connection_name, config.table_prefix)
+        return SQLTrackingDB(config.connection_name, config.table_prefix, config.schema)
     else:
         _log.info("Using SQLite backend: %s", sqlite_path)
         from tracking import TrackingDB

@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.221",
+    "version": "0.4.222",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -19,6 +19,14 @@
             "description": "SQL connection for persistent tracking storage (recommended). Without this, data is lost on webapp restart.",
             "type": "CONNECTION",
             "connectionType": "SQL",
+            "mandatory": false,
+            "defaultValue": ""
+        },
+        {
+            "name": "tracking_schema",
+            "label": "Schema Name",
+            "description": "PostgreSQL schema for tracking tables (e.g. 'admin_toolkit'). Leave empty to use the connection's default schema.",
+            "type": "STRING",
             "mandatory": false,
             "defaultValue": ""
         },
