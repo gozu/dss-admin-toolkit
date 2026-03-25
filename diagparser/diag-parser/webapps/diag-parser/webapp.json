@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "label": "Diag Parser",
+    "description": "Analyze Dataiku diagnostic files with visualizations",
+    "icon": "icon-bar-chart"
+  },
+  "baseType": "STANDARD",
+  "hasBackend": "true",
+  "enableJavascriptModules": "true",
+  "noJSSecurity": "true",
+  "standardWebAppLibraries": ["dataiku"],
+  "params": []
+}
