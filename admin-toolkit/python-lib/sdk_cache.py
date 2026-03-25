@@ -88,9 +88,9 @@ class SdkApiCache:
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
             if rows:
-                _log.info("[perf:sdk_cache:sql] SELECT key=%s elapsed=%.1fms hit=%s", cache_key, elapsed_ms, True)
+                _log.debug("[perf:sdk_cache:sql] SELECT key=%s elapsed=%.1fms hit=%s", cache_key, elapsed_ms, True)
                 return json.loads(rows[0]['response_json'])
-            _log.info("[perf:sdk_cache:sql] SELECT key=%s elapsed=%.1fms hit=%s", cache_key, elapsed_ms, False)
+            _log.debug("[perf:sdk_cache:sql] SELECT key=%s elapsed=%.1fms hit=%s", cache_key, elapsed_ms, False)
         except Exception as exc:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
@@ -128,12 +128,12 @@ class SdkApiCache:
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
                 self._stats['writes'] += 1
-            _log.info("[perf:sdk_cache:sql] INSERT key=%s elapsed=%.1fms", cache_key, elapsed_ms)
+            _log.debug("[perf:sdk_cache:sql] INSERT key=%s elapsed=%.1fms", cache_key, elapsed_ms)
         except Exception as exc:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.warning("[sdk_cache] _sql_set failed for key=%s: %s", cache_key, exc)
+            _log.debug("[sdk_cache] _sql_set failed for key=%s: %s", cache_key, exc)
 
     def get_or_fetch(
         self,
@@ -245,12 +245,12 @@ class SdkApiCache:
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
                 self._stats['writes'] += len(values)
-            _log.info("[perf:sdk_cache:sql] BATCH_INSERT keys=%d elapsed=%.1fms", len(values), elapsed_ms)
+            _log.debug("[perf:sdk_cache:sql] BATCH_INSERT keys=%d elapsed=%.1fms", len(values), elapsed_ms)
         except Exception as exc:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.warning("[sdk_cache] set_many failed: %s", exc)
+            _log.debug("[sdk_cache] set_many failed: %s", exc)
 
     def get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         """Read-only check of L1 + SQL cache. Returns None on miss."""

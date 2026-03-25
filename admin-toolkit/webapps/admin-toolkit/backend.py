@@ -1748,7 +1748,7 @@ def _instance_id() -> str:
 def _sdk_fetch(cache_key: str, ttl_seconds: int, fetch_fn, deadline_ts=None):
     t0 = time.time()
     result = _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
-    app.logger.info("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
+    app.logger.debug("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
     return result
 
 
@@ -6878,7 +6878,7 @@ def api_tools_outreach_data():
                 cache_entry['_tracking_ingested'] = True
                 app.logger.info("[tracking] ingested run %d", run_id)
             except Exception as exc:
-                app.logger.warning("[tracking] ingest failed: %s", exc)
+                app.logger.warning("[tracking] ingest failed: %s", str(exc)[:300])
 
     return jsonify(data)
 
@@ -7361,7 +7361,7 @@ def _do_tracking_refresh():
         return jsonify({'ok': True, 'run_id': run_id})
     except Exception as exc:
         app.logger.warning("[tracking:refresh] ingest FAILED after %.1fs: %s",
-                           _time.time() - _t2, exc, exc_info=True)
+                           _time.time() - _t2, str(exc)[:300])
         return jsonify({'error': 'Ingest failed: %s' % exc}), 500
 
 
