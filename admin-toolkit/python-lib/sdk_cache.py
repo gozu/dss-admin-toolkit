@@ -60,12 +60,15 @@ class SdkApiCache:
             f"  PRIMARY KEY (instance_id, cache_key)"
             f")"
         )
+        _log.warning("[sdk_cache] _init_tables: attempting CREATE TABLE on connection=%s table=%s", self._conn, tbl)
         try:
             import dataiku
             executor = dataiku.SQLExecutor2(connection=self._conn)
             executor.query_to_df(sql)
+            _log.warning("[sdk_cache] _init_tables: SUCCESS — table %s ready", tbl)
         except Exception as exc:
-            _log.warning("[sdk_cache] _init_tables failed: %s", exc)
+            _log.warning("[sdk_cache] _init_tables FAILED: connection=%s table=%s error_type=%s error=%s",
+                         self._conn, tbl, type(exc).__name__, exc, exc_info=True)
 
     def _sql_get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         if not self._conn:
@@ -95,7 +98,7 @@ class SdkApiCache:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.debug("[sdk_cache] _sql_get failed: %s", exc)
+            _log.warning("[sdk_cache] _sql_get failed: %s", exc)
         return None
 
     def _sql_set(self, instance_id: str, cache_key: str, ttl_seconds: int, value: Any) -> None:
@@ -133,7 +136,7 @@ class SdkApiCache:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.debug("[sdk_cache] _sql_set failed for key=%s: %s", cache_key, exc)
+            _log.warning("[sdk_cache] _sql_set failed for key=%s: %s", cache_key, exc)
 
     def get_or_fetch(
         self,
@@ -250,7 +253,7 @@ class SdkApiCache:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.debug("[sdk_cache] set_many failed: %s", exc)
+            _log.warning("[sdk_cache] set_many failed: %s", exc)
 
     def get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         """Read-only check of L1 + SQL cache. Returns None on miss."""
