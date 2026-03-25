@@ -1,13 +1,10 @@
 {
     "id": "diag-parser",
-    "version": "2.0.0",
+    "version": "1.2.6",
     "meta": {
         "label": "Diag Parser",
-        "description": "A browser-based tool for analyzing Dataiku diagnostic files. Visualizes system configurations, resource usage, logs, etc.",
-        "author": "Alex.Kaos@dataiku.com",
-        "icon": "fas fa-stethoscope",
-        "tags": ["Diagnostics", "Administration", "System", "Troubleshooting", "Diag"],
-        "url": "",
-        "licenseInfo": "Apache Software License"
+        "description": "Analyze Dataiku diagnostic files with visualizations and health scoring",
+        "author": "Alex Kaos",
+        "icon": "icon-bar-chart"
     }
 }

@@ -1,0 +1,6 @@
+resource/frontend/screenshots/ export-ignore
+resource/frontend/test-results/ export-ignore
+resource/frontend/screenshot-test.ts export-ignore
+resource/frontend/cluster-debug-test.ts export-ignore
+plugins.html export-ignore
+webapps.html export-ignore
