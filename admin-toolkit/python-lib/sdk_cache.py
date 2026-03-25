@@ -60,15 +60,12 @@ class SdkApiCache:
             f"  PRIMARY KEY (instance_id, cache_key)"
             f")"
         )
-        _log.warning("[sdk_cache] _init_tables: attempting CREATE TABLE on connection=%s table=%s", self._conn, tbl)
         try:
             import dataiku
             executor = dataiku.SQLExecutor2(connection=self._conn)
-            executor.query_to_df(sql)
-            _log.warning("[sdk_cache] _init_tables: SUCCESS — table %s ready", tbl)
+            executor.query_to_df("SELECT 1", pre_queries=[sql], post_queries=['COMMIT'])
         except Exception as exc:
-            _log.warning("[sdk_cache] _init_tables FAILED: connection=%s table=%s error_type=%s error=%s",
-                         self._conn, tbl, type(exc).__name__, exc, exc_info=True)
+            _log.warning("[sdk_cache] _init_tables failed: %s", exc)
 
     def _sql_get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         if not self._conn:
