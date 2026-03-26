@@ -13,7 +13,6 @@ import { ReportOverlay } from '../ReportOverlay';
 import { SearchableCombobox } from '../SearchableCombobox';
 
 const COLLAPSE_BREAKPOINT = 1280;
-const SIDEBAR_EXPANDED = 160;
 const SIDEBAR_COLLAPSED = 56;
 
 interface AppShellProps {
@@ -142,7 +141,6 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
       mql.removeEventListener('change', handleChange as (e: MediaQueryListEvent) => void);
   }, []);
 
-  const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
 
   const reportBtnClass = [
     'flex items-center justify-center w-8 h-8 rounded-md transition-colors',
@@ -157,15 +155,16 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
       className="h-screen overflow-hidden bg-[var(--bg-app)]"
       style={{
         display: 'grid',
-        gridTemplateColumns: `${sidebarWidth}px 1fr`,
+        gridTemplateColumns: collapsed ? `${SIDEBAR_COLLAPSED}px 1fr` : 'auto 1fr',
         gridTemplateRows: 'auto 1fr',
       }}
     >
       {/* Sidebar — spans both rows */}
       <motion.div
         className="row-span-2 overflow-hidden"
-        animate={{ width: sidebarWidth }}
+        animate={{ width: collapsed ? SIDEBAR_COLLAPSED : 'auto' }}
         transition={{ type: 'spring', stiffness: 400, damping: 35 }}
+        style={{ minWidth: collapsed ? SIDEBAR_COLLAPSED : undefined }}
       >
         <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((prev) => !prev)} onRefreshCache={onRefreshCache} />
       </motion.div>

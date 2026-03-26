@@ -330,7 +330,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
 
         {!collapsed && (
           <>
-            <span className="flex-1 text-left truncate">{item.label}</span>
+            <span className="flex-1 text-left whitespace-nowrap">{item.label}</span>
             {badgeCount > 0 && (
               <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
                 {badgeCount}
@@ -489,7 +489,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
                     <span className="flex-shrink-0">{icons.outreach}</span>
                     {!collapsed && (
                       <>
-                        <span className="flex-1 text-left truncate">{item.title}</span>
+                        <span className="flex-1 text-left whitespace-nowrap">{item.title}</span>
                         {item.isDisabled && (
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
                             Off
