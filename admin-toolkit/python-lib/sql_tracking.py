@@ -210,6 +210,16 @@ class SQLTrackingDB:
             'user_profile_stats_json TEXT',
             'os_info TEXT',
             'spark_version TEXT',
+            # Health scoring + license columns (added to DDL after V5, need ALTER for existing tables)
+            'version_currency_score DOUBLE PRECISION',
+            'system_capacity_score DOUBLE PRECISION',
+            'configuration_score DOUBLE PRECISION',
+            'security_isolation_score DOUBLE PRECISION',
+            'license_named_users_pct DOUBLE PRECISION',
+            'license_concurrent_users_pct DOUBLE PRECISION',
+            'license_projects_pct DOUBLE PRECISION',
+            'license_connections_pct DOUBLE PRECISION',
+            'license_expiry_date TEXT',
         ]
         for col_def in v5_columns:
             try:
