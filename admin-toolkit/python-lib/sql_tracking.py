@@ -114,6 +114,7 @@ class SQLTrackingDB:
         df = executor.query_to_df(sql)
         if df is None or df.empty:
             return []
+        df = df.where(df.notna(), None)  # NaN → None for valid JSON
         return df.to_dict('records')
 
     def _read_one(self, executor, sql: str) -> Optional[Dict[str, Any]]:
