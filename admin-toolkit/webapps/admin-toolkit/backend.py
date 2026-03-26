@@ -22,6 +22,29 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
+# Replace NaN/Infinity with null in JSON responses (SQL backend can return NaN for NULL floats)
+import math as _math
+
+class _SafeJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, float) and (_math.isnan(o) or _math.isinf(o)):
+            return None
+        return super().default(o)
+
+    def encode(self, o):
+        return super().encode(_nan_to_none(o))
+
+def _nan_to_none(obj):
+    if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+app.json_encoder = _SafeJSONEncoder
+
 # Suppress noisy per-request and per-project scan logging
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
