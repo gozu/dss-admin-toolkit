@@ -109,13 +109,19 @@ class SQLTrackingDB:
         from dataiku.core.sql import SQLExecutor2
         return SQLExecutor2(connection=self._connection_name)
 
+    @staticmethod
+    def _sanitize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace NaN/Infinity floats with None for JSON safety."""
+        import math
+        return {k: (None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v)
+                for k, v in row.items()}
+
     def _read(self, executor, sql: str) -> List[Dict[str, Any]]:
         """Execute a SELECT and return rows as list of dicts."""
         df = executor.query_to_df(sql)
         if df is None or df.empty:
             return []
-        df = df.where(df.notna(), None)  # NaN → None for valid JSON
-        return df.to_dict('records')
+        return [self._sanitize_row(r) for r in df.to_dict('records')]
 
     def _read_one(self, executor, sql: str) -> Optional[Dict[str, Any]]:
         """Execute a SELECT and return the first row or None."""
