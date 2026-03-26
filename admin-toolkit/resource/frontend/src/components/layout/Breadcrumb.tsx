@@ -25,6 +25,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   directory: { label: 'Tools', firstPage: 'outreach' },
   'db-health': { label: 'Tools', firstPage: 'outreach' },
   report: { label: 'Tools', firstPage: 'outreach' },
+  trends: { label: 'Trends', firstPage: 'trends' },
 };
 
 const PAGE_LABELS: Record<PageId, string> = {
@@ -46,6 +47,7 @@ const PAGE_LABELS: Record<PageId, string> = {
   tracking: 'Compliance',
   report: 'Report',
   'db-health': 'DB Health',
+  trends: 'Trends',
 };
 
 export function Breadcrumb() {

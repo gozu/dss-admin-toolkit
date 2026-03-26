@@ -81,6 +81,9 @@ _ALL_TABLES = [
     'outreach_emails', 'outreach_email_issues', 'known_users',
     'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
     'user_snapshots', 'project_snapshots', 'run_plugins', 'run_connections',
+    # V7: trends snapshot tables
+    'run_datasets', 'run_recipes', 'run_llms', 'run_agents',
+    'run_agent_tools', 'run_knowledge_banks', 'run_git_commits',
 ]
 
 
@@ -88,7 +91,7 @@ class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
-    _TARGET_SCHEMA_VERSION = 6
+    _TARGET_SCHEMA_VERSION = 7
 
     def __init__(self, connection_name: str, table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._connection_name = connection_name
@@ -154,6 +157,8 @@ class SQLTrackingDB:
             self._migrate_v5(executor)
             # V6 migration: add over-time snapshot tables
             self._migrate_v6(executor)
+            # V7 migration: trends snapshot tables (datasets, recipes, GenAI, git)
+            self._migrate_v7(executor)
             # Schema migration: move tables from default schema if schema is configured
             if self._schema:
                 self._migrate_from_default_schema(executor)
@@ -253,6 +258,78 @@ class SQLTrackingDB:
             f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_connections_type')} ON {self._t('run_connections')}(connection_type)",
         ]
         for stmt in v6_ddl:
+            try:
+                executor.query_to_df("SELECT 1", pre_queries=[stmt], post_queries=['COMMIT'])
+            except Exception:
+                pass  # table/index already exists
+
+    def _migrate_v7(self, executor) -> None:
+        """Add V7 trends snapshot tables if missing (idempotent)."""
+        # TODO: Add data retention/pruning for V7 tables (datasets, recipes, git_commits can grow large)
+        v7_ddl = [
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_datasets')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id     TEXT NOT NULL,
+                project_key     TEXT NOT NULL,
+                dataset_name    TEXT NOT NULL,
+                dataset_type    TEXT,
+                connection_name TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, dataset_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_datasets_type')} ON {self._t('run_datasets')}(dataset_type)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_recipes')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                recipe_name  TEXT NOT NULL,
+                recipe_type  TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, recipe_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_recipes_type')} ON {self._t('run_recipes')}(recipe_type)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_llms')} (
+                run_id        INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id   TEXT NOT NULL,
+                llm_id        TEXT NOT NULL,
+                llm_type      TEXT,
+                friendly_name TEXT,
+                PRIMARY KEY (run_id, instance_id, llm_id)
+            )""",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_agents')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                agent_id     TEXT NOT NULL,
+                agent_name   TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, agent_id)
+            )""",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_agent_tools')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                tool_id      TEXT NOT NULL,
+                tool_type    TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, tool_id)
+            )""",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_knowledge_banks')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                kb_id        TEXT NOT NULL,
+                kb_name      TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, kb_id)
+            )""",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_git_commits')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                commit_hash  TEXT NOT NULL,
+                author       TEXT,
+                committed_at TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key, commit_hash)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_git_commits_author')} ON {self._t('run_git_commits')}(author)",
+        ]
+        for stmt in v7_ddl:
             try:
                 executor.query_to_df("SELECT 1", pre_queries=[stmt], post_queries=['COMMIT'])
             except Exception:
@@ -762,6 +839,132 @@ class SQLTrackingDB:
                 f"WHERE run_id = {run_id} AND connection_name = {_L(cname)})"
             )
 
+        # V7: Dataset snapshots (trends)
+        t_run_datasets = self._t('run_datasets')
+        for ds in (snap.get('datasets') or []):
+            if not isinstance(ds, dict):
+                continue
+            ds_name = ds.get('dataset_name') or ds.get('name')
+            if not ds_name:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_datasets} "
+                f"(run_id, instance_id, project_key, dataset_name, dataset_type, connection_name) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(ds.get('project_key', ''))}, "
+                f"{_L(ds_name)}, {_L(ds.get('dataset_type') or ds.get('type'))}, {_L(ds.get('connection_name'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_datasets} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(ds.get('project_key', ''))} AND dataset_name = {_L(ds_name)})"
+            )
+
+        # V7: Recipe snapshots (trends)
+        t_run_recipes = self._t('run_recipes')
+        for rec in (snap.get('recipes') or []):
+            if not isinstance(rec, dict):
+                continue
+            rname = rec.get('recipe_name') or rec.get('name')
+            if not rname:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_recipes} "
+                f"(run_id, instance_id, project_key, recipe_name, recipe_type) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(rec.get('project_key', ''))}, "
+                f"{_L(rname)}, {_L(rec.get('recipe_type') or rec.get('type'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_recipes} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(rec.get('project_key', ''))} AND recipe_name = {_L(rname)})"
+            )
+
+        # V7: LLM snapshots (trends)
+        t_run_llms = self._t('run_llms')
+        for llm in (snap.get('llms') or []):
+            if not isinstance(llm, dict):
+                continue
+            lid = llm.get('llm_id') or llm.get('id')
+            if not lid:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_llms} "
+                f"(run_id, instance_id, llm_id, llm_type, friendly_name) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(lid)}, "
+                f"{_L(llm.get('llm_type') or llm.get('type'))}, "
+                f"{_L(llm.get('friendly_name') or llm.get('friendlyName'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_llms} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} AND llm_id = {_L(lid)})"
+            )
+
+        # V7: Agent snapshots (trends)
+        t_run_agents = self._t('run_agents')
+        for ag in (snap.get('agents') or []):
+            if not isinstance(ag, dict):
+                continue
+            aid = ag.get('agent_id') or ag.get('id')
+            if not aid:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_agents} "
+                f"(run_id, instance_id, project_key, agent_id, agent_name) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(ag.get('project_key', ''))}, "
+                f"{_L(aid)}, {_L(ag.get('agent_name') or ag.get('name'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_agents} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(ag.get('project_key', ''))} AND agent_id = {_L(aid)})"
+            )
+
+        # V7: Agent-tool snapshots (trends)
+        t_run_agent_tools = self._t('run_agent_tools')
+        for at in (snap.get('agent_tools') or []):
+            if not isinstance(at, dict):
+                continue
+            tid = at.get('tool_id') or at.get('id')
+            if not tid:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_agent_tools} "
+                f"(run_id, instance_id, project_key, tool_id, tool_type) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(at.get('project_key', ''))}, "
+                f"{_L(tid)}, {_L(at.get('tool_type') or at.get('type'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_agent_tools} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(at.get('project_key', ''))} AND tool_id = {_L(tid)})"
+            )
+
+        # V7: Knowledge-bank snapshots (trends)
+        t_run_kbs = self._t('run_knowledge_banks')
+        for kb in (snap.get('knowledge_banks') or []):
+            if not isinstance(kb, dict):
+                continue
+            kid = kb.get('kb_id') or kb.get('id')
+            if not kid:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_kbs} "
+                f"(run_id, instance_id, project_key, kb_id, kb_name) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(kb.get('project_key', ''))}, "
+                f"{_L(kid)}, {_L(kb.get('kb_name') or kb.get('name'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_kbs} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(kb.get('project_key', ''))} AND kb_id = {_L(kid)})"
+            )
+
+        # V7: Git-commit snapshots (trends)
+        t_run_git = self._t('run_git_commits')
+        for gc in (snap.get('git_commits') or []):
+            if not isinstance(gc, dict):
+                continue
+            chash = gc.get('commit_hash') or gc.get('commit')
+            if not chash:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_git} "
+                f"(run_id, instance_id, project_key, commit_hash, author, committed_at) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(gc.get('project_key', ''))}, "
+                f"{_L(chash)}, {_L(gc.get('author'))}, {_L(gc.get('committed_at'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_git} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
+                f"AND project_key = {_L(gc.get('project_key', ''))} AND commit_hash = {_L(chash)})"
+            )
+
         # Findings (skip if exists, with pre-generated IDs)
         finding_keys_this_run: Set[Tuple[str, str, str]] = set()
         entities_this_run: Set[Tuple[str, str]] = set()
@@ -937,6 +1140,83 @@ class SQLTrackingDB:
             executor,
             f"SELECT * FROM {self._t('runs')} ORDER BY run_id DESC LIMIT {_L(limit)} OFFSET {_L(offset)}",
         )
+
+    def find_closest_run(self, instance_id: str, target_iso: str) -> Optional[int]:
+        """Find the run_id closest to the target ISO datetime (at or before). Database-agnostic."""
+        self._init_tables()
+        executor = self._get_executor()
+        # Find most recent run at or before target
+        row = self._read_one(
+            executor,
+            f"SELECT run_id FROM {self._t('runs')} "
+            f"WHERE instance_id = {_L(instance_id)} AND run_at <= {_L(target_iso)} "
+            f"ORDER BY run_at DESC LIMIT 1",
+        )
+        if row:
+            return int(row['run_id'])
+        # Fallback: get the earliest run if target is before all runs
+        row = self._read_one(
+            executor,
+            f"SELECT run_id FROM {self._t('runs')} "
+            f"WHERE instance_id = {_L(instance_id)} ORDER BY run_at ASC LIMIT 1",
+        )
+        return int(row['run_id']) if row else None
+
+    def get_trends_snapshot(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Return all snapshot data for a given run_id (for trends comparison)."""
+        self._init_tables()
+        executor = self._get_executor()
+        run = self._read_one(
+            executor,
+            f"SELECT * FROM {self._t('runs')} WHERE run_id = {_L(run_id)}",
+        )
+        if not run:
+            return None
+        result: Dict[str, Any] = {'run': run}
+
+        # Health metrics
+        result['health_metrics'] = self._read_one(
+            executor,
+            f"SELECT * FROM {self._t('run_health_metrics')} WHERE run_id = {_L(run_id)}",
+        )
+
+        # V6 snapshot tables
+        result['users'] = self._read(
+            executor,
+            f"SELECT * FROM {self._t('user_snapshots')} WHERE run_id = {_L(run_id)}",
+        )
+        result['projects'] = self._read(
+            executor,
+            f"SELECT * FROM {self._t('project_snapshots')} WHERE run_id = {_L(run_id)}",
+        )
+        result['plugins'] = self._read(
+            executor,
+            f"SELECT * FROM {self._t('run_plugins')} WHERE run_id = {_L(run_id)}",
+        )
+        result['connections'] = self._read(
+            executor,
+            f"SELECT * FROM {self._t('run_connections')} WHERE run_id = {_L(run_id)}",
+        )
+
+        # V7 snapshot tables (graceful: empty list if table doesn't exist yet)
+        for table_key, table_name in [
+            ('datasets', 'run_datasets'),
+            ('recipes', 'run_recipes'),
+            ('llms', 'run_llms'),
+            ('agents', 'run_agents'),
+            ('agent_tools', 'run_agent_tools'),
+            ('knowledge_banks', 'run_knowledge_banks'),
+            ('git_commits', 'run_git_commits'),
+        ]:
+            try:
+                result[table_key] = self._read(
+                    executor,
+                    f"SELECT * FROM {self._t(table_name)} WHERE run_id = {_L(run_id)}",
+                )
+            except Exception:
+                result[table_key] = []
+
+        return result
 
     def get_run(self, run_id: int) -> Optional[Dict[str, Any]]:
         self._init_tables()

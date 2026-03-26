@@ -24,6 +24,7 @@ const PAGE_ORDER: PageId[] = [
   'outreach',
   'tracking',
   'directory',
+  'trends',
 ];
 
 const NUMBER_KEY_MAP: Record<string, PageId> = {

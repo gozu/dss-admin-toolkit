@@ -31,6 +31,11 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'db-health': // self-fetching, queries PG directly
       return 'independent';
 
+    // Trends depends on outreach data being loaded (for "now" values from DiagContext)
+    case 'trends':
+      if (!outreachReady) return 'loading';
+      return d.outreachApiLoaded ? 'ready' : 'partial';
+
     // Compliance depends on outreach data — mirrors outreach states
     case 'tracking':
       if (!outreachReady) return 'loading';

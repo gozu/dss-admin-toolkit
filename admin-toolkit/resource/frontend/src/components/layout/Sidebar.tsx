@@ -140,6 +140,12 @@ const icons: Record<string, ReactNode> = {
       <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   ),
+  trends: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
+      <polyline points="16 7 22 7 22 13" />
+    </svg>
+  ),
 };
 
 /* ------------------------------------------------------------------ */
@@ -204,6 +210,12 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'directory', label: 'Dir Usage' },
       { id: 'db-health', label: 'DB Health' },
       { id: 'report', label: 'Report' },
+    ],
+  },
+  {
+    title: 'TRENDS',
+    items: [
+      { id: 'trends', label: 'Trends' },
     ],
   },
 ];

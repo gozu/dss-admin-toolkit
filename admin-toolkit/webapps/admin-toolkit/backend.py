@@ -5912,6 +5912,146 @@ def _do_tracking_ingest(db, data):
         'spark_version': overview.get('sparkVersion'),
     }
 
+    # -- V7 trends collection: datasets, recipes, LLMs, agents, agent-tools, knowledge banks, git commits --
+    _t_v7 = _time.time()
+    v7_datasets = []
+    v7_recipes = []
+    v7_llms = []
+    v7_agents = []
+    v7_agent_tools = []
+    v7_knowledge_banks = []
+    v7_git_commits = []
+    v7_deadline = _time.time() + 120  # 120s hard deadline for project-scoped collection
+    v7_projects_scanned = 0
+    v7_projects_skipped = 0
+    llm_ids_seen = set()  # deduplicate LLMs across projects
+
+    try:
+        client = dataiku.api_client()
+        project_keys = [p.get('projectKey') or p.get('key') for p in project_list if isinstance(p, dict)]
+        for idx, pk in enumerate(project_keys):
+            if _time.time() > v7_deadline:
+                v7_projects_skipped = len(project_keys) - idx
+                app.logger.warning("[tracking:v7] collection deadline exceeded after %d/%d projects, skipping %d",
+                                   idx, len(project_keys), v7_projects_skipped)
+                break
+            try:
+                proj = client.get_project(pk)
+                _tp = _time.time()
+
+                # Datasets
+                try:
+                    for ds in proj.list_datasets():
+                        params = ds.get('params', {})
+                        if isinstance(params, str):
+                            try:
+                                import ast
+                                params = ast.literal_eval(params)
+                            except Exception:
+                                params = {}
+                        v7_datasets.append({
+                            'project_key': pk,
+                            'dataset_name': ds['name'],
+                            'dataset_type': ds.get('type'),
+                            'connection_name': params.get('connection') if isinstance(params, dict) else None,
+                        })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_datasets failed for %s: %s", pk, e)
+
+                # Recipes
+                try:
+                    for r in proj.list_recipes():
+                        v7_recipes.append({
+                            'project_key': pk,
+                            'recipe_name': r['name'],
+                            'recipe_type': r.get('type'),
+                        })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_recipes failed for %s: %s", pk, e)
+
+                # LLMs (deduplicate by id since they're often shared across projects)
+                try:
+                    for llm in proj.list_llms():
+                        lid = llm['id']
+                        if lid not in llm_ids_seen:
+                            llm_ids_seen.add(lid)
+                            v7_llms.append({
+                                'llm_id': lid,
+                                'llm_type': llm.get('type'),
+                                'friendly_name': llm.get('friendlyName'),
+                            })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_llms failed for %s: %s", pk, e)
+
+                # Agents
+                try:
+                    for ag in proj.list_agents():
+                        v7_agents.append({
+                            'project_key': pk,
+                            'agent_id': ag['id'],
+                            'agent_name': ag.get('name'),
+                        })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_agents failed for %s: %s", pk, e)
+
+                # Agent tools
+                try:
+                    for at in proj.list_agent_tools():
+                        v7_agent_tools.append({
+                            'project_key': pk,
+                            'tool_id': at['id'],
+                            'tool_type': at.get('type'),
+                        })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_agent_tools failed for %s: %s", pk, e)
+
+                # Knowledge banks
+                try:
+                    for kb in proj.list_knowledge_banks():
+                        v7_knowledge_banks.append({
+                            'project_key': pk,
+                            'kb_id': kb['id'],
+                            'kb_name': kb.get('name'),
+                        })
+                except Exception as e:
+                    app.logger.debug("[tracking:v7] list_knowledge_banks failed for %s: %s", pk, e)
+
+                # Git commits (cap at 1000 total)
+                if len(v7_git_commits) < 1000:
+                    try:
+                        git_log = proj.get_project_git().log()
+                        for entry in (git_log.get('entries') or []):
+                            if len(v7_git_commits) >= 1000:
+                                break
+                            v7_git_commits.append({
+                                'project_key': pk,
+                                'commit_hash': entry.get('commit'),
+                                'author': entry.get('author'),
+                                'committed_at': entry.get('timestamp'),
+                            })
+                    except Exception as e:
+                        app.logger.debug("[tracking:v7] git log failed for %s: %s", pk, e)
+
+                v7_projects_scanned += 1
+                app.logger.debug("[tracking:v7] project %s scanned in %.1fs", pk, _time.time() - _tp)
+            except Exception as e:
+                app.logger.debug("[tracking:v7] project %s error: %s", pk, e)
+    except Exception as e:
+        app.logger.warning("[tracking:v7] collection failed: %s", e)
+
+    snapshot_data['datasets'] = v7_datasets
+    snapshot_data['recipes'] = v7_recipes
+    snapshot_data['llms'] = v7_llms
+    snapshot_data['agents'] = v7_agents
+    snapshot_data['agent_tools'] = v7_agent_tools
+    snapshot_data['knowledge_banks'] = v7_knowledge_banks
+    snapshot_data['git_commits'] = v7_git_commits
+    app.logger.info("[tracking:v7] collection done in %.1fs: %d projects scanned (%d skipped), "
+                    "%d datasets, %d recipes, %d llms, %d agents, %d agent_tools, %d kbs, %d commits",
+                    _time.time() - _t_v7, v7_projects_scanned, v7_projects_skipped,
+                    len(v7_datasets), len(v7_recipes), len(v7_llms), len(v7_agents),
+                    len(v7_agent_tools), len(v7_knowledge_banks), len(v7_git_commits))
+
     _campaign_recipient_keys = {
         'project': 'projectRecipients', 'code_env': 'codeEnvRecipients',
         'code_studio': 'codeStudioRecipients', 'auto_scenario': 'autoScenarioRecipients',
@@ -7859,6 +7999,58 @@ def api_tracking_exemptions_remove():
     if not deleted:
         return jsonify({'error': 'Exemption not found'}), 404
     return jsonify({'ok': True})
+
+
+# ── Trends snapshot endpoint ──
+
+@app.route('/api/tracking/trends/snapshot')
+def api_tracking_trends_snapshot():
+    """Return full snapshot data for a specific past run (for trends comparison)."""
+    _t0 = _time.time()
+    db = _get_tracking_db()
+    if db is None:
+        return jsonify({'error': 'Tracking not available'}), 501
+
+    run_id_param = request.args.get('run_id')
+    relative_param = request.args.get('relative')
+
+    if run_id_param:
+        run_id = int(run_id_param)
+    elif relative_param:
+        # Resolve relative preset to a run_id
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        offsets = {
+            '7d': timedelta(days=7),
+            '30d': timedelta(days=30),
+            '90d': timedelta(days=90),
+            '6mo': timedelta(days=182),
+            '1yr': timedelta(days=365),
+        }
+        delta = offsets.get(relative_param)
+        if not delta:
+            return jsonify({'error': f'Invalid relative preset: {relative_param}'}), 400
+        target_iso = (now - delta).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Need instance_id for the query
+        inst_id = None
+        runs = db.list_runs(limit=1)
+        if runs:
+            inst_id = runs[0].get('instance_id')
+        if not inst_id:
+            return jsonify({'error': 'No runs available'}), 404
+        run_id = db.find_closest_run(inst_id, target_iso)
+        if run_id is None:
+            return jsonify({'error': f'No run found for relative={relative_param}'}), 404
+    else:
+        return jsonify({'error': 'Either run_id or relative parameter is required'}), 400
+
+    snapshot = db.get_trends_snapshot(run_id)
+    if snapshot is None:
+        return jsonify({'error': f'Run {run_id} not found'}), 404
+
+    app.logger.info("[tracking:trends] snapshot for run_id=%d returned in %.1fms",
+                    run_id, (_time.time() - _t0) * 1000)
+    return jsonify(snapshot)
 
 
 # ── Code Env Cleaner helpers ──

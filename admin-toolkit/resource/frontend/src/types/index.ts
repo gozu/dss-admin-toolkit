@@ -735,7 +735,8 @@ export type PageId =
   | 'plugins'
   | 'tracking'
   | 'report'
-  | 'db-health';
+  | 'db-health'
+  | 'trends';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
 export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';

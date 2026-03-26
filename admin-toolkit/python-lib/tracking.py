@@ -336,6 +336,73 @@ _SCHEMA_V4 = [
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, datetime('now'))",
 ]
 
+_SCHEMA_V7 = [
+    # -- V7: trends snapshot tables for datasets, recipes, GenAI metadata, git commits --
+    """CREATE TABLE IF NOT EXISTS run_datasets (
+        run_id          INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id     TEXT NOT NULL,
+        project_key     TEXT NOT NULL,
+        dataset_name    TEXT NOT NULL,
+        dataset_type    TEXT,
+        connection_name TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, dataset_name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_datasets_type ON run_datasets(dataset_type)",
+    """CREATE TABLE IF NOT EXISTS run_recipes (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        recipe_name  TEXT NOT NULL,
+        recipe_type  TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, recipe_name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_recipes_type ON run_recipes(recipe_type)",
+    """CREATE TABLE IF NOT EXISTS run_llms (
+        run_id        INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id   TEXT NOT NULL,
+        llm_id        TEXT NOT NULL,
+        llm_type      TEXT,
+        friendly_name TEXT,
+        PRIMARY KEY (run_id, instance_id, llm_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_agents (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        agent_id     TEXT NOT NULL,
+        agent_name   TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, agent_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_agent_tools (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        tool_id      TEXT NOT NULL,
+        tool_type    TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, tool_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_knowledge_banks (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        kb_id        TEXT NOT NULL,
+        kb_name      TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, kb_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_git_commits (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        commit_hash  TEXT NOT NULL,
+        author       TEXT,
+        committed_at TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, commit_hash)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_git_commits_author ON run_git_commits(author)",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (7, datetime('now'))",
+    # TODO: Add data retention/pruning for V7 tables (datasets, recipes, git_commits can grow large)
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -391,6 +458,15 @@ class TrackingDB:
             v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
             if v < 6:
                 for stmt in _SCHEMA_V6:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # table/index may already exist
+                self._conn.commit()
+            # V7 migration: trends snapshot tables (datasets, recipes, GenAI, git)
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 7:
+                for stmt in _SCHEMA_V7:
                     try:
                         self._conn.execute(stmt)
                     except Exception:
@@ -623,6 +699,126 @@ class TrackingDB:
                         (run_id, cname, c.get('type')),
                     )
 
+                # 6e. INSERT run_datasets (V7 trends snapshots)
+                for ds in (snap.get('datasets') or []):
+                    if not isinstance(ds, dict):
+                        continue
+                    ds_name = ds.get('dataset_name') or ds.get('name')
+                    if not ds_name:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_datasets
+                               (run_id, instance_id, project_key, dataset_name, dataset_type, connection_name)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         ds.get('project_key', ''),
+                         ds_name,
+                         ds.get('dataset_type') or ds.get('type'),
+                         ds.get('connection_name')),
+                    )
+
+                # 6f. INSERT run_recipes (V7 trends snapshots)
+                for rec in (snap.get('recipes') or []):
+                    if not isinstance(rec, dict):
+                        continue
+                    rname = rec.get('recipe_name') or rec.get('name')
+                    if not rname:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_recipes
+                               (run_id, instance_id, project_key, recipe_name, recipe_type)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         rec.get('project_key', ''),
+                         rname,
+                         rec.get('recipe_type') or rec.get('type')),
+                    )
+
+                # 6g. INSERT run_llms (V7 trends snapshots)
+                for llm in (snap.get('llms') or []):
+                    if not isinstance(llm, dict):
+                        continue
+                    lid = llm.get('llm_id') or llm.get('id')
+                    if not lid:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_llms
+                               (run_id, instance_id, llm_id, llm_type, friendly_name)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id, lid,
+                         llm.get('llm_type') or llm.get('type'),
+                         llm.get('friendly_name') or llm.get('friendlyName')),
+                    )
+
+                # 6h. INSERT run_agents (V7 trends snapshots)
+                for ag in (snap.get('agents') or []):
+                    if not isinstance(ag, dict):
+                        continue
+                    aid = ag.get('agent_id') or ag.get('id')
+                    if not aid:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_agents
+                               (run_id, instance_id, project_key, agent_id, agent_name)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         ag.get('project_key', ''),
+                         aid,
+                         ag.get('agent_name') or ag.get('name')),
+                    )
+
+                # 6i. INSERT run_agent_tools (V7 trends snapshots)
+                for at in (snap.get('agent_tools') or []):
+                    if not isinstance(at, dict):
+                        continue
+                    tid = at.get('tool_id') or at.get('id')
+                    if not tid:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_agent_tools
+                               (run_id, instance_id, project_key, tool_id, tool_type)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         at.get('project_key', ''),
+                         tid,
+                         at.get('tool_type') or at.get('type')),
+                    )
+
+                # 6j. INSERT run_knowledge_banks (V7 trends snapshots)
+                for kb in (snap.get('knowledge_banks') or []):
+                    if not isinstance(kb, dict):
+                        continue
+                    kid = kb.get('kb_id') or kb.get('id')
+                    if not kid:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_knowledge_banks
+                               (run_id, instance_id, project_key, kb_id, kb_name)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         kb.get('project_key', ''),
+                         kid,
+                         kb.get('kb_name') or kb.get('name')),
+                    )
+
+                # 6k. INSERT run_git_commits (V7 trends snapshots)
+                for gc in (snap.get('git_commits') or []):
+                    if not isinstance(gc, dict):
+                        continue
+                    chash = gc.get('commit_hash') or gc.get('commit')
+                    if not chash:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_git_commits
+                               (run_id, instance_id, project_key, commit_hash, author, committed_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (run_id, instance_id,
+                         gc.get('project_key', ''),
+                         chash,
+                         gc.get('author'),
+                         gc.get('committed_at')),
+                    )
+
                 # 7. INSERT findings + lifecycle issues
                 finding_keys_this_run = set()  # (campaign_id, entity_type, entity_key)
                 entities_this_run = set()      # (entity_type, entity_key)
@@ -798,6 +994,72 @@ class TrackingDB:
                     (limit, offset),
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    def find_closest_run(self, instance_id: str, target_iso: str) -> Optional[int]:
+        """Find the run_id closest to the target ISO datetime (at or before)."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                'SELECT run_id FROM runs WHERE instance_id = ? AND run_at <= ? '
+                'ORDER BY run_at DESC LIMIT 1',
+                (instance_id, target_iso),
+            ).fetchone()
+            if row:
+                return row['run_id']
+            # Fallback: get the earliest run if target is before all runs
+            row = conn.execute(
+                'SELECT run_id FROM runs WHERE instance_id = ? ORDER BY run_at ASC LIMIT 1',
+                (instance_id,),
+            ).fetchone()
+            return row['run_id'] if row else None
+
+    def get_trends_snapshot(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Return all snapshot data for a given run_id (for trends comparison)."""
+        with self._lock:
+            conn = self._get_conn()
+            run = conn.execute('SELECT * FROM runs WHERE run_id = ?', (run_id,)).fetchone()
+            if not run:
+                return None
+            result: Dict[str, Any] = {'run': dict(run)}
+
+            # Health metrics
+            hm = conn.execute(
+                'SELECT * FROM run_health_metrics WHERE run_id = ?', (run_id,),
+            ).fetchone()
+            result['health_metrics'] = dict(hm) if hm else None
+
+            # V6 snapshot tables
+            result['users'] = [dict(r) for r in conn.execute(
+                'SELECT * FROM user_snapshots WHERE run_id = ?', (run_id,),
+            ).fetchall()]
+            result['projects'] = [dict(r) for r in conn.execute(
+                'SELECT * FROM project_snapshots WHERE run_id = ?', (run_id,),
+            ).fetchall()]
+            result['plugins'] = [dict(r) for r in conn.execute(
+                'SELECT * FROM run_plugins WHERE run_id = ?', (run_id,),
+            ).fetchall()]
+            result['connections'] = [dict(r) for r in conn.execute(
+                'SELECT * FROM run_connections WHERE run_id = ?', (run_id,),
+            ).fetchall()]
+
+            # V7 snapshot tables (graceful: empty list if table doesn't exist yet)
+            for table_key, table_name in [
+                ('datasets', 'run_datasets'),
+                ('recipes', 'run_recipes'),
+                ('llms', 'run_llms'),
+                ('agents', 'run_agents'),
+                ('agent_tools', 'run_agent_tools'),
+                ('knowledge_banks', 'run_knowledge_banks'),
+                ('git_commits', 'run_git_commits'),
+            ]:
+                try:
+                    result[table_key] = [dict(r) for r in conn.execute(
+                        f'SELECT * FROM {table_name} WHERE run_id = ?', (run_id,),
+                    ).fetchall()]
+                except Exception:
+                    result[table_key] = []
+
+            return result
 
     def get_run(self, run_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:

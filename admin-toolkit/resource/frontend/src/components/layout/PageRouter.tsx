@@ -30,6 +30,9 @@ const ReportPage = lazy(() =>
 const DbHealthPage = lazy(() =>
   import('../pages/DbHealthPage').then((m) => ({ default: m.DbHealthPage })),
 );
+const TrendsPage = lazy(() =>
+  import('../pages/TrendsPage').then((m) => ({ default: m.TrendsPage })),
+);
 
 function LoadingSpinner() {
   return (
@@ -86,6 +89,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <ReportPage />;
     case 'db-health':
       return <DbHealthPage />;
+    case 'trends':
+      return <TrendsPage />;
     default:
       return <SummaryPage />;
   }

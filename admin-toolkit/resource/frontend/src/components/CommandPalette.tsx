@@ -33,6 +33,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'tracking', label: 'Compliance', section: 'Tools', keywords: ['tracking', 'compliance', 'audit', 'issues'] },
   { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
   { id: 'db-health', label: 'DB Health', section: 'Tools', keywords: ['postgres', 'database', 'vacuum', 'tables', 'runtimedb', 'bloat'] },
+  { id: 'trends', label: 'Trends', section: 'Trends', keywords: ['trends', 'compare', 'history', 'then', 'now', 'delta', 'change'] },
 ];
 
 const SECTION_ICONS: Record<string, string> = {
@@ -42,6 +43,7 @@ const SECTION_ICONS: Record<string, string> = {
   Projects: '\u25C6',
   'Code Environments': '\u2318',
   Tools: '\u2692',
+  Trends: '\u2197',
 };
 
 function fuzzyMatch(query: string, def: PageDef): boolean {
