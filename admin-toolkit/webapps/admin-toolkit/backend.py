@@ -8006,6 +8006,7 @@ def api_tracking_exemptions_remove():
 @app.route('/api/tracking/trends/snapshot')
 def api_tracking_trends_snapshot():
     """Return full snapshot data for a specific past run (for trends comparison)."""
+    import time as _time
     _t0 = _time.time()
     db = _get_tracking_db()
     if db is None:
