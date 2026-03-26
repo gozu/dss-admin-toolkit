@@ -151,6 +151,14 @@ class SQLTrackingDB:
             if self._initialized:
                 return
             executor = self._get_executor()
+            # Ensure schema exists before creating tables (PostgreSQL requires this)
+            if self._schema:
+                try:
+                    executor.query_to_df("SELECT 1",
+                                         pre_queries=[f"CREATE SCHEMA IF NOT EXISTS {self._schema}"],
+                                         post_queries=['COMMIT'])
+                except Exception:
+                    pass  # schema may already exist or user lacks CREATE SCHEMA privilege
             ddl = self._get_ddl_statements()
             executor.query_to_df("SELECT 1", pre_queries=ddl, post_queries=['COMMIT'])
             # V5 migration: add snapshot columns to existing run_health_metrics tables
