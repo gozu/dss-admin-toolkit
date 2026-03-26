@@ -180,14 +180,15 @@ function normalizeNowData(parsedData: ParsedData): NormalizedNow {
   const projects = parsedData.projects || [];
   const plugins = parsedData.pluginDetails || [];
   const connections = parsedData.connectionDetails || [];
+  const stats = parsedData.userStats || {};
 
   return {
-    userCount: users.length,
-    enabledUserCount: users.filter((u) => u.enabled !== false).length,
+    userCount: users.length || Number(stats['Total Users']) || 0,
+    enabledUserCount: users.filter((u) => u.enabled !== false).length || Number(stats['Enabled Users']) || 0,
     projectCount: projects.length,
     pluginCount: plugins.length,
     connectionCount: connections.length,
-    healthScore: null, // Computed externally if needed
+    healthScore: null,
     userProfileBreakdown: groupBy(users, (u) => u.userProfile),
     ownerBreakdown: groupBy(projects, (p) => p.owner),
     connectionTypeBreakdown: groupBy(connections, (c) => c.type),
@@ -195,13 +196,14 @@ function normalizeNowData(parsedData: ParsedData): NormalizedNow {
 }
 
 function normalizeThenData(snapshot: TrendsSnapshot): NormalizedThen {
+  // Use snapshot arrays when available (more accurate), fall back to run aggregates
   return {
     runId: snapshot.run.run_id,
-    userCount: snapshot.run.user_count,
-    enabledUserCount: snapshot.run.enabled_user_count,
-    projectCount: snapshot.run.project_count,
-    pluginCount: snapshot.run.plugin_count,
-    connectionCount: snapshot.run.connection_count,
+    userCount: snapshot.users.length || snapshot.run.user_count || 0,
+    enabledUserCount: snapshot.users.filter((u) => u.enabled).length || snapshot.run.enabled_user_count || 0,
+    projectCount: snapshot.projects.length || snapshot.run.project_count || 0,
+    pluginCount: snapshot.plugins.length || snapshot.run.plugin_count || 0,
+    connectionCount: snapshot.connections.length || snapshot.run.connection_count || 0,
     healthScore: snapshot.run.health_score,
     userProfileBreakdown: groupBy(snapshot.users, (u) => u.user_profile),
     ownerBreakdown: groupBy(snapshot.projects, (p) => p.owner_login),
