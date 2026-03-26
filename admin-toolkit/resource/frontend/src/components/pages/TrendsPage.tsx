@@ -282,12 +282,14 @@ function useTrendsData() {
   const [snapshot, setSnapshot] = useState<TrendsSnapshot | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [runsLoading, setRunsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Fetch available runs
   useEffect(() => {
     let cancelled = false;
     const t0 = performance.now();
+    setRunsLoading(true);
     fetchJson<{ runs: TrendsRun[] }>('/api/tracking/runs?limit=100')
       .then((data) => {
         if (cancelled) return;
@@ -304,7 +306,8 @@ function useTrendsData() {
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
         addDebugLog(`[trends] Failed to fetch runs: ${msg}`, 'trends', 'error');
-      });
+      })
+      .finally(() => { if (!cancelled) setRunsLoading(false); });
     return () => { cancelled = true; };
   }, [addDebugLog]);
 
@@ -336,7 +339,7 @@ function useTrendsData() {
   const now = useMemo(() => normalizeNowData(parsedData), [parsedData]);
   const then = useMemo(() => (snapshot ? normalizeThenData(snapshot) : null), [snapshot]);
 
-  return { runs, now, then, loading, error, selectedRunId, selectRun, parsedData };
+  return { runs, now, then, loading: loading || runsLoading, error, selectedRunId, selectRun, parsedData };
 }
 
 /* ---------- Sub-components ---------- */
