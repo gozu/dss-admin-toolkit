@@ -23,7 +23,7 @@ interface UseReportGeneratorReturn {
   closeSelector: () => void;
 }
 
-const REPORT_TIMEOUT_MS = 180_000;
+const REPORT_TIMEOUT_MS = 600_000;
 
 function stripMarkdownFences(text: string): string {
   return text.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
@@ -165,7 +165,7 @@ export function useReportGenerator(): UseReportGeneratorReturn {
         if ((err as Error).name === 'AbortError') {
           setError(
             timedOutRef.current
-              ? 'Report generation timed out (180s). Try selecting a faster model.'
+              ? 'Report generation timed out (10 min). Try selecting a faster model.'
               : 'Report generation cancelled.',
           );
         } else {

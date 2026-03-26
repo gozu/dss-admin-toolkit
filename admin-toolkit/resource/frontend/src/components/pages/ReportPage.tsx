@@ -6,6 +6,7 @@ import { ReportOverlay } from '../ReportOverlay';
 import { exportReportAsHtml } from '../../utils/exportReport';
 import { prepareReportData } from '../../utils/prepareReportData';
 import { useTheme } from '../../hooks/useTheme';
+import { getProgressMessage } from '../../utils/progressMessages';
 
 export function ReportPage() {
   const { state } = useDiag();
@@ -74,6 +75,14 @@ export function ReportPage() {
       addLog(`ERROR: ${error}`);
     }
   }, [error, addLog]);
+
+  // Escalating humor progress messages while LLM thinks
+  useEffect(() => {
+    if (status !== 'generating') return;
+    let n = 0;
+    const id = setInterval(() => addLog(getProgressMessage(n++)), 3000 + Math.random() * 4000);
+    return () => clearInterval(id);
+  }, [status, addLog]);
 
   // Elapsed timer during generation
   useEffect(() => {
