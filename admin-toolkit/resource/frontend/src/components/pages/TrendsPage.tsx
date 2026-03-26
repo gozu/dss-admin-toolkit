@@ -162,15 +162,7 @@ interface NormalizedThen {
   runAt: string;
 }
 
-type PresetKey = '7d' | '30d' | '90d' | '6mo' | '1yr';
-
-const PRESETS: { key: PresetKey; label: string }[] = [
-  { key: '7d', label: '7d' },
-  { key: '30d', label: '30d' },
-  { key: '90d', label: '90d' },
-  { key: '6mo', label: '6mo' },
-  { key: '1yr', label: '1yr' },
-];
+// No presets — user picks from actual available runs
 
 /* ---------- Helpers ---------- */
 
@@ -288,7 +280,6 @@ function useTrendsData() {
 
   const [runs, setRuns] = useState<TrendsRun[]>([]);
   const [snapshot, setSnapshot] = useState<TrendsSnapshot | null>(null);
-  const [activePreset, setActivePreset] = useState<PresetKey | null>('30d');
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -297,11 +288,16 @@ function useTrendsData() {
   useEffect(() => {
     let cancelled = false;
     const t0 = performance.now();
-    fetchJson<TrendsRun[]>('/api/tracking/runs?limit=100')
+    fetchJson<{ runs: TrendsRun[] }>('/api/tracking/runs?limit=100')
       .then((data) => {
         if (cancelled) return;
-        setRuns(data);
-        addDebugLog(`[trends] Fetched ${data.length} runs in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
+        const list = data.runs ?? (Array.isArray(data) ? data : []);
+        setRuns(list);
+        addDebugLog(`[trends] Fetched ${list.length} runs in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
+        // Auto-select the oldest run for initial comparison
+        if (list.length > 1) {
+          setSelectedRunId(list[list.length - 1].run_id);
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -312,53 +308,35 @@ function useTrendsData() {
     return () => { cancelled = true; };
   }, [addDebugLog]);
 
-  // Fetch snapshot when preset or run changes
-  const fetchSnapshot = useCallback(
-    async (params: string) => {
-      setLoading(true);
-      setError(null);
-      const t0 = performance.now();
-      try {
-        const data = await fetchJson<TrendsSnapshot>(`/api/tracking/trends/snapshot?${params}`);
+  // Fetch snapshot when selected run changes
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const t0 = performance.now();
+    fetchJson<TrendsSnapshot>(`/api/tracking/trends/snapshot?run_id=${selectedRunId}`)
+      .then((data) => {
+        if (cancelled) return;
         setSnapshot(data);
-        addDebugLog(`[trends] Fetched snapshot in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
-      } catch (err: unknown) {
+        addDebugLog(`[trends] Fetched snapshot for run #${selectedRunId} in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
         addDebugLog(`[trends] Failed to fetch snapshot: ${msg}`, 'trends', 'error');
-      } finally {
-        setLoading(false);
-      }
-    },
-    [addDebugLog],
-  );
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedRunId, addDebugLog]);
 
-  // When preset changes, fetch by relative
-  useEffect(() => {
-    if (activePreset && runs.length > 0) {
-      void fetchSnapshot(`relative=${activePreset}`);
-    }
-  }, [activePreset, runs.length, fetchSnapshot]);
-
-  // When a specific run is selected
-  const selectRun = useCallback(
-    (runId: number) => {
-      setActivePreset(null);
-      setSelectedRunId(runId);
-      void fetchSnapshot(`run_id=${runId}`);
-    },
-    [fetchSnapshot],
-  );
-
-  const selectPreset = useCallback((key: PresetKey) => {
-    setSelectedRunId(null);
-    setActivePreset(key);
-  }, []);
+  const selectRun = useCallback((runId: number) => setSelectedRunId(runId), []);
 
   const now = useMemo(() => normalizeNowData(parsedData), [parsedData]);
   const then = useMemo(() => (snapshot ? normalizeThenData(snapshot) : null), [snapshot]);
 
-  return { runs, now, then, loading, error, activePreset, selectedRunId, selectPreset, selectRun, parsedData };
+  return { runs, now, then, loading, error, selectedRunId, selectRun, parsedData };
 }
 
 /* ---------- Sub-components ---------- */
@@ -593,7 +571,7 @@ function SectionHeader({ title, delay = 0 }: { title: string; delay?: number }) 
 /* ---------- Main Page ---------- */
 
 export function TrendsPage() {
-  const { runs, now, then, loading, error, activePreset, selectedRunId, selectPreset, selectRun, parsedData } = useTrendsData();
+  const { runs, now, then, loading, error, selectedRunId, selectRun, parsedData } = useTrendsData();
 
   const dataTimestamp = parsedData.lastRestartTime
     ? formatDate(parsedData.lastRestartTime)
@@ -629,37 +607,18 @@ export function TrendsPage() {
         transition={{ duration: 0.4 }}
       >
         <span className="text-sm text-[var(--text-muted)] mr-1">Compare against:</span>
-        <div className="flex gap-1 bg-[var(--bg-surface)] rounded-lg p-1 border border-[var(--border-default)]">
-          {PRESETS.map((p) => (
-            <button
-              key={p.key}
-              onClick={() => selectPreset(p.key)}
-              className="px-3 py-1.5 text-xs font-mono font-medium rounded-md transition-all duration-200"
-              style={
-                activePreset === p.key
-                  ? { background: 'var(--accent)', color: '#fff', boxShadow: '0 0 10px color-mix(in srgb, var(--accent) 40%, transparent)' }
-                  : { color: 'var(--text-secondary)' }
-              }
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <span className="text-xs text-[var(--text-muted)]">or</span>
-
         <select
-          className="text-xs font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-1.5 text-[var(--text-primary)] max-w-[240px]"
+          className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[280px]"
           value={selectedRunId ?? ''}
           onChange={(e) => {
             const val = e.target.value;
             if (val) selectRun(Number(val));
           }}
         >
-          <option value="">Select a run...</option>
+          <option value="">Select a snapshot...</option>
           {runs.map((r) => (
             <option key={r.run_id} value={r.run_id}>
-              {formatDate(r.run_at)} (#{r.run_id})
+              {formatDate(r.run_at)} — {r.user_count ?? '?'} users, {r.project_count ?? '?'} projects
             </option>
           ))}
         </select>

@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.240",
+    "version": "0.4.241",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
