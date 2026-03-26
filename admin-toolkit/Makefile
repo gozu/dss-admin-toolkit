@@ -147,10 +147,11 @@ secure-copy-zip:
 
 deploy-prod-secure: secure-copy-zip
 	@echo "[START] Deploying to PROD (secure wrappers)..."
-	@sudo "$(SECURE_PLUGIN_WRAPPER)" "$(archive_file_name)"
+	@sudo "$(SECURE_PLUGIN_WRAPPER)" "$(archive_file_name)" 2>&1 \
+		| python3 -c "import sys,json;r=json.load(sys.stdin);v=r.get('pluginDesc',{}).get('desc',{}).get('version','?');print('[SUCCESS] PROD plugin v%s installed'%v if r.get('messages',{}).get('success') else '[FAIL] PROD install failed')"
 	@if [ "$(RESTART_AFTER_DEPLOY)" = "1" ]; then \
 		echo "[START] Restarting PROD webapp backend (secure wrapper)..."; \
-		sudo "$(SECURE_RESTART_WRAPPER)" "$(SECURE_WEBAPP_ID)"; \
+		sudo "$(SECURE_RESTART_WRAPPER)" "$(SECURE_WEBAPP_ID)" > /dev/null 2>&1; \
 		echo "[SUCCESS] PROD webapp backend restart requested."; \
 	fi
 
