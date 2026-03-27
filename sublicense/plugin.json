@@ -1,6 +1,6 @@
 {
     "id": "sublicense",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "meta": {
         "label": "Sublicense",
         "description": "Sublicenses are a cooperative mechanism. It is not technically impossible for the administrator of the group who receives the sublicense to alter it. Doing so could however put you in breach of your Dataiku License Agreement.",
