@@ -17,6 +17,14 @@
             "arity": "UNARY",
             "required": true,
             "acceptsDataset": true
+        },
+        {
+            "name": "duplicate_users",
+            "label": "Dataset with duplicate users",
+            "description": "Dataset with duplicate users",
+            "arity": "UNARY",
+            "required": true,
+            "acceptsDataset": true
         }
     ],
 
