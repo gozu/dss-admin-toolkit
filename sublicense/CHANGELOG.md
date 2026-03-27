@@ -1,3 +1,7 @@
+## [Version 1.0.1](https://www.dataiku.com) - Bugfix - 2026-03
+
+- Refactor sublicense allocation logic in Distribute Sublicenses Recipe
+
 ## [Version 1.0.0](https://www.dataiku.com) - Initial Release - 2026-03
 
 - Includes documentation
