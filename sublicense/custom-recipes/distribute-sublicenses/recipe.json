@@ -38,6 +38,13 @@
 
     "params": [
         {
+            "type": "BOOLEAN",
+            "name": "dry_run",
+            "label": "Dry Run",
+            "description": "FOR TESTING: Only produces datasets, will not actually change your license allocations.",
+            "defaultValue": true
+        },
+        {
             "type": "PRESETS",
             "name": "nodes",
             "label": "Select all nodes here",
