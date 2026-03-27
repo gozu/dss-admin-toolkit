@@ -26,10 +26,10 @@ master_license = json.loads(master_license_string_raw)
 
 # Collect sublicense values from dataset
 df = allocate_sublicenses_dataset.get_dataframe()
-df_as_dict = [
-    {row['NodeID']: row.drop('NodeID').to_dict()} 
-    for _, row in df.iterrows()
-]
+
+# Collect sublicense values from dataset
+# --- FIX 1: Create a single dictionary keyed by NodeID ---
+df_as_dict = df.set_index('NodeID').to_dict(orient='index')
 
 # Add up current total usage
 subtotal_df = df.groupby(lambda _: 'Grand Total').sum()#.drop('NodeID', axis=1)
@@ -70,9 +70,18 @@ except ValueError as e:
     raise
 
 # Allocate sublicenses across nodes, if tests passed above
-for node in zip(df_as_dict, nodes):
-    client = dataikuapi.DSSClient(node[1]['node_URL'], node[1]['API_Key'], no_check_certificate=True)
-    sublicense = node[0][node[1]['node_name']]
+# --- FIX 2: Iterate through config nodes and look up the data by node_name ---
+for node_config in nodes:
+
+    # --- FIX 3: Assign node_name ---
+    node_name = node_config['node_name']
+    # Safety check: Ensure the node actually exists in our dataframe
+    if node_name not in df_as_dict:
+        print(f"Warning: Node '{node_name}' found in config but not in the dataset. Skipping.")
+        continue
+        
+    sublicense = df_as_dict[node_name]
+    client = dataikuapi.DSSClient(node_config['node_URL'], node_config['API_Key'], no_check_certificate=True)
     master_license_new = master_license.copy()
     master_license_new['sublicense'] = {"profileLimits": sublicense}
     client.set_license(json.dumps(master_license_new))
