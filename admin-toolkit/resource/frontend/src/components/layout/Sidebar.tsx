@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
+import { CAMPAIGN_CONFIGS } from '../ToolsView';
 import { getPageAvailability, type PageAvailability } from '../../utils/pageAvailability';
 
 /* ------------------------------------------------------------------ */
@@ -125,10 +126,18 @@ const icons: Record<string, ReactNode> = {
       <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
     </svg>
   ),
-  settings: (
+  'db-health': (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  ),
+  report: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+      <line x1="8" y1="21" x2="16" y2="21" />
+      <line x1="12" y1="17" x2="12" y2="21" />
     </svg>
   ),
 };
@@ -154,7 +163,6 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'summary', label: 'Summary' },
       { id: 'issues', label: 'Issues', badge: 'issues' },
-      { id: 'settings', label: 'Settings' },
     ],
   },
   {
@@ -176,16 +184,16 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'PROJECTS',
     items: [
-      { id: 'projects', label: 'Projects' },
-      { id: 'project-cleaner', label: 'Project Cleaner' },
+      { id: 'project-cleaner', label: 'Cleaner' },
+      { id: 'projects', label: 'Insights' },
     ],
   },
   {
     title: 'CODE ENVIRONMENTS',
     items: [
+      { id: 'code-env-cleaner', label: 'Cleaner' },
       { id: 'code-envs', label: 'Insights' },
       { id: 'code-envs-comparison', label: 'Comparison' },
-      { id: 'code-env-cleaner', label: 'Cleaner' },
     ],
   },
   {
@@ -194,6 +202,8 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'outreach', label: 'Outreach' },
       { id: 'tracking', label: 'Compliance' },
       { id: 'directory', label: 'Dir Usage' },
+      { id: 'db-health', label: 'DB Health' },
+      { id: 'report', label: 'Report' },
     ],
   },
 ];
@@ -208,24 +218,34 @@ interface SidebarProps {
   onRefreshCache?: () => Promise<void>;
 }
 
-export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
-  const { state, setActivePage, addDebugLog } = useDiag();
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshDone, setRefreshDone] = useState(false);
+export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
+  const { state, setActivePage, addDebugLog, setOutreachCampaignId } = useDiag();
+  const { activePage, parsedData, outreachCampaignId, outreachSidebarItems } = state;
+  const isOutreach = activePage === 'outreach';
+  const dataReady = !!parsedData.dataReady;
+
+  const [statusPhase, setStatusPhase] = useState<'loading' | 'complete' | 'refresh'>(
+    dataReady ? 'refresh' : 'loading',
+  );
+
+  useEffect(() => {
+    if (!dataReady) {
+      setStatusPhase('loading');
+      return;
+    }
+    setStatusPhase('complete');
+    const timer = setTimeout(() => setStatusPhase('refresh'), 2500);
+    return () => clearTimeout(timer);
+  }, [dataReady]);
 
   const handleRefresh = async () => {
-    if (refreshing || !onRefreshCache) return;
-    setRefreshing(true);
-    setRefreshDone(false);
     try {
-      await onRefreshCache();
-      setRefreshDone(true);
-      setTimeout(() => setRefreshDone(false), 1500);
-    } finally {
-      setRefreshing(false);
+      await fetch('/api/cache/clear', { method: 'POST' });
+    } catch {
+      /* best-effort */
     }
+    window.location.reload();
   };
-  const { activePage, parsedData } = state;
 
   // Track previous availability to detect loading → ready transitions
   const prevAvailRef = useRef<Partial<Record<PageId, PageAvailability>>>({});
@@ -237,7 +257,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
     for (const section of NAV_SECTIONS) {
       for (const item of section.items) {
         const avail = getPageAvailability(parsedData, item.id);
-        if (prev[item.id] === 'loading' && (avail === 'ready' || avail === 'independent')) {
+        if ((prev[item.id] === 'loading' || prev[item.id] === 'partial') && (avail === 'ready' || avail === 'independent')) {
           newlyReady.push(item.id);
         }
         prev[item.id] = avail;
@@ -278,6 +298,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
     const badgeCount = getBadgeCount(item.badge);
     const avail = getPageAvailability(parsedData, item.id);
     const isDimmed = avail === 'loading';
+    const isPartial = avail === 'partial';
     const isLightUp = lightUpPages.has(item.id);
 
     return (
@@ -293,7 +314,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
           isActive
             ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : ''}`}
+        } ${collapsed ? 'justify-center px-0' : ''} ${isDimmed ? 'opacity-40' : isPartial ? 'text-[var(--warning)] opacity-75' : ''}`}
         style={isLightUp ? { animation: 'sidebar-ready 600ms ease-out' } : undefined}
       >
         {/* Active indicator bar */}
@@ -309,7 +330,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
 
         {!collapsed && (
           <>
-            <span className="flex-1 text-left truncate">{item.label}</span>
+            <span className="flex-1 text-left whitespace-nowrap">{item.label}</span>
             {badgeCount > 0 && (
               <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
                 {badgeCount}
@@ -340,39 +361,42 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
     >
       {/* Refresh cache + collapse toggle */}
       <div className={`flex items-center px-4 py-4 ${collapsed ? 'flex-col gap-1.5 px-2' : 'justify-between'}`}>
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title={refreshDone ? 'Cache cleared' : 'Refresh cache'}
-          className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50 ${collapsed ? 'justify-center' : ''}`}
-        >
-          {refreshDone ? (
+        {statusPhase === 'loading' && (
+          <div className={`flex items-center gap-2 px-2 py-1 ${collapsed ? 'justify-center' : ''}`}>
+            <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            {!collapsed && (
+              <span className="text-sm font-medium text-[var(--text-tertiary)]">
+                Loading<span className="inline-block w-[1.5ch] text-left animate-[dots_1.4s_steps(4,end)_infinite]" />
+              </span>
+            )}
+          </div>
+        )}
+        {statusPhase === 'complete' && (
+          <div className={`flex items-center gap-2 px-2 py-1 animate-[blink_0.8s_ease-in-out_3] ${collapsed ? 'justify-center' : ''}`}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--neon-green)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <polyline points="20 6 9 17 4 12" />
             </svg>
-          ) : (
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className={refreshing ? 'animate-spin' : ''}
-            >
+            {!collapsed && (
+              <span className="text-sm font-medium text-[var(--neon-green)]">Complete!</span>
+            )}
+          </div>
+        )}
+        {statusPhase === 'refresh' && (
+          <button
+            type="button"
+            onClick={handleRefresh}
+            title="Refresh cache"
+            className={`flex items-center gap-2 rounded-md px-2 py-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors ${collapsed ? 'justify-center' : ''}`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
               <polyline points="23 4 23 10 17 10" />
               <polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
               <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
             </svg>
-          )}
-          {!collapsed && (
-            <span className="text-sm font-medium">{refreshDone ? 'Done' : 'Refresh'}</span>
-          )}
-        </button>
+            {!collapsed && <span className="text-sm font-medium">Refresh</span>}
+          </button>
+        )}
         <button
           type="button"
           onClick={onToggleCollapse}
@@ -411,7 +435,81 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0">
-        {NAV_SECTIONS.map((section, idx) => renderSection(section, idx))}
+        {isOutreach ? (
+          <>
+            {/* Back button */}
+            <button
+              type="button"
+              onClick={() => {
+                addDebugLog('Navigate: outreach → summary (back)', 'navigation');
+                setActivePage('summary');
+              }}
+              className={`flex items-center gap-2 w-full rounded-md px-2.5 py-1.5 mb-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors ${collapsed ? 'justify-center' : ''}`}
+              title={collapsed ? 'Back' : undefined}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
+              </svg>
+              {!collapsed && <span>Back</span>}
+            </button>
+            <div className="mx-1 border-t border-[var(--border-default)] mb-2" />
+            {!collapsed && (
+              <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
+                Outreach
+              </div>
+            )}
+            <div className="flex flex-col gap-0.5">
+              {(outreachSidebarItems.length > 0
+                ? outreachSidebarItems
+                : CAMPAIGN_CONFIGS.map((c) => ({ id: c.id, title: c.title, count: 0, isDisabled: false }))
+              ).map((item) => {
+                const isActive = outreachCampaignId === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      addDebugLog(`Outreach campaign: ${item.title}`, 'navigation');
+                      setOutreachCampaignId(item.id);
+                    }}
+                    title={collapsed ? item.title : undefined}
+                    className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-all duration-200 ${
+                      isActive
+                        ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
+                        : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+                    } ${collapsed ? 'justify-center px-0' : ''}`}
+                  >
+                    {isActive && (
+                      <motion.div
+                        layoutId="sidebar-active"
+                        className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)]"
+                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                      />
+                    )}
+                    <span className="flex-shrink-0">{icons.outreach}</span>
+                    {!collapsed && (
+                      <>
+                        <span className="flex-1 text-left whitespace-nowrap">{item.title}</span>
+                        {item.isDisabled && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
+                            Off
+                          </span>
+                        )}
+                        {!item.isDisabled && item.count > 0 && (
+                          <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
+                            {item.count}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          NAV_SECTIONS.map((section, idx) => renderSection(section, idx))
+        )}
       </nav>
 
       {/* Contact author */}

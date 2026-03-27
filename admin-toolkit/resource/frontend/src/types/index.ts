@@ -199,6 +199,13 @@ export type CampaignId =
   | 'inactive_project'
   | 'unused_code_env';
 
+export interface OutreachSidebarItem {
+  id: CampaignId;
+  title: string;
+  count: number;
+  isDisabled: boolean;
+}
+
 export interface OutreachRecipient {
   recipientKey: string;
   owner: string;
@@ -506,6 +513,10 @@ export interface ParsedData {
   // General settings raw
   generalSettings?: Record<string, unknown>;
 
+  // Loading state
+  dataReady?: boolean;
+  outreachApiLoaded?: boolean;
+
   // Directory listing
   dirTree?: DirTreeData;
 }
@@ -723,7 +734,8 @@ export type PageId =
   | 'project-cleaner'
   | 'plugins'
   | 'tracking'
-  | 'settings';
+  | 'report'
+  | 'db-health';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
 export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';
@@ -833,6 +845,8 @@ export interface DiagStateWithComparison extends DiagState {
   mode: AppMode;
   activePage: PageId;
   comparison: ComparisonState;
+  outreachCampaignId: CampaignId;
+  outreachSidebarItems: OutreachSidebarItem[];
 }
 
 // New actions for comparison
@@ -847,7 +861,9 @@ export type ComparisonAction =
       type: 'SET_COMPARISON_PROCESSING';
       payload: { slot: 'before' | 'after'; isProcessing: boolean };
     }
-  | { type: 'RESET_COMPARISON' };
+  | { type: 'RESET_COMPARISON' }
+  | { type: 'SET_OUTREACH_CAMPAIGN'; payload: CampaignId }
+  | { type: 'SET_OUTREACH_SIDEBAR'; payload: OutreachSidebarItem[] };
 
 // Combined action type
 export type DiagActionWithComparison = DiagAction | ComparisonAction;

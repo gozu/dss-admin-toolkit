@@ -29,6 +29,8 @@ CAMPAIGN_REQUIRED_SECTIONS: Dict[str, List[str]] = {
     'large_flow': ['projects', 'project_footprint'],
     'orphan_notebooks': ['projects', 'project_footprint'],
     'overshared_project': ['projects'],
+    'inactive_project': ['projects'],
+    'unused_code_env': ['code_envs'],
 }
 
 _SCHEMA_V1 = """
@@ -281,6 +283,46 @@ _SCHEMA_V3 = [
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, datetime('now'))",
 ]
 
+_SCHEMA_V6 = [
+    """CREATE TABLE IF NOT EXISTS user_snapshots (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        login        TEXT NOT NULL,
+        display_name TEXT,
+        email        TEXT,
+        user_profile TEXT,
+        enabled      INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (run_id, instance_id, login)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_user_snapshots_instance_run ON user_snapshots(instance_id, run_id)",
+    """CREATE TABLE IF NOT EXISTS project_snapshots (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        name         TEXT,
+        owner_login  TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_project_snapshots_instance_run ON project_snapshots(instance_id, run_id)",
+    """CREATE TABLE IF NOT EXISTS run_plugins (
+        run_id    INTEGER NOT NULL REFERENCES runs(run_id),
+        plugin_id TEXT NOT NULL,
+        label     TEXT,
+        version   TEXT,
+        is_dev    INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, plugin_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_plugins_plugin ON run_plugins(plugin_id)",
+    """CREATE TABLE IF NOT EXISTS run_connections (
+        run_id          INTEGER NOT NULL REFERENCES runs(run_id),
+        connection_name TEXT NOT NULL,
+        connection_type TEXT,
+        PRIMARY KEY (run_id, connection_name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_connections_type ON run_connections(connection_type)",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (6, datetime('now'))",
+]
+
 _SCHEMA_V4 = [
     """CREATE TABLE IF NOT EXISTS campaign_exemptions (
         exemption_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,6 +387,15 @@ class TrackingDB:
                     except Exception:
                         pass  # table may already exist
                 self._conn.commit()
+            # V6 migration: over-time snapshot tables
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 6:
+                for stmt in _SCHEMA_V6:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # table/index may already exist
+                self._conn.commit()
         return self._conn
 
     # ------------------------------------------------------------------
@@ -364,6 +415,7 @@ class TrackingDB:
         sections: Dict[str, Dict[str, Any]],
         health_metrics: Optional[Dict[str, Any]] = None,
         campaign_summaries: Optional[List[Dict[str, Any]]] = None,
+        snapshot_data: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Ingest a complete run. Returns the new run_id."""
         now = _now_iso()
@@ -506,6 +558,69 @@ class TrackingDB:
                             run_id,
                             run_id,
                         ),
+                    )
+
+                # 6a. INSERT user_snapshots (per-run roster for over-time tracking)
+                for user in users:
+                    login = user.get('login')
+                    if not login:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO user_snapshots
+                               (run_id, instance_id, login, display_name, email, user_profile, enabled)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (run_id, instance_id, login,
+                         user.get('display_name') or user.get('displayName'),
+                         user.get('email'),
+                         user.get('user_profile') or user.get('userProfile'),
+                         1 if user.get('enabled', True) else 0),
+                    )
+
+                # 6b. INSERT project_snapshots (per-run roster for over-time tracking)
+                for proj in projects:
+                    pkey = proj.get('project_key') or proj.get('projectKey')
+                    if not pkey:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO project_snapshots
+                               (run_id, instance_id, project_key, name, owner_login)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, instance_id, pkey,
+                         proj.get('name'),
+                         proj.get('owner') or proj.get('owner_login')),
+                    )
+
+                # 6c. INSERT run_plugins (normalized from snapshot_data)
+                snap = snapshot_data or {}
+                for plugin in (snap.get('plugins') or []):
+                    if not isinstance(plugin, dict):
+                        continue
+                    pid = plugin.get('id')
+                    if not pid:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_plugins
+                               (run_id, plugin_id, label, version, is_dev)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (run_id, pid, plugin.get('label'),
+                         plugin.get('installedVersion'),
+                         1 if plugin.get('isDev') else 0),
+                    )
+
+                # 6d. INSERT run_connections (normalized from snapshot_data)
+                snap_conns = snap.get('connections')
+                conn_details = (snap_conns.get('details') or []) if isinstance(snap_conns, dict) else []
+                for c in conn_details:
+                    if not isinstance(c, dict):
+                        continue
+                    cname = c.get('name')
+                    if not cname:
+                        continue
+                    conn.execute(
+                        """INSERT OR IGNORE INTO run_connections
+                               (run_id, connection_name, connection_type)
+                           VALUES (?, ?, ?)""",
+                        (run_id, cname, c.get('type')),
                     )
 
                 # 7. INSERT findings + lifecycle issues
@@ -1138,6 +1253,8 @@ def extract_findings_from_outreach_data(
         'large_flow': ('largeFlowRecipients', 'project', _extract_project_findings_large_flow),
         'orphan_notebooks': ('orphanNotebookRecipients', 'project', _extract_project_findings_orphan),
         'overshared_project': ('oversharedProjectRecipients', 'project', _extract_project_findings_overshared),
+        'inactive_project': ('inactiveProjectRecipients', 'project', _extract_inactive_project_findings),
+        'unused_code_env': ('unusedCodeEnvRecipients', 'code_env', _extract_unused_code_env_findings),
     }
 
     for campaign_id, (recipients_key, entity_type, extractor) in _CAMPAIGN_MAP.items():
@@ -1420,6 +1537,49 @@ def _extract_project_findings_orphan(recipient, campaign_id, entity_type, owner,
             'metrics_json': {
                 'notebookCount': proj.get('notebookCount'),
                 'recipeCount': proj.get('recipeCount'),
+            },
+        })
+    return results
+
+
+def _extract_inactive_project_findings(recipient, campaign_id, entity_type, owner, email):
+    results = []
+    for proj in (recipient.get('projects') or []):
+        if not isinstance(proj, dict):
+            continue
+        pkey = str(proj.get('projectKey') or '')
+        if not pkey:
+            continue
+        results.append({
+            'campaign_id': campaign_id,
+            'entity_type': entity_type,
+            'entity_key': pkey,
+            'entity_name': proj.get('name'),
+            'owner_login': owner,
+            'owner_email': email,
+            'metrics_json': {'daysInactive': proj.get('daysInactive')},
+        })
+    return results
+
+
+def _extract_unused_code_env_findings(recipient, campaign_id, entity_type, owner, email):
+    results = []
+    for env in (recipient.get('codeEnvs') or []):
+        if not isinstance(env, dict):
+            continue
+        env_key = str(env.get('key') or env.get('name') or '')
+        if not env_key:
+            continue
+        results.append({
+            'campaign_id': campaign_id,
+            'entity_type': entity_type,
+            'entity_key': env_key,
+            'entity_name': env.get('name'),
+            'owner_login': owner,
+            'owner_email': email,
+            'metrics_json': {
+                'name': env.get('name'),
+                'language': env.get('language'),
             },
         })
     return results

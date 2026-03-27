@@ -9,7 +9,6 @@ interface SectionInfo {
 const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   summary: { label: 'Overview', firstPage: 'summary' },
   issues: { label: 'Overview', firstPage: 'summary' },
-  settings: { label: 'Overview', firstPage: 'summary' },
   filesystem: { label: 'System', firstPage: 'filesystem' },
   memory: { label: 'System', firstPage: 'filesystem' },
   connections: { label: 'Monitoring', firstPage: 'connections' },
@@ -24,6 +23,8 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   outreach: { label: 'Tools', firstPage: 'outreach' },
   tracking: { label: 'Tools', firstPage: 'outreach' },
   directory: { label: 'Tools', firstPage: 'outreach' },
+  'db-health': { label: 'Tools', firstPage: 'outreach' },
+  report: { label: 'Tools', firstPage: 'outreach' },
 };
 
 const PAGE_LABELS: Record<PageId, string> = {
@@ -43,7 +44,8 @@ const PAGE_LABELS: Record<PageId, string> = {
   'project-cleaner': 'Project Cleaner',
   plugins: 'Plugin Sync',
   tracking: 'Compliance',
-  settings: 'Settings',
+  report: 'Report',
+  'db-health': 'DB Health',
 };
 
 export function Breadcrumb() {

@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zipfile
@@ -46,17 +47,17 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'code_env_timeout_ms': 600000,
     'project_footprint_timeout_ms': 600000,
     # Cache TTLs (seconds)
-    'cache_ttl_overview': 300,
-    'cache_ttl_connections': 300,
-    'cache_ttl_users': 300,
+    'cache_ttl_overview': 600,
+    'cache_ttl_connections': 600,
+    'cache_ttl_users': 600,
     'cache_ttl_license': 600,
-    'cache_ttl_projects': 300,
-    'cache_ttl_code_envs': 5,
-    'cache_ttl_usage_full': 5,
-    'cache_ttl_outreach': 20,
-    'cache_ttl_inactive': 20,
-    'cache_ttl_plugins': 300,
-    'cache_ttl_log_errors': 300,
+    'cache_ttl_projects': 600,
+    'cache_ttl_code_envs': 600,
+    'cache_ttl_usage_full': 600,
+    'cache_ttl_outreach': 600,
+    'cache_ttl_inactive': 600,
+    'cache_ttl_plugins': 600,
+    'cache_ttl_log_errors': 600,
     'cache_ttl_dir_tree': 600,
     # Frontend API timeouts (served to frontend for sync)
     'fe_timeout_code_envs': 620000,
@@ -82,6 +83,13 @@ except Exception:
     pass
 # Snapshot after plugin merge — used as reset target
 _BACKEND_SETTINGS_DEFAULTS: Dict[str, Any] = dict(_BACKEND_SETTINGS)
+
+# Load outreach detection thresholds from plugin params
+try:
+    from db_adapter import load_plugin_outreach_thresholds as _load_outreach_thresh
+    _outreach_thresholds: Dict[str, Any] = _load_outreach_thresh()
+except Exception:
+    _outreach_thresholds = {}
 
 # ── Tracking database (optional, graceful fallback) ──
 try:
@@ -1740,7 +1748,7 @@ def _instance_id() -> str:
 def _sdk_fetch(cache_key: str, ttl_seconds: int, fetch_fn, deadline_ts=None):
     t0 = time.time()
     result = _get_sdk_cache().get_or_fetch(_instance_id(), cache_key, ttl_seconds, fetch_fn, deadline_ts)
-    app.logger.info("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
+    app.logger.debug("[perf:sdk_cache] GET key=%s elapsed=%.1fms", cache_key, (time.time() - t0) * 1000.0)
     return result
 
 
@@ -1910,11 +1918,36 @@ def _scope_root(scope: str, project_key: Optional[str]) -> Dict[str, str]:
 
 
 
+_FOOTPRINT_SCALAR_KEYS = frozenset({
+    'size', 'nbFiles', 'nbFolders', 'nbErrors',
+    'projectKey', 'name', 'language', 'type',
+    'result',
+})
+
+
 def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
     details = footprint.get('details')
     if isinstance(details, dict):
         return details
-    return {}
+    # Sections with 'items' array -> expand items as named children
+    items = footprint.get('items')
+    if isinstance(items, list):
+        result: Dict[str, Any] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get('projectKey') or item.get('name') or '').strip()
+            if item_name:
+                result[item_name] = item
+        return result
+    # Otherwise children are dict-valued keys (excluding metadata scalars)
+    result = {}
+    for key, val in footprint.items():
+        if key in _FOOTPRINT_SCALAR_KEYS:
+            continue
+        if isinstance(val, dict):
+            result[key] = val
+    return result
 
 
 def _footprint_size(footprint: Any) -> int:
@@ -3914,8 +3947,31 @@ def _collect_project_code_env_usage(
         'usageBreakdownByProject': usage_breakdown_by_project,
         'usageDetailsByProject': usage_details_by_project,
         'envMetaByKey': env_meta_by_key,
-        'codeStudioCountByProject': {},
+        'codeStudioCountByProject': _count_code_studios_by_project(client, project_info),
     }
+
+
+def _count_code_studios_by_project(client: Any, project_info: Dict[str, Dict[str, str]]) -> Dict[str, int]:
+    """Return {project_key: code_studio_count} for all known projects."""
+    counts: Dict[str, int] = {}
+    for pk in project_info:
+        try:
+            counts[pk] = len(client.get_project(pk).list_code_studios())
+        except Exception:
+            counts[pk] = 0
+    return counts
+
+
+def _count_permissions_by_project(client: Any, project_info: Dict[str, Dict[str, str]]) -> Dict[str, int]:
+    """Return {project_key: permission_entry_count} for all known projects."""
+    counts: Dict[str, int] = {}
+    for pk in project_info:
+        try:
+            raw = client.get_project(pk).get_settings().get_raw()
+            counts[pk] = len(raw.get('permissions') or [])
+        except Exception:
+            counts[pk] = 0
+    return counts
 
 
 def _get_shared_project_code_env_usage(
@@ -4099,10 +4155,6 @@ def _build_footprint_node(name: str, path: str, footprint: Any, depth: int, max_
 
     if not children and not details:
         file_count = max(file_count, 1)
-    if not children and locations:
-        # Some DSS footprint leaves only expose "locations". We mark them expandable
-        # and lazily expand through filesystem views on demand.
-        has_hidden = True
 
     return {
         'name': name,
@@ -5810,16 +5862,20 @@ def _do_tracking_ingest(db, data):
 
     users_data = (_CACHE.get('users', {}).get('value') or {})
     projects_data = (_CACHE.get('projects', {}).get('value') or {})
+    plugins_data = (_CACHE.get('plugins', {}).get('value') or {})
+    connections_data = (_CACHE.get('connections', {}).get('value') or {})
     user_list = users_data.get('users') or []
     project_list = projects_data.get('projects') or []
 
     run_data = {
         'dss_version': overview.get('dssVersion'),
         'python_version': overview.get('pythonVersion'),
-        'user_count': users_data.get('userCount'),
-        'enabled_user_count': users_data.get('enabledUserCount'),
-        'project_count': projects_data.get('projectCount'),
-        'code_env_count': (data.get('summary') or {}).get('unhealthyCodeEnvCount'),
+        'user_count': (users_data.get('userStats') or {}).get('Total Users'),
+        'enabled_user_count': (users_data.get('userStats') or {}).get('Enabled Users'),
+        'project_count': len(projects_data.get('projects') or []),
+        'code_env_count': (_CACHE.get('code_envs', {}).get('value') or {}).get('totalEnvCount'),
+        'plugin_count': plugins_data.get('pluginsCount'),
+        'connection_count': len(connections_data.get('connectionDetails') or []),
     }
 
     mem_info = overview.get('memoryInfo') or {}
@@ -5828,10 +5884,11 @@ def _do_tracking_ingest(db, data):
     max_fs_pct = 0.0
     max_fs_mount = ''
     for fs in mounts:
-        pct = fs.get('usePct', 0)
-        if isinstance(pct, (int, float)) and pct > max_fs_pct:
+        raw_pct = fs.get('Use%', '0')
+        pct = float(str(raw_pct).rstrip('%')) if raw_pct else 0
+        if pct > max_fs_pct:
             max_fs_pct = pct
-            max_fs_mount = fs.get('mountedOn', '')
+            max_fs_mount = fs.get('Mounted on', '')
     health_metrics = {
         'cpu_cores': overview.get('cpuCores'),
         'memory_total_mb': mem_info.get('totalMB'),
@@ -5841,6 +5898,18 @@ def _do_tracking_ingest(db, data):
         'swap_used_mb': mem_info.get('swapUsedMB'),
         'max_filesystem_pct': max_fs_pct if max_fs_pct else None,
         'max_filesystem_mount': max_fs_mount or None,
+    }
+
+    snapshot_data = {
+        'plugins': plugins_data.get('pluginDetails'),
+        'connections': {
+            'typeCounts': connections_data.get('connections'),
+            'details': connections_data.get('connectionDetails'),
+        } if connections_data.get('connectionDetails') else None,
+        'filesystem_mounts': mounts or None,
+        'user_profile_stats': users_data.get('userStats'),
+        'os_info': overview.get('osInfo'),
+        'spark_version': overview.get('sparkVersion'),
     }
 
     _campaign_recipient_keys = {
@@ -5856,6 +5925,7 @@ def _do_tracking_ingest(db, data):
         'orphan_notebooks': 'orphanNotebookRecipients',
         'overshared_project': 'oversharedProjectRecipients',
         'inactive_project': 'inactiveProjectRecipients',
+        'unused_code_env': 'unusedCodeEnvRecipients',
     }
     campaign_summaries = []
     findings_by_campaign = {}
@@ -5914,6 +5984,7 @@ def _do_tracking_ingest(db, data):
         sections=sections,
         health_metrics=health_metrics,
         campaign_summaries=campaign_summaries,
+        snapshot_data=snapshot_data,
     )
     app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
                     run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)
@@ -6158,7 +6229,8 @@ def api_tools_outreach_data():
         code_env_recipients.sort(key=lambda row: len(row.get('codeEnvNames') or []), reverse=True)
 
         # Code Studio outreach
-        unhealthy_code_studio_projects = [row for row in project_rows if _coerce_int(row.get('codeStudioCount'), 0) > 7]
+        _cs_thresh = _outreach_thresholds.get('code_studio_count_unhealthy', 7)
+        unhealthy_code_studio_projects = [row for row in project_rows if _coerce_int(row.get('codeStudioCount'), 0) > _cs_thresh]
         code_studio_recipients_map: Dict[str, Dict[str, Any]] = {}
         for row in unhealthy_code_studio_projects:
             owner = str(row.get('owner') or 'Unknown')
@@ -6209,15 +6281,30 @@ def api_tools_outreach_data():
         def _fetch_project_scenarios(p_key: str) -> Tuple[str, Optional[list]]:
             local_client = _thread_client()
             try:
-                return (p_key, _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/'))
+                bulk = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/')
+                if not isinstance(bulk, list):
+                    return (p_key, None)
+                # Bulk list doesn't include triggers; fetch full definition for active scenarios
+                enriched = []
+                for sc in bulk:
+                    if sc.get('active'):
+                        try:
+                            full = _client_perform_json(local_client, 'GET', f'/projects/{p_key}/scenarios/{sc["id"]}')
+                            if isinstance(full, dict) and 'triggers' in full:
+                                if 'lastScenarioRun' in sc and 'lastScenarioRun' not in full:
+                                    full['lastScenarioRun'] = sc['lastScenarioRun']
+                                enriched.append(full)
+                            else:
+                                enriched.append(sc)
+                        except Exception:
+                            enriched.append(sc)
+                    else:
+                        enriched.append(sc)
+                return (p_key, enriched)
             except Exception:
                 return (p_key, None)
 
-        scenario_project_keys = []
-        for meta in project_info.values():
-            p_key = str(meta.get('key') or meta.get('projectKey') or '')
-            if p_key:
-                scenario_project_keys.append(p_key)
+        scenario_project_keys = list(project_info.keys())
 
         scenario_workers = min(_parallel_workers(5), max(1, len(scenario_project_keys)))
         scenario_results: List[Tuple[str, Optional[list]]] = []
@@ -6233,9 +6320,12 @@ def api_tools_outreach_data():
                     except Exception:
                         scenario_results.append((futures[future], None))
 
-        def _parse_trigger_period_minutes(period: Any) -> Optional[float]:
+        _FREQ_UNIT_TO_MINUTES = {'Minutely': 1, 'Hourly': 60, 'Daily': 1440, 'Weekly': 10080, 'Monthly': 43200}
+
+        def _parse_trigger_period_minutes(period: Any, freq_unit: str = '') -> Optional[float]:
             if isinstance(period, (int, float)) and period > 0:
-                return float(period)
+                multiplier = _FREQ_UNIT_TO_MINUTES.get(freq_unit, 1)
+                return float(period) * multiplier
             return None
 
         for p_key, bulk_scenarios in scenario_results:
@@ -6273,8 +6363,9 @@ def api_tools_outreach_data():
                         continue
                     params = trigger.get('params') or {}
                     if isinstance(params, dict):
-                        period = params.get('repeatEvery') or params.get('frequency') or params.get('period')
-                        minutes = _parse_trigger_period_minutes(period)
+                        period = params.get('repeatFrequency') or params.get('repeatEvery') or params.get('period')
+                        freq_unit = str(params.get('frequency') or '')
+                        minutes = _parse_trigger_period_minutes(period, freq_unit)
                         if minutes and (min_period_minutes is None or minutes < min_period_minutes):
                             min_period_minutes = minutes
                 sc_entry = {
@@ -6492,7 +6583,8 @@ def api_tools_outreach_data():
             total_bytes = _coerce_int(row.get('totalBytes'), 0)
             usage_breakdown = row.get('usageBreakdown') or {}
             total_objects = sum(_coerce_int(v, 0) for v in usage_breakdown.values())
-            if code_env_count > 0 or code_studio_count > 0 or total_bytes > 1048576 or total_objects > 0:
+            _empty_bytes = _outreach_thresholds.get('empty_project_bytes', 1048576)
+            if code_env_count > 0 or code_studio_count > 0 or total_bytes > _empty_bytes or total_objects > 0:
                 continue
             empty_project_count += 1
             owner = str(row.get('owner') or 'Unknown')
@@ -6521,7 +6613,7 @@ def api_tools_outreach_data():
         # 5. Large flow projects (many objects)
         large_flow_recipients_map: Dict[str, Dict[str, Any]] = {}
         large_flow_count = 0
-        large_flow_threshold = 100
+        large_flow_threshold = _outreach_thresholds.get('large_flow_objects', 100)
         for row in project_rows:
             usage_breakdown = row.get('usageBreakdown') or {}
             total_objects = sum(_coerce_int(v, 0) for v in usage_breakdown.values())
@@ -6551,14 +6643,47 @@ def api_tools_outreach_data():
             })
         large_flow_recipients = _finalize_recipients(large_flow_recipients_map)
 
-        # 6. Orphan notebooks (high notebook count relative to recipes)
+        # 6. Overshared projects (too many permission entries)
+        overshared_project_recipients_map: Dict[str, Dict[str, Any]] = {}
+        overshared_project_count = 0
+        _overshared_thresh = _outreach_thresholds.get('overshared_project_permissions', 10)
+        overshared_perm_counts = _count_permissions_by_project(client, project_info)
+        for project_key, perm_count in overshared_perm_counts.items():
+            if perm_count <= _overshared_thresh:
+                continue
+            overshared_project_count += 1
+            meta = project_info.get(project_key) or {}
+            owner = str(meta.get('owner') or 'Unknown')
+            recipient = overshared_project_recipients_map.setdefault(
+                owner,
+                {
+                    'recipientKey': owner,
+                    'owner': owner,
+                    'email': user_email_by_login.get(owner, owner),
+                    'projectKeys': [],
+                    'codeEnvNames': [],
+                    'usageDetails': [],
+                    'projects': [],
+                },
+            )
+            if project_key:
+                recipient['projectKeys'].append(project_key)
+            recipient['projects'].append({
+                'projectKey': project_key,
+                'name': str(meta.get('name') or project_key),
+                'permissionCount': perm_count,
+            })
+        overshared_project_recipients = _finalize_recipients(overshared_project_recipients_map)
+
+        # 7. Orphan notebooks (high notebook count relative to recipes)
         orphan_notebook_recipients_map: Dict[str, Dict[str, Any]] = {}
         orphan_notebook_count = 0
         for row in project_rows:
             usage_breakdown = row.get('usageBreakdown') or {}
             notebook_count = _coerce_int(usage_breakdown.get('NOTEBOOK') or usage_breakdown.get('notebook'), 0)
             recipe_count = _coerce_int(usage_breakdown.get('RECIPE') or usage_breakdown.get('recipe'), 0)
-            if notebook_count < 5 or notebook_count <= recipe_count:
+            _orphan_min = _outreach_thresholds.get('orphan_notebook_min', 5)
+            if notebook_count < _orphan_min or notebook_count <= recipe_count:
                 continue
             orphan_notebook_count += 1
             owner = str(row.get('owner') or 'Unknown')
@@ -6588,7 +6713,7 @@ def api_tools_outreach_data():
         # 7. Inactive projects (no recent modification, no active scenarios, no deployed bundles)
         inactive_project_recipients_map: Dict[str, Dict[str, Any]] = {}
         inactive_project_count = 0
-        inactive_threshold_days = 180
+        inactive_threshold_days = _outreach_thresholds.get('inactive_project_days', 180)
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         for row in project_rows:
             project_key = str(row.get('projectKey') or '')
@@ -6676,7 +6801,7 @@ def api_tools_outreach_data():
         ]
 
         app.logger.info(
-            "[tools] outreach-data loaded projects=%s unhealthyProjects=%s unhealthyCodeEnvs=%s codeStudio=%s autoScenarios=%s disabledUser=%s deprecatedEnv=%s defaultEnv=%s scenarioFreq=%s scenarioFailing=%s empty=%s largeFlow=%s orphanNotebooks=%s inactive=%s unusedCodeEnv=%s channels=%s",
+            "[tools] outreach-data loaded projects=%s unhealthyProjects=%s unhealthyCodeEnvs=%s codeStudio=%s autoScenarios=%s disabledUser=%s deprecatedEnv=%s defaultEnv=%s scenarioFreq=%s scenarioFailing=%s empty=%s largeFlow=%s orphanNotebooks=%s inactive=%s unusedCodeEnv=%s overshared=%s channels=%s",
             len(project_rows),
             len(unhealthy_projects),
             len(unhealthy_code_envs),
@@ -6692,6 +6817,7 @@ def api_tools_outreach_data():
             orphan_notebook_count,
             inactive_project_count,
             unused_code_env_count,
+            overshared_project_count,
             len(mail_channels),
         )
 
@@ -6716,6 +6842,7 @@ def api_tools_outreach_data():
                 'scenarioFailingCount': scenario_failing_count,
                 'inactiveProjectCount': inactive_project_count,
                 'unusedCodeEnvCount': unused_code_env_count,
+                'oversharedProjectCount': overshared_project_count,
             },
             'mailChannels': mail_channels,
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
@@ -6729,7 +6856,7 @@ def api_tools_outreach_data():
             'disabledUserRecipients': disabled_user_recipients,
             'deprecatedCodeEnvRecipients': deprecated_code_env_recipients,
             'defaultCodeEnvRecipients': default_code_env_recipients,
-            'oversharedProjectRecipients': [],
+            'oversharedProjectRecipients': overshared_project_recipients,
             'scenarioFrequencyRecipients': scenario_frequency_recipients,
             'emptyProjectRecipients': empty_project_recipients,
             'largeFlowRecipients': large_flow_recipients,
@@ -6751,7 +6878,7 @@ def api_tools_outreach_data():
                 cache_entry['_tracking_ingested'] = True
                 app.logger.info("[tracking] ingested run %d", run_id)
             except Exception as exc:
-                app.logger.warning("[tracking] ingest failed: %s", exc)
+                app.logger.warning("[tracking] ingest failed: %s", str(exc)[:300])
 
     return jsonify(data)
 
@@ -6951,7 +7078,7 @@ def api_tools_email_preview():
             'to': to_email,
             'projectKeys': project_keys,
             'codeEnvNames': code_env_names,
-            'projectKeyForSend': recipient.get('projectKeyForSend') or (project_keys[0] if project_keys else None),
+            'projectKeyForSend': recipient.get('projectKeyForSend') or (project_keys[0] if project_keys else None) or os.environ.get('DKU_CURRENT_PROJECT_KEY', ''),
             'objectCount': len(usage_details),
             'subject': _render_template_text(subject_template, variables),
             'body': body_html,
@@ -7052,6 +7179,8 @@ def api_tools_email_send():
         recipient_key = str(preview.get('recipientKey') or '')
         to_email = str(preview.get('to') or '').strip()
         project_key = str(preview.get('projectKeyForSend') or '').strip()
+        if not project_key:
+            project_key = os.environ.get('DKU_CURRENT_PROJECT_KEY', '')
         subject = str(preview.get('subject') or '').strip()
         body = str(preview.get('body') or '')
 
@@ -7232,7 +7361,7 @@ def _do_tracking_refresh():
         return jsonify({'ok': True, 'run_id': run_id})
     except Exception as exc:
         app.logger.warning("[tracking:refresh] ingest FAILED after %.1fs: %s",
-                           _time.time() - _t2, exc, exc_info=True)
+                           _time.time() - _t2, str(exc)[:300])
         return jsonify({'error': 'Ingest failed: %s' % exc}), 500
 
 
@@ -7942,7 +8071,7 @@ def api_tools_inactive_projects():
     def _load():
         client = dataiku.api_client()
         catalog = _list_projects_catalog(client)
-        inactive_threshold_days = 180
+        inactive_threshold_days = _outreach_thresholds.get('inactive_project_days', 180)
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         results = []
         for entry in catalog:
@@ -8395,6 +8524,168 @@ def api_logs_ai_analysis():
     )
 
 
+@app.route('/api/report/generate', methods=['POST'])
+def api_report_generate():
+    """Generate a quarterly health check report via LLM Mesh. SSE with phase-only events."""
+    body = request.get_json(force=True)
+    llm_id = (body.get('llmId') or '').strip()
+    diagnostic_data = body.get('diagnosticData') or {}
+
+    _REPORT_SYSTEM_PROMPT = (
+        "You are a senior Dataiku Technical Account Manager (TAM) creating a quarterly health check "
+        "presentation for a customer's technical leadership. This will be rendered as an 18-slide "
+        "HTML slideshow that the TAM presents live to the customer.\n\n"
+        "Think deeply about the diagnostic data before writing. Analyze cross-cutting patterns, "
+        "correlate issues across sections, and identify root causes. Take your time.\n\n"
+        "=== VOICE & TONE ===\n"
+        "- You are a trusted advisor, not a monitoring tool.\n"
+        "- Use first-person plural: 'we recommend', 'our analysis shows', 'we observed'.\n"
+        "- Lead with POSITIVES before concerns. Always acknowledge what's working well.\n"
+        "- Frame findings in BUSINESS IMPACT: 'training pipeline reliability' not 'OutOfMemoryError'.\n"
+        "- Cite exact numbers, project names, config values. Never be vague.\n"
+        "- Reference doc.dataiku.com links where relevant.\n\n"
+        "=== SLIDE LAYOUT DETAILS ===\n"
+        "Your output populates 18 slides. Here is exactly how each slide renders:\n\n"
+        "SLIDE 1 (Title): Static - company name, date, DSS version. You don't write this.\n\n"
+        "SLIDE 2 (Executive Summary): LEFT COLUMN shows a large health score number (computed separately). "
+        "RIGHT COLUMN shows your 'overall_status' text in a callout box. BELOW both columns, "
+        "your 3 'findings' display as numbered cards in a row. Each finding should be ONE bullet point "
+        "(1-2 sentences max) that a VP can read in 5 seconds.\n\n"
+        "SLIDES 3-13 (Data Slides): Each has this layout:\n"
+        "  LEFT COLUMN: 4 large metric cards showing numbers from the actual data (you don't write these).\n"
+        "  RIGHT COLUMN: Your 'narrative' text in a callout box. This is the ONLY text you control on these slides.\n"
+        "  BELOW the callout: optional extras (highlights, risks, warnings, upgrade_paths) shown as badges or bullet items.\n\n"
+        "  CRITICAL: The narrative is displayed in a tall callout box with large font (1.25rem). "
+        "Use BULLET POINTS (with bullet char), NOT paragraphs. 3-5 bullets per slide. "
+        "Each bullet: one clear observation with a specific number or finding.\n"
+        "  Format example:\n"
+        "    '\\u2022 42 projects with healthy adoption across the organization\\n"
+        "\\u2022 ML Pipeline (PROJ1) leads with 156 versions, indicating critical production use\\n"
+        "\\u2022 Consider version retention policy for projects exceeding 100 versions'\n\n"
+        "  The slides are:\n"
+        "    Slide 3: Instance Overview - DSS version, OS, CPU, Python\n"
+        "    Slide 4: Projects Overview - project count, health score\n"
+        "    Slide 5: Project Footprint - storage analysis, top projects by size\n"
+        "    Slide 6: Code Environments - env count, Python/R version distribution\n"
+        "    Slide 7: Code Env Health - health score, unused envs, upgrade paths\n"
+        "    Slide 8: Filesystem Health - mount point usage percentages\n"
+        "    Slide 9: Memory & JVM - heap settings, system RAM\n"
+        "    Slide 10: Connections - connection types, counts\n"
+        "    Slide 11: Issues & Risks - disabled features, plugins, risk level\n"
+        "    Slide 12: Users & Activity - user counts by role\n"
+        "    Slide 13: Log Analysis - error counts, patterns\n\n"
+        "  For 'highlights', 'risks', 'warnings', 'upgrade_paths' arrays: "
+        "these render as small badge pills. Keep each item UNDER 10 words.\n"
+        "  For 'patterns' array: renders in monospace. Keep each under 80 chars.\n\n"
+        "SLIDES 14-16 (Recommendations): Each slide shows a 2-column grid of cards.\n"
+        "  Each card has: a numbered indicator, a bold TITLE (Spectral serif, ~5 words), "
+        "a DESCRIPTION paragraph (Roboto, 1-2 sentences with specific action), "
+        "and an IMPACT badge (green pill, ~5-8 words on business value).\n"
+        "  Slide 14: Critical (2-3 items) - production stability / data loss risks\n"
+        "  Slide 15: Important (3-5 items) - address this quarter to prevent escalation\n"
+        "  Slide 16: Nice-to-Have (2-3 items) - efficiency and governance optimizations\n\n"
+        "SLIDE 17 (Action Plan): Vertical timeline with numbered steps.\n"
+        "  Each step: action text (what to do), timeline (when), effort badge (low/medium/high).\n"
+        "  Include 5-7 items ordered by priority. Use concrete timelines: "
+        "'next maintenance window', 'within 30 days', 'Q2 2025', NOT 'soon' or 'when possible'.\n\n"
+        "SLIDE 18 (Closing): Static - 'Next Steps' with TAM contact prompt. You don't write this.\n\n"
+        "=== OUTPUT FORMAT ===\n"
+        "Return ONLY valid JSON (no markdown fences, no commentary outside the JSON).\n"
+        '{\n'
+        '  "slides": {\n'
+        '    "executive_summary": {\n'
+        '      "findings": [\n'
+        '        "One-sentence finding for card 1 (most impactful)",\n'
+        '        "One-sentence finding for card 2",\n'
+        '        "One-sentence finding for card 3"\n'
+        '      ],\n'
+        '      "overall_status": "STATUS_LABEL - one sentence summary"\n'
+        '    },\n'
+        '    "instance_overview": { "narrative": "bullet point text with newlines" },\n'
+        '    "projects": { "narrative": "...", "highlights": ["short badge text", "..."] },\n'
+        '    "project_footprint": { "narrative": "...", "risks": ["short risk badge", "..."] },\n'
+        '    "code_envs": { "narrative": "..." },\n'
+        '    "code_env_health": { "narrative": "...", "upgrade_paths": ["short path", "..."] },\n'
+        '    "filesystem": { "narrative": "...", "warnings": ["short warning", "..."] },\n'
+        '    "memory": { "narrative": "...", "tuning_recs": ["short rec", "..."] },\n'
+        '    "connections": { "narrative": "..." },\n'
+        '    "issues": { "narrative": "...", "risk_level": "low|medium|high|critical" },\n'
+        '    "users": { "narrative": "..." },\n'
+        '    "logs": { "narrative": "...", "patterns": ["error pattern < 80 chars", "..."] },\n'
+        '    "rec_critical": { "items": [{\n'
+        '      "title": "Short Title (3-5 words)",\n'
+        '      "description": "Specific action: what to change, where, and why. 1-2 sentences.",\n'
+        '      "impact": "Business impact in 5-8 words"\n'
+        '    }] },\n'
+        '    "rec_important": { "items": [{ "title": "...", "description": "...", "impact": "..." }] },\n'
+        '    "rec_nice_to_have": { "items": [{ "title": "...", "description": "...", "impact": "..." }] },\n'
+        '    "action_plan": { "priorities": [{\n'
+        '      "action": "Specific task an admin can execute",\n'
+        '      "timeline": "Concrete timeframe",\n'
+        '      "effort": "low|medium|high"\n'
+        '    }] }\n'
+        '  }\n'
+        '}\n\n'
+        "STATUS_LABEL must be one of: HEALTHY, GOOD WITH CAVEATS, MODERATE RISK, or NEEDS ATTENTION.\n\n"
+        "Remember: ALL narrative fields must use bullet points (\\u2022), not paragraphs. "
+        "3-5 bullets per narrative. Each bullet starts with \\u2022 and contains ONE observation with a number."
+    )
+
+    def generate():
+        if not llm_id:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": "llmId is required"})
+            return
+        if not diagnostic_data:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": "No diagnostic data provided. Please wait for all data to load."})
+            return
+
+        try:
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Preparing data"})
+
+            client = dataiku.api_client()
+            project_key = dataiku.default_project_key()
+            project = client.get_project(project_key)
+
+            user_message = "Analyze this DSS instance diagnostic data:\n\n" + json.dumps(diagnostic_data, indent=None, default=str)
+
+            yield "event: phase\ndata: %s\n\n" % json.dumps({"phase": "Analyzing diagnostics"})
+
+            completion = project.get_llm(llm_id).new_completion()
+            completion.settings['maxOutputTokens'] = 32768
+            # Allow extended thinking for deeper analysis
+            try:
+                completion.settings['budgetTokens'] = 100000
+            except Exception:
+                pass  # Not all LLM backends support budgetTokens
+            completion.with_message(message=_REPORT_SYSTEM_PROMPT, role='system')
+            completion.with_message(message=user_message, role='user')
+
+            # Non-streamed call — JSON output cannot be progressively rendered
+            resp = completion.execute()
+            report_text = str(resp.text)
+
+            # Strip markdown fences if present
+            import re
+            report_text = re.sub(r'^```(?:json)?\s*\n?', '', report_text)
+            report_text = re.sub(r'\n?```\s*$', '', report_text).strip()
+
+            yield "event: done\ndata: %s\n\n" % json.dumps({
+                "report": report_text,
+                "llmId": llm_id,
+            })
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": str(e)})
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route('/api/dir-tree')
 def api_dir_tree():
     client = dataiku.api_client()
@@ -8442,28 +8733,6 @@ def api_settings_get():
         return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
 
 
-@app.route('/api/settings', methods=['PUT'])
-def api_settings_put():
-    body = request.get_json(force=True, silent=True) or {}
-    with _BACKEND_SETTINGS_LOCK:
-        for key, value in body.items():
-            if key in _BACKEND_SETTINGS:
-                expected_type = type(_BACKEND_SETTINGS[key])
-                try:
-                    _BACKEND_SETTINGS[key] = expected_type(value)
-                except (ValueError, TypeError):
-                    pass
-    with _BACKEND_SETTINGS_LOCK:
-        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
-
-
-@app.route('/api/settings/reset', methods=['POST'])
-def api_settings_reset():
-    with _BACKEND_SETTINGS_LOCK:
-        _BACKEND_SETTINGS.update(_BACKEND_SETTINGS_DEFAULTS)
-        return jsonify({'current': dict(_BACKEND_SETTINGS), 'defaults': dict(_BACKEND_SETTINGS_DEFAULTS)})
-
-
 @app.route('/api/settings/threshold-defaults', methods=['GET'])
 def api_settings_threshold_defaults():
     try:
@@ -8471,3 +8740,589 @@ def api_settings_threshold_defaults():
         return jsonify(load_plugin_threshold_defaults())
     except Exception:
         return jsonify({})
+
+
+# ── DB Health ──
+
+_PG_DRIVER = None  # 'psycopg2' | None
+_PG_DRIVER_CHECKED = False
+_PG_DRIVER_LOG = []  # tracks every attempt for UI visibility
+_dbhealth_log = logging.getLogger(__name__)
+_DBHEALTH_CONFIG = None  # cached DbHealthConfig
+
+
+def _get_dbhealth_config():
+    """Get cached DB Health plugin config (connection name + password)."""
+    global _DBHEALTH_CONFIG
+    if _DBHEALTH_CONFIG is None:
+        try:
+            from db_adapter import load_dbhealth_config
+            _DBHEALTH_CONFIG = load_dbhealth_config()
+        except Exception:
+            from dataclasses import dataclass
+            from typing import Optional as Opt
+            @dataclass(frozen=True)
+            class _Fallback:
+                connection_name: Opt[str] = None
+                password: Opt[str] = None
+            _DBHEALTH_CONFIG = _Fallback()
+    return _DBHEALTH_CONFIG
+
+
+def _ensure_pg_driver():
+    """Try to get psycopg2, or auto-install it. Logs every attempt to _PG_DRIVER_LOG."""
+    global _PG_DRIVER, _PG_DRIVER_CHECKED
+    if _PG_DRIVER_CHECKED:
+        return _PG_DRIVER
+    _PG_DRIVER_CHECKED = True
+    log = _PG_DRIVER_LOG
+
+    # 1. Try psycopg2 (already installed)
+    try:
+        import psycopg2  # noqa: F401
+        _PG_DRIVER = 'psycopg2'
+        log.append('[OK] psycopg2 already installed')
+        return _PG_DRIVER
+    except ImportError as exc:
+        log.append('[FAIL] import psycopg2: %s' % exc)
+
+    # 2. Try pip install with multiple strategies to dodge permission issues (AlmaLinux 9 / RHEL 9)
+    _tmp_target = os.path.join(tempfile.gettempdir(), 'dku_psycopg2')
+    _datadir_target = os.path.join(os.environ.get('DIP_HOME', '/tmp'), 'lib', 'python', 'psycopg2')
+    install_attempts = [
+        ('pip install (default)', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet']),
+        ('pip install --user', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--user']),
+        ('pip install --break-system-packages', [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--break-system-packages']),
+        ('pip install --target %s' % _tmp_target, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _tmp_target]),
+        ('pip install --target %s' % _datadir_target, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--target', _datadir_target]),
+        ('pip install --prefix %s' % sys.prefix, [sys.executable, '-m', 'pip', 'install', 'psycopg2-binary', '--quiet', '--prefix', sys.prefix]),
+    ]
+    for label, cmd in install_attempts:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                log.append('[FAIL] %s: %s' % (label, (result.stderr.strip() or 'exit %d' % result.returncode)[:150]))
+                continue
+            # --target installs need the path on sys.path before import works
+            for tgt in (_tmp_target, _datadir_target):
+                if tgt not in sys.path and os.path.isdir(tgt):
+                    sys.path.insert(0, tgt)
+            try:
+                import psycopg2  # noqa: F401
+                _PG_DRIVER = 'psycopg2'
+                log.append('[OK] %s — import succeeded' % label)
+                return _PG_DRIVER
+            except ImportError as exc:
+                log.append('[FAIL] %s — pip succeeded but import failed: %s' % (label, exc))
+        except Exception as exc:
+            log.append('[FAIL] %s: %s' % (label, str(exc)[:150]))
+
+    # 3. Try adding common site-packages paths and re-importing
+    _pyver_short = sys.version[:3]
+    _pyver_tuple = '%d.%d' % sys.version_info[:2]
+    for extra_path in [
+        '/usr/lib/python3/dist-packages',
+        '/usr/local/lib/python3/dist-packages',
+        '/usr/lib64/python%s/site-packages' % _pyver_tuple,
+        '/usr/lib/python%s/site-packages' % _pyver_tuple,
+        '/usr/local/lib64/python%s/site-packages' % _pyver_tuple,
+        '/usr/local/lib/python%s/site-packages' % _pyver_tuple,
+        os.path.expanduser('~/.local/lib/python%s/site-packages' % _pyver_tuple),
+        os.path.expanduser('~/.local/lib64/python%s/site-packages' % _pyver_tuple),
+        os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_short, 'site-packages'),
+        os.path.join(sys.prefix, 'lib', 'python%s' % _pyver_tuple, 'site-packages'),
+        os.path.join(sys.prefix, 'lib64', 'python%s' % _pyver_tuple, 'site-packages'),
+        _tmp_target,
+        _datadir_target,
+    ]:
+        if not os.path.isdir(extra_path):
+            log.append('[SKIP] path probe %s — not a directory' % extra_path)
+            continue
+        if extra_path in sys.path:
+            log.append('[SKIP] path probe %s — already in sys.path' % extra_path)
+            continue
+        sys.path.insert(0, extra_path)
+        try:
+            __import__('psycopg2')
+            _PG_DRIVER = 'psycopg2'
+            log.append('[OK] path probe %s — import succeeded' % extra_path)
+            return _PG_DRIVER
+        except ImportError as exc:
+            log.append('[FAIL] path probe %s: %s' % (extra_path, exc))
+
+    log.append('[RESULT] All attempts failed — will need user-provided password for psql fallback')
+    _PG_DRIVER = None
+    return _PG_DRIVER
+
+
+def _get_pg_conn_params(connection_name: str) -> dict:
+    """Extract PG connection params from a DSS connection definition."""
+    client = dataiku.api_client()
+    defn = client.get_connection(connection_name).get_definition()
+    params = defn.get('params', {})
+    return {
+        'host': params.get('host', 'localhost'),
+        'port': int(params.get('port', 5432)),
+        'dbname': params.get('db', params.get('database', params.get('dbname', ''))),
+        'user': params.get('user', ''),
+        'password': params.get('password', ''),
+    }
+
+
+def _pg_direct_connect(connection_name: str, user_password: str = ''):
+    """Get a PG connection with autocommit using psycopg2."""
+    p = _get_pg_conn_params(connection_name)
+    driver = _ensure_pg_driver()
+    if driver == 'psycopg2':
+        import psycopg2
+        pw = user_password or p['password']
+        conn = psycopg2.connect(
+            host=p['host'], port=p['port'], dbname=p['dbname'],
+            user=p['user'], password=pw,
+            options='-c statement_timeout=60000',
+        )
+        conn.autocommit = True
+        return conn
+    raise ImportError("No PG driver available")
+
+
+def _pg_exec_ddl(connection_name: str, sql_template: str, table_name: str, user_password: str = ''):
+    """Execute a DDL-like statement (VACUUM/ANALYZE) that needs autocommit.
+    Tries: 1) psycopg2 with autocommit, 2) psql CLI with user-provided password.
+    If psycopg2 is not available and no password is provided, returns needsPassword."""
+    safe_table = '"%s"' % table_name.replace('"', '""')
+    full_sql = sql_template.replace('{}', safe_table)
+    p = _get_pg_conn_params(connection_name)
+    errors = []
+
+    # Strategy 1: psycopg2 with autocommit
+    driver = _ensure_pg_driver()
+    if driver:
+        try:
+            conn = _pg_direct_connect(connection_name, user_password=user_password)
+            try:
+                import psycopg2.sql as pg2sql
+                with conn.cursor() as cur:
+                    cur.execute(pg2sql.SQL(sql_template).format(pg2sql.Identifier(table_name)))
+                return {'success': True, 'method': driver}
+            finally:
+                conn.close()
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if not user_password and ('password authentication failed' in err_str or 'fe_sendauth' in err_str):
+                return {'needsPassword': True, 'reason': 'Database auth failed — please provide the password'}
+            errors.append('%s: %s' % (driver, str(exc)))
+
+    # Strategy 2: psql CLI with user-provided password
+    if not user_password:
+        return {'needsPassword': True, 'reason': 'psycopg2 not available — please provide the database password'}
+
+    try:
+        psql_cmd = ['psql', '-h', str(p['host']), '-p', str(p['port']),
+                    '-U', p['user'], '-d', p['dbname'], '-c', full_sql]
+        result = subprocess.run(psql_cmd, env=dict(os.environ, PGPASSWORD=user_password),
+                                capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            return {'success': True, 'method': 'psql'}
+        errors.append('psql: %s' % (result.stderr.strip() or result.stdout.strip())[:200])
+    except FileNotFoundError:
+        errors.append('psql: not found on this server')
+    except Exception as exc:
+        errors.append('psql: %s' % str(exc))
+
+    raise RuntimeError('All methods failed: ' + '; '.join(errors))
+
+
+def _list_pg_connections() -> list:
+    """Return PostgreSQL connections with metadata."""
+    def _loader():
+        try:
+            client = dataiku.api_client()
+            all_conns = client.list_connections()
+            result = []
+            items = all_conns.items() if isinstance(all_conns, dict) else [(c.get('name'), c) for c in all_conns]
+            for name, info in items:
+                if not isinstance(info, dict):
+                    continue
+                conn_type = info.get('type', '')
+                if conn_type != 'PostgreSQL':
+                    continue
+                params = info.get('params', {})
+                result.append({
+                    'name': name,
+                    'type': conn_type,
+                    'host': params.get('host', ''),
+                    'port': params.get('port', 5432),
+                    'db': params.get('db', params.get('database', params.get('dbname', ''))),
+                })
+            return result
+        except Exception as exc:
+            logging.getLogger(__name__).warning("[db-health] list_connections failed: %s", exc)
+            return []
+    return _cache_get('_pg_connections', 300, _loader)
+
+
+def _sanitize_pg_error(err_msg: str) -> str:
+    """Strip internal paths and IPs from PostgreSQL error messages."""
+    sanitized = re.sub(r'(/[^\s:]+)+', '<path>', str(err_msg))
+    sanitized = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '<ip>', sanitized)
+    return sanitized
+
+
+def _validate_pg_connection(connection_name: str):
+    """Validate connection name against known PostgreSQL connections. Returns error response or None."""
+    if not connection_name:
+        return jsonify({'error': 'Missing connection parameter'}), 400
+    known = [c['name'] for c in _list_pg_connections()]
+    if connection_name not in known:
+        return jsonify({'error': 'Unknown or non-PostgreSQL connection'}), 400
+    return None
+
+
+_ACTUAL_READ_METHOD = {}  # tracks what actually worked per connection
+
+
+class _NeedsPasswordError(RuntimeError):
+    """Raised when DB auth fails and user must provide password."""
+    pass
+
+
+def _pg_query_rows(connection_name: str, sql: str, user_password: str = ''):
+    """Execute a read query. Tries psycopg2 (with user password if given), then psql fallback."""
+    driver = _ensure_pg_driver()
+    if driver:
+        try:
+            conn = _pg_direct_connect(connection_name, user_password=user_password)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    cols = [d[0] for d in cur.description]
+                    _ACTUAL_READ_METHOD[connection_name] = driver
+                    return [dict(zip(cols, row)) for row in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception as exc:
+            err_str = str(exc).lower()
+            # Auth failure with stored password — ask user for the real one
+            if not user_password and ('password authentication failed' in err_str or 'fe_sendauth' in err_str):
+                raise _NeedsPasswordError("psycopg2 auth failed: %s" % exc)
+            raise RuntimeError("psycopg2 query failed: %s" % exc)
+
+    # psycopg2 not available — try psql with user-provided password
+    if not user_password:
+        raise _NeedsPasswordError("psycopg2 not available — password required for psql fallback")
+    p = _get_pg_conn_params(connection_name)
+    psql_cmd = [
+        'psql', '-h', str(p['host']), '-p', str(p['port']),
+        '-U', p['user'], '-d', p['dbname'],
+        '-F', '\t', '--no-align', '-c', sql,
+    ]
+    try:
+        result = subprocess.run(psql_cmd, env=dict(os.environ, PGPASSWORD=user_password),
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError("psql: %s" % (result.stderr.strip() or 'exit %d' % result.returncode)[:200])
+        all_lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
+        if len(all_lines) < 2:
+            _ACTUAL_READ_METHOD[connection_name] = 'psql'
+            return []
+        headers = all_lines[0].split('\t')
+        rows = []
+        for line in all_lines[1:]:
+            if line.startswith('(') and line.endswith(')'):
+                continue
+            vals = line.split('\t')
+            rows.append(dict(zip(headers, vals)))
+        _ACTUAL_READ_METHOD[connection_name] = 'psql'
+        return rows
+    except FileNotFoundError:
+        raise RuntimeError("psql CLI not found on this server")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("psql failed: %s" % exc)
+
+
+@app.route('/api/tools/db-health/connections')
+def api_db_health_connections():
+    try:
+        cfg = _get_dbhealth_config()
+        return jsonify({
+            'connections': _list_pg_connections(),
+            'configuredConnection': cfg.connection_name or '',
+            'hasConfiguredPassword': bool(cfg.password),
+        })
+    except Exception as exc:
+        return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+
+
+@app.route('/api/tools/db-health/overview')
+def api_db_health_overview():
+    connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or '' or _get_dbhealth_config().password or ''
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+
+    driver = _ensure_pg_driver()
+
+    warnings = []
+    query_method = driver or ('psql' if user_password else 'none')
+    result = {
+        'dbSize': '', 'dbSizeBytes': 0, 'version': '',
+        'tableCount': 0, 'totalDeadTuples': 0, 'totalLiveTuples': 0,
+        'canWrite': False, 'queryMethod': query_method,
+        'driverLog': list(_PG_DRIVER_LOG),
+        'warnings': warnings,
+    }
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT pg_size_pretty(pg_database_size(current_database())) as db_size,"
+            " pg_database_size(current_database()) as db_size_bytes,"
+            " current_setting('server_version') as version",
+            user_password=user_password)
+        if rows:
+            result['dbSize'] = str(rows[0].get('db_size', ''))
+            result['dbSizeBytes'] = int(rows[0].get('db_size_bytes', 0))
+            result['version'] = str(rows[0].get('version', ''))
+    except _NeedsPasswordError as exc:
+        return jsonify({
+            'needsPassword': True,
+            'driverLog': list(_PG_DRIVER_LOG),
+            'reason': str(exc),
+        })
+    except Exception as exc:
+        warnings.append('Could not fetch database size: %s' % _sanitize_pg_error(str(exc)))
+
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT count(*) as table_count, coalesce(sum(n_dead_tup),0) as total_dead,"
+            " coalesce(sum(n_live_tup),0) as total_live"
+            " FROM pg_stat_user_tables",
+            user_password=user_password)
+        if rows:
+            result['tableCount'] = int(rows[0].get('table_count', 0))
+            result['totalDeadTuples'] = int(rows[0].get('total_dead', 0))
+            result['totalLiveTuples'] = int(rows[0].get('total_live', 0))
+    except Exception as exc:
+        warnings.append('Could not fetch table stats: %s' % _sanitize_pg_error(str(exc)))
+
+    # Detect write access — use same query path that already works for reads
+    try:
+        write_rows = _pg_query_rows(connection_name,
+            "SELECT current_user as cu, current_setting('is_superuser') as su",
+            user_password=user_password)
+        if write_rows:
+            cu = write_rows[0].get('cu', '')
+            su = write_rows[0].get('su', '')
+            if su == 'on':
+                result['canWrite'] = True
+        if not result['canWrite']:
+            try:
+                maint_rows = _pg_query_rows(connection_name,
+                    "SELECT pg_has_role(current_user, 'pg_maintain', 'MEMBER') as m",
+                    user_password=user_password)
+                if maint_rows and maint_rows[0].get('m'):
+                    result['canWrite'] = True
+            except Exception:
+                pass  # pg_maintain role may not exist on PG < 15
+    except Exception:
+        pass
+
+    result['warnings'] = warnings
+    return jsonify(result)
+
+
+@app.route('/api/tools/db-health/tables')
+def api_db_health_tables():
+    connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or ''
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    warnings = []
+    tables = []
+    try:
+        rows = _pg_query_rows(connection_name,
+            "SELECT relname, pg_size_pretty(pg_total_relation_size(relid)) as total_size,"
+            " pg_total_relation_size(relid) as total_size_bytes,"
+            " n_live_tup, n_dead_tup,"
+            " CASE WHEN n_live_tup + n_dead_tup > 0"
+            "      THEN round(n_dead_tup::numeric / (n_live_tup + n_dead_tup), 4)"
+            "      ELSE 0 END as bloat_ratio,"
+            " last_vacuum, last_autovacuum, last_analyze"
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC",
+            user_password=user_password)
+        for r in rows:
+            tables.append({
+                'name': str(r.get('relname', '')),
+                'totalSize': str(r.get('total_size', '')),
+                'totalSizeBytes': int(r.get('total_size_bytes', 0)),
+                'rowCount': int(r.get('n_live_tup', 0)),
+                'deadTuples': int(r.get('n_dead_tup', 0)),
+                'bloatRatio': float(r.get('bloat_ratio', 0)),
+                'lastVacuum': str(r.get('last_vacuum', '') or ''),
+                'lastAutovacuum': str(r.get('last_autovacuum', '') or ''),
+                'lastAnalyze': str(r.get('last_analyze', '') or ''),
+            })
+    except Exception as exc:
+        warnings.append('Could not fetch table details: %s' % _sanitize_pg_error(str(exc)))
+    return jsonify({'tables': tables, 'warnings': warnings})
+
+
+@app.route('/api/tools/db-health/per-project')
+def api_db_health_per_project():
+    connection_name = request.args.get('connection', '')
+    user_password = request.args.get('password', '') or _get_dbhealth_config().password or ''
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    warnings = []
+    result = {'projects': [], 'system': {}, 'isRuntimeDb': False, 'warnings': warnings}
+    try:
+        # Detect RuntimeDB by checking for known tables
+        detect_rows = _pg_query_rows(connection_name,
+            "SELECT count(*) as cnt FROM pg_tables"
+            " WHERE schemaname='public' AND lower(tablename) IN ('dss_metadata', 'scenario_runs', 'job')",
+            user_password=user_password)
+        is_runtime = detect_rows and int(detect_rows[0].get('cnt', 0)) >= 2
+        result['isRuntimeDb'] = is_runtime
+
+        # Get all tables with sizes
+        table_rows = _pg_query_rows(connection_name,
+            "SELECT relname, pg_total_relation_size(relid) as size_bytes, n_live_tup"
+            " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC",
+            user_password=user_password)
+
+        if not is_runtime:
+            # Not RuntimeDB — all tables go to system bucket
+            system_tables = []
+            total_bytes = 0
+            for r in table_rows:
+                sz = int(r.get('size_bytes', 0))
+                total_bytes += sz
+                system_tables.append({
+                    'name': str(r.get('relname', '')),
+                    'sizeBytes': sz,
+                    'rowCount': int(r.get('n_live_tup', 0)),
+                })
+            result['system'] = {'tables': system_tables, 'totalBytes': total_bytes}
+            result['warnings'] = warnings
+            return jsonify(result)
+
+        # RuntimeDB — find project columns
+        col_rows = _pg_query_rows(connection_name,
+            "SELECT table_name, column_name FROM information_schema.columns"
+            " WHERE table_schema='public'"
+            " AND (column_name ILIKE '%%projectkey%%' OR column_name ILIKE '%%project_key%%')",
+            user_password=user_password)
+        table_project_col = {}
+        for r in col_rows:
+            tname = str(r.get('table_name', ''))
+            cname = str(r.get('column_name', ''))
+            if tname and cname:
+                table_project_col[tname.lower()] = {'table': tname, 'column': cname}
+
+        project_sizes: Dict[str, Dict[str, Any]] = {}
+        system_tables = []
+        system_total = 0
+
+        for r in table_rows:
+            relname = str(r.get('relname', ''))
+            sz = int(r.get('size_bytes', 0))
+            row_count = int(r.get('n_live_tup', 0))
+            lookup = table_project_col.get(relname.lower())
+            if not lookup:
+                system_total += sz
+                system_tables.append({'name': relname, 'sizeBytes': sz, 'rowCount': row_count})
+                continue
+            # Query per-project breakdown for this table
+            try:
+                proj_rows = _pg_query_rows(connection_name,
+                    "SELECT \"%s\" as pkey, count(*) as cnt FROM \"%s\" GROUP BY \"%s\""
+                    % (lookup['column'], lookup['table'], lookup['column']),
+                    user_password=user_password)
+                total_rows = sum(int(pr.get('cnt', 0)) for pr in proj_rows)
+                for pr in proj_rows:
+                    pkey = str(pr.get('pkey', '') or 'Unknown')
+                    cnt = int(pr.get('cnt', 0))
+                    # Estimate size proportional to row count
+                    est_size = int(sz * cnt / total_rows) if total_rows > 0 else 0
+                    if pkey not in project_sizes:
+                        project_sizes[pkey] = {'projectKey': pkey, 'sizeBytes': 0, 'tableCount': 0, 'rowCount': 0}
+                    project_sizes[pkey]['sizeBytes'] += est_size
+                    project_sizes[pkey]['tableCount'] += 1
+                    project_sizes[pkey]['rowCount'] += cnt
+            except Exception as exc:
+                warnings.append('Could not break down table %s: %s' % (relname, _sanitize_pg_error(str(exc))))
+                system_total += sz
+                system_tables.append({'name': relname, 'sizeBytes': sz, 'rowCount': row_count})
+
+        result['projects'] = sorted(project_sizes.values(), key=lambda p: p['sizeBytes'], reverse=True)
+        result['system'] = {'tables': system_tables, 'totalBytes': system_total}
+    except Exception as exc:
+        warnings.append('Per-project query failed: %s' % _sanitize_pg_error(str(exc)))
+    result['warnings'] = warnings
+    return jsonify(result)
+
+
+@app.route('/api/tools/db-health/vacuum', methods=['POST'])
+def api_db_health_vacuum():
+    body = request.get_json(force=True, silent=True) or {}
+    connection_name = body.get('connection', '')
+    table_name = body.get('table', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    if not table_name:
+        return jsonify({'error': 'Missing table parameter'}), 400
+
+    user_password = body.get('password', '') or _get_dbhealth_config().password or ''
+
+    # Whitelist: validate table name against pg_stat_user_tables
+    try:
+        valid_tables = _pg_query_rows(connection_name,
+            "SELECT relname FROM pg_stat_user_tables",
+            user_password=user_password)
+        valid_names = {str(r.get('relname', '')) for r in valid_tables}
+        if table_name not in valid_names:
+            return jsonify({'error': 'Invalid table name'}), 400
+    except Exception as exc:
+        return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
+
+    try:
+        result = _pg_exec_ddl(connection_name, "VACUUM {}", table_name, user_password=user_password)
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+
+
+@app.route('/api/tools/db-health/analyze', methods=['POST'])
+def api_db_health_analyze():
+    body = request.get_json(force=True, silent=True) or {}
+    connection_name = body.get('connection', '')
+    table_name = body.get('table', '')
+    validation = _validate_pg_connection(connection_name)
+    if validation:
+        return validation
+    if not table_name:
+        return jsonify({'error': 'Missing table parameter'}), 400
+
+    user_password = body.get('password', '') or _get_dbhealth_config().password or ''
+
+    # Whitelist: validate table name against pg_stat_user_tables
+    try:
+        valid_tables = _pg_query_rows(connection_name,
+            "SELECT relname FROM pg_stat_user_tables",
+            user_password=user_password)
+        valid_names = {str(r.get('relname', '')) for r in valid_tables}
+        if table_name not in valid_names:
+            return jsonify({'error': 'Invalid table name'}), 400
+    except Exception as exc:
+        return jsonify({'error': 'Could not validate table: %s' % _sanitize_pg_error(str(exc))}), 500
+
+    try:
+        result = _pg_exec_ddl(connection_name, "ANALYZE {}", table_name, user_password=user_password)
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({'error': _sanitize_pg_error(str(exc))}), 500

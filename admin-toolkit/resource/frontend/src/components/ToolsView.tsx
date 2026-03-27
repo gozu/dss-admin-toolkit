@@ -42,7 +42,7 @@ interface CampaignConfig {
   recipientsKey: string;
 }
 
-const CAMPAIGN_CONFIGS: CampaignConfig[] = [
+export const CAMPAIGN_CONFIGS: CampaignConfig[] = [
   {
     id: 'project',
     title: 'Code Env Sprawl',
@@ -894,6 +894,7 @@ interface CampaignPanelProps {
   onUnexempt?: (entityKey: string) => void;
   isEntityExempt?: (entityKey: string) => boolean;
   alwaysExpanded?: boolean;
+  hideProjects?: boolean;
   hideCodeEnvs?: boolean;
   hideObjects?: boolean;
 }
@@ -914,6 +915,7 @@ function CampaignPanel({
   onUnexempt,
   isEntityExempt,
   alwaysExpanded,
+  hideProjects,
   hideCodeEnvs,
   hideObjects,
 }: CampaignPanelProps) {
@@ -1015,7 +1017,7 @@ function CampaignPanel({
                   <th className="w-10"></th>
                   <th>Owner</th>
                   <th>Email</th>
-                  <th className="text-right">Projects</th>
+                  {!hideProjects && <th className="text-right">Projects</th>}
                   {!hideCodeEnvs && <th className="text-right">Code Envs</th>}
                   {!hideObjects && <th className="text-right">Objects</th>}
                   {onExempt && <th className="w-24 text-right">Exempt</th>}
@@ -1050,7 +1052,7 @@ function CampaignPanel({
                         <td className="font-mono text-xs text-[var(--text-secondary)]">
                           {recipient.email}
                         </td>
-                        <td className="text-right font-mono">{recipient.projectKeys.length}</td>
+                        {!hideProjects && <td className="text-right font-mono">{recipient.projectKeys.length}</td>}
                         {!hideCodeEnvs && <td className="text-right font-mono">{recipient.codeEnvNames.length}</td>}
                         {!hideObjects && <td className="text-right font-mono">{recipient.usageDetails.length}</td>}
                         {onExempt && (
@@ -1071,7 +1073,7 @@ function CampaignPanel({
                               className={exempt ? 'bg-green-500/10' : ''}
                             >
                               <td></td>
-                              <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-8 text-sm">
+                              <td colSpan={5 - (hideProjects ? 1 : 0) - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-8 text-sm">
                                 <span className="text-[var(--text-primary)]">{sin.label}</span>
                                 {sin.details && (
                                   <span className="ml-2 text-xs text-[var(--text-muted)]">
@@ -1102,7 +1104,7 @@ function CampaignPanel({
                             {sin.children?.map((child) => (
                               <tr key={`${recipient.recipientKey}:${sin.key}:${child}`}>
                                 <td></td>
-                                <td colSpan={5 - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-14 text-xs text-[var(--text-muted)]">
+                                <td colSpan={5 - (hideProjects ? 1 : 0) - (hideCodeEnvs ? 1 : 0) - (hideObjects ? 1 : 0)} className="pl-14 text-xs text-[var(--text-muted)]">
                                   {child}
                                 </td>
                                 {onExempt && onUnexempt && <td></td>}
@@ -1175,13 +1177,14 @@ function getSummaryCount(data: OutreachData, config: CampaignConfig): number {
 // ── Main component ──
 
 export function ToolsView() {
-  const { dispatch, state } = useDiag();
+  const { dispatch, state, setOutreachCampaignId, setOutreachSidebarItems } = useDiag();
   const { ultraWideEnabled } = useUltraWideLayout();
   const previewModal = useModal();
   const { parsedData, activePage } = state;
+  const selectedCampaignId = state.outreachCampaignId;
+  const setSelectedCampaignId = setOutreachCampaignId;
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
-  const [_apiDataLoaded, setApiDataLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(null);
 
@@ -1208,8 +1211,6 @@ export function ToolsView() {
     loadFromStorage('campaignSelectedKeys', {}),
   );
 
-  const hasRestoredRecipientsRef = useRef(false);
-
   const [previewCampaign, setPreviewCampaign] = useState<CampaignId>('project');
   const [previewItems, setPreviewItems] = useState<EmailPreviewItem[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1222,9 +1223,7 @@ export function ToolsView() {
   const [exemptions, setExemptions] = useState<Map<CampaignId, Map<string, number>>>(new Map());
   const exemptionsRef = useRef(exemptions);
   exemptionsRef.current = exemptions;
-  const [selectedCampaignId, setSelectedCampaignId] = useState<CampaignId>(
-    () => loadFromStorage('selectedCampaignId', CAMPAIGN_CONFIGS[0].id) as CampaignId,
-  );
+  // selectedCampaignId is now managed via DiagContext (outreachCampaignId)
 
   const log = useCallback(
     (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
@@ -1346,12 +1345,11 @@ export function ToolsView() {
         }
         return next;
       });
-      if (!hasRestoredRecipientsRef.current) {
-        hasRestoredRecipientsRef.current = true;
+      {
         setSelectedKeys((prev) => {
           const next = { ...prev };
           for (const config of CAMPAIGN_CONFIGS) {
-            if (next[config.id] !== undefined) continue;
+            if (next[config.id] !== undefined && next[config.id].length > 0) continue;
             const recipients = getRecipients(source, config);
             next[config.id] = recipients.map((r) => r.recipientKey);
           }
@@ -1370,15 +1368,37 @@ export function ToolsView() {
     };
     const localSeed = buildOutreachDataFromParsedData(parsedData, outreachThresholds);
     if (localSeed) {
-      setData(localSeed);
+      setData((prev) => {
+        if (!prev) return localSeed;
+        // Merge: localSeed updates locally-derivable fields, prev keeps API/enrichment data
+        const merged: OutreachData = {
+          ...prev,
+          ...localSeed,
+          summary: { ...prev.summary, ...localSeed.summary },
+          mailChannels: prev.mailChannels?.length ? prev.mailChannels : localSeed.mailChannels,
+          templates: prev.templates ?? localSeed.templates,
+        };
+        for (const config of CAMPAIGN_CONFIGS) {
+          const rKey = config.recipientsKey as keyof OutreachData;
+          const sKey = config.summaryKey as keyof OutreachData['summary'];
+          const localR = (localSeed as any)[rKey] as OutreachRecipient[] | undefined;
+          const prevR = (prev as any)[rKey] as OutreachRecipient[] | undefined;
+          if ((!localR || localR.length === 0) && prevR && prevR.length > 0) {
+            (merged as any)[rKey] = prevR;
+            (merged.summary as any)[sKey] = (prev.summary as any)[sKey];
+          }
+        }
+        return merged;
+      });
       restoreFromSource(localSeed);
       setIsLoading(false);
     }
   }, [parsedData, thresholds.codeEnvCountUnhealthy, thresholds.codeStudioCountUnhealthy, restoreFromSource]);
 
   // Effect 2: Fetch API outreach data in background — triggers server-side tracking ingest
-  // and enriches data with real mail channels. Runs once on mount.
+  // and enriches data with real mail channels. Skipped if app-level loader already fetched.
   useEffect(() => {
+    if (parsedData.outreachApiLoaded) return;
     fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
       setData((prev) => {
         if (!prev) {
@@ -1412,10 +1432,10 @@ export function ToolsView() {
         }
         return merged;
       });
-      setApiDataLoaded(true);
+      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
       log(`API outreach data loaded: channels=${apiData.mailChannels?.length ?? 0}, apiUnusedCodeEnvs=${apiData.summary?.unusedCodeEnvCount ?? 0}, apiUnusedRecipients=${apiData.unusedCodeEnvRecipients?.length ?? 0}`);
     }).catch((err) => {
-      setApiDataLoaded(true);
+      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
       log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1426,11 +1446,13 @@ export function ToolsView() {
     fetchJson<{ projects: Array<{ projectKey: string; name: string; owner: string; daysInactive: number }> }>(
       '/api/tools/inactive-projects'
     ).then((res) => {
+      const emails = new Map<string, string>();
+      for (const u of parsedData.users || []) if (u?.login) emails.set(String(u.login), String(u.email || u.login));
       const recipientsMap = new Map<string, OutreachRecipient>();
       for (const p of res.projects) {
         const owner = p.owner || 'Unknown';
         if (!recipientsMap.has(owner)) {
-          recipientsMap.set(owner, makeRecipient(owner, new Map()));
+          recipientsMap.set(owner, makeRecipient(owner, emails));
         }
         const r = recipientsMap.get(owner)!;
         r.projectKeys.push(p.projectKey);
@@ -1730,6 +1752,20 @@ export function ToolsView() {
     });
   }, [data, disabledCampaigns, exemptions]);
 
+  // Sync sidebar items to context for the Sidebar component
+  useEffect(() => {
+    if (campaignSidebarItems.length > 0) {
+      setOutreachSidebarItems(
+        campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => ({
+          id: config.id,
+          title: config.title,
+          count: recipientCount,
+          isDisabled,
+        })),
+      );
+    }
+  }, [campaignSidebarItems, setOutreachSidebarItems]);
+
   // Selected campaign detail
   const selectedConfig = useMemo(
     () => CAMPAIGN_CONFIGS.find((c) => c.id === selectedCampaignId) ?? CAMPAIGN_CONFIGS[0],
@@ -1830,98 +1866,44 @@ export function ToolsView() {
                   </section>
                 )}
 
-                {/* Sidebar + Detail layout */}
-                <div className="flex flex-col lg:flex-row gap-4 flex-1 min-h-0">
-                  {/* Campaign sidebar - vertical on lg+, horizontal tabs below lg */}
-                  <aside className="lg:w-64 shrink-0 lg:sticky lg:top-4 lg:self-start">
-                    {/* Mobile: horizontal scrollable tab bar */}
-                    <div className="flex lg:hidden gap-2 overflow-x-auto pb-2">
-                      {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
-                        <button
-                          key={config.id}
-                          onClick={() => setSelectedCampaignId(config.id)}
-                          className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                            selectedCampaignId === config.id
-                              ? 'bg-[var(--accent-muted)] text-[var(--accent)] border-[var(--accent)]'
-                              : 'bg-[var(--bg-glass)] text-[var(--text-secondary)] border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]'
-                          }`}
-                        >
-                          {config.title}
-                          {!isDisabled && recipientCount > 0 && (
-                            <span className="ml-1.5 font-mono">{recipientCount}</span>
-                          )}
-                          {isDisabled && (
-                            <span className="ml-1.5 text-amber-400">Off</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                    {/* Mobile: Send All below tab bar */}
-                    <div className="flex lg:hidden items-center gap-3 mt-2">
+                {/* Campaign detail layout */}
+                <div className="flex flex-col gap-4 flex-1 min-h-0">
+                  {/* Mobile: horizontal scrollable tab bar (hidden on desktop where app sidebar handles it) */}
+                  <div className="flex lg:hidden gap-2 overflow-x-auto pb-2">
+                    {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
                       <button
-                        onClick={() => setShowSendAllConfirm(true)}
-                        disabled={sendAllLoading || previewLoading || !data}
-                        data-testid="send-all-campaigns-mobile"
-                        className="px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
+                        key={config.id}
+                        onClick={() => setSelectedCampaignId(config.id)}
+                        className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                          selectedCampaignId === config.id
+                            ? 'bg-[var(--accent-muted)] text-[var(--accent)] border-[var(--accent)]'
+                            : 'bg-[var(--bg-glass)] text-[var(--text-secondary)] border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]'
+                        }`}
                       >
-                        {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
-                      </button>
-                      {sendAllStatus && !sendAllLoading && (
-                        <span className="text-sm text-[var(--text-secondary)]">{sendAllStatus}</span>
-                      )}
-                    </div>
-
-                    {/* Desktop: vertical sidebar */}
-                    <div className="hidden lg:flex flex-col glass-card p-2">
-                      <nav className="flex-1 flex flex-col gap-0.5">
-                        {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
-                          <button
-                            key={config.id}
-                            onClick={() => setSelectedCampaignId(config.id)}
-                            className={`relative w-full flex items-center gap-3 px-2.5 py-1.5 rounded-md text-left text-sm transition-colors ${
-                              selectedCampaignId === config.id
-                                ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
-                                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-                            }`}
-                          >
-                            {selectedCampaignId === config.id && (
-                              <motion.div
-                                layoutId="outreach-sidebar-active"
-                                className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)]"
-                                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                              />
-                            )}
-                            <span className="flex-1 truncate">{config.title}</span>
-                            <span className="flex items-center gap-1.5 shrink-0">
-                              {isDisabled && (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
-                                  Off
-                                </span>
-                              )}
-                              {!isDisabled && recipientCount > 0 && (
-                                <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
-                                  {recipientCount}
-                                </span>
-                              )}
-                            </span>
-                          </button>
-                        ))}
-                      </nav>
-                      <div className="pt-2 border-t border-[var(--border-default)]">
-                        <button
-                          onClick={() => setShowSendAllConfirm(true)}
-                          disabled={sendAllLoading || previewLoading || !data}
-                          data-testid="send-all-campaigns"
-                          className="w-full px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
-                        >
-                          {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
-                        </button>
-                        {sendAllStatus && !sendAllLoading && (
-                          <div className="text-xs text-[var(--text-secondary)] mt-1 text-center">{sendAllStatus}</div>
+                        {config.title}
+                        {!isDisabled && recipientCount > 0 && (
+                          <span className="ml-1.5 font-mono">{recipientCount}</span>
                         )}
-                      </div>
-                    </div>
-                  </aside>
+                        {isDisabled && (
+                          <span className="ml-1.5 text-amber-400">Off</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Mobile: Send All below tab bar */}
+                  <div className="flex lg:hidden items-center gap-3">
+                    <button
+                      onClick={() => setShowSendAllConfirm(true)}
+                      disabled={sendAllLoading || previewLoading || !data}
+                      data-testid="send-all-campaigns-mobile"
+                      className="px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
+                    >
+                      {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
+                    </button>
+                    {sendAllStatus && !sendAllLoading && (
+                      <span className="text-sm text-[var(--text-secondary)]">{sendAllStatus}</span>
+                    )}
+                  </div>
 
                   {/* Detail area */}
                   <div className="flex-1 min-w-0 flex flex-col">
@@ -1964,8 +1946,9 @@ export function ToolsView() {
                                 isEntityExempt(selectedConfig.id, entityKey)
                               }
                               alwaysExpanded
+                              hideProjects={selectedConfig.id === 'unused_code_env'}
                               hideCodeEnvs={selectedConfig.id === 'inactive_project'}
-                              hideObjects={selectedConfig.id === 'inactive_project'}
+                              hideObjects={selectedConfig.id === 'inactive_project' || selectedConfig.id === 'unused_code_env'}
                             />
                           );
                         })()}

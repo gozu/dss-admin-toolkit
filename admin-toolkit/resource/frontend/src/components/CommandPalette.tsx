@@ -18,7 +18,6 @@ interface PageDef {
 const PAGE_DEFS: PageDef[] = [
   { id: 'summary', label: 'Summary', section: 'Overview', keywords: ['health', 'score', 'overview', 'dashboard'] },
   { id: 'issues', label: 'Issues', section: 'Overview', keywords: ['disabled', 'features', 'alerts', 'problems'] },
-  { id: 'settings', label: 'Settings', section: 'Overview', keywords: ['config', 'threshold', 'preference'] },
   { id: 'filesystem', label: 'Filesystem', section: 'System', keywords: ['disk', 'storage', 'mount', 'partition'] },
   { id: 'memory', label: 'Memory', section: 'System', keywords: ['ram', 'swap', 'memory', 'usage'] },
   { id: 'connections', label: 'Connections', section: 'Monitoring', keywords: ['database', 'connector', 'type'] },
@@ -33,6 +32,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'outreach', label: 'Outreach', section: 'Tools', keywords: ['email', 'campaign', 'owner'] },
   { id: 'tracking', label: 'Compliance', section: 'Tools', keywords: ['tracking', 'compliance', 'audit', 'issues'] },
   { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
+  { id: 'db-health', label: 'DB Health', section: 'Tools', keywords: ['postgres', 'database', 'vacuum', 'tables', 'runtimedb', 'bloat'] },
 ];
 
 const SECTION_ICONS: Record<string, string> = {

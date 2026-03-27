@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Chart as ChartJS, Tooltip, Legend } from 'chart.js';
 import { TreemapController, TreemapElement } from 'chartjs-chart-treemap';
@@ -13,6 +13,7 @@ interface DirTreemapProps {
   onExpand?: (dirPath: string) => Promise<DirEntry | null>;
   expandedNodes?: Map<string, DirEntry>;
   isExpanding?: boolean;
+  onVisibleDirectoriesChange?: (dirPaths: string[]) => void;
 }
 
 // Color palette for different depths
@@ -128,7 +129,7 @@ function wouldCreateDuplicateView(
   return false;
 }
 
-export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTreemapProps) {
+export function DirTreemap({ data, onExpand, expandedNodes, isExpanding, onVisibleDirectoriesChange }: DirTreemapProps) {
   const [currentNode, setCurrentNode] = useState<DirEntry | null>(null);
   const [breadcrumbs, setBreadcrumbs] = useState<DirEntry[]>([]);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
@@ -204,10 +205,12 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
     setCurrentNode(null);
   }, []);
 
+  const activeExpanded = expandedNodes?.get(activeNode?.path ?? '');
+
   const chartItems = useMemo(() => {
     if (!activeNode) return [];
 
-    const effectiveChildren = expandedNodes?.get(activeNode.path)?.children || activeNode.children;
+    const effectiveChildren = activeExpanded?.children || activeNode.children;
     if (effectiveChildren.length > 0) {
       return effectiveChildren.map(child => ({
         name: child.name,
@@ -217,6 +220,7 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
         fileCount: child.fileCount,
         fullPath: child.path,
         hasHiddenChildren: child.hasHiddenChildren,
+        childCount: child.children.length,
         _node: child,
       }));
     }
@@ -228,9 +232,20 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
       fileCount: activeNode.fileCount,
       fullPath: activeNode.path,
       hasHiddenChildren: activeNode.hasHiddenChildren,
+      childCount: activeNode.children.length,
       _node: activeNode,
     }];
-  }, [activeNode, expandedNodes]);
+  }, [activeNode, activeExpanded]);
+
+  useEffect(() => {
+    if (!activeNode || !onVisibleDirectoriesChange) return;
+    const candidates = (activeExpanded?.children || activeNode.children)
+      .filter((child) => child.isDirectory && child.hasHiddenChildren)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 3)
+      .map((child) => child.path);
+    onVisibleDirectoriesChange(candidates);
+  }, [activeNode, activeExpanded, onVisibleDirectoriesChange]);
 
   const chartData = useMemo(() => {
     if (!activeNode) return { datasets: [] };
@@ -288,7 +303,7 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
         borderWidth: 1,
         callbacks: {
           title: () => '',
-          label: (ctx: { raw?: { _data?: { name?: string; size?: number; isDir?: boolean; fileCount?: number; hasHiddenChildren?: boolean } } }) => {
+          label: (ctx: { raw?: { _data?: { name?: string; size?: number; isDir?: boolean; fileCount?: number; hasHiddenChildren?: boolean; childCount?: number } } }) => {
             const raw = ctx.raw?._data;
             if (!raw) return '';
             const lines = [
@@ -296,8 +311,9 @@ export function DirTreemap({ data, onExpand, expandedNodes, isExpanding }: DirTr
               `Size: ${formatSize(raw.size || 0)}`,
             ];
             if (raw.isDir) {
+              const isDrillable = (raw.childCount ?? 0) > 0 || raw.hasHiddenChildren;
               lines.push(`Files: ${raw.fileCount?.toLocaleString() || 0}${raw.hasHiddenChildren ? '+' : ''}`);
-              lines.push('Click to drill down');
+              lines.push(isDrillable ? 'Click to drill down' : 'Drilldown limit reached');
             }
             return lines;
           },

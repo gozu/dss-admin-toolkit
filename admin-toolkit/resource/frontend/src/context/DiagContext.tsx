@@ -16,6 +16,8 @@ import type {
   DebugLevel,
   LayoutMode,
   ApiDirTreeState,
+  CampaignId,
+  OutreachSidebarItem,
 } from '../types';
 
 const DEFAULT_DSSHOME = 'data/dataiku/dss_data/';
@@ -67,6 +69,8 @@ function buildInitialState(layoutMode: LayoutMode): DiagStateWithComparison {
     mode: 'single',
     activePage: 'summary' as PageId,
     comparison: initialComparisonState,
+    outreachCampaignId: 'project' as CampaignId,
+    outreachSidebarItems: [],
   };
 }
 
@@ -214,6 +218,10 @@ function diagReducer(
       return { ...state, mode: action.payload };
     case 'SET_ACTIVE_PAGE':
       return { ...state, activePage: action.payload };
+    case 'SET_OUTREACH_CAMPAIGN':
+      return { ...state, outreachCampaignId: action.payload };
+    case 'SET_OUTREACH_SIDEBAR':
+      return { ...state, outreachSidebarItems: action.payload };
     case 'SET_COMPARISON_FILE':
       return {
         ...state,
@@ -294,6 +302,8 @@ interface DiagContextValue {
   setComparisonViewMode: (mode: ComparisonViewMode) => void;
   setComparisonProcessing: (slot: 'before' | 'after', isProcessing: boolean) => void;
   resetComparison: () => void;
+  setOutreachCampaignId: (id: CampaignId) => void;
+  setOutreachSidebarItems: (items: OutreachSidebarItem[]) => void;
 }
 
 const DiagContext = createContext<DiagContextValue | undefined>(undefined);
@@ -342,6 +352,8 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     setComparisonProcessing: (slot, isProcessing) =>
       dispatch({ type: 'SET_COMPARISON_PROCESSING', payload: { slot, isProcessing } }),
     resetComparison: () => dispatch({ type: 'RESET_COMPARISON' }),
+    setOutreachCampaignId: (id) => dispatch({ type: 'SET_OUTREACH_CAMPAIGN', payload: id }),
+    setOutreachSidebarItems: (items) => dispatch({ type: 'SET_OUTREACH_SIDEBAR', payload: items }),
   };
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;

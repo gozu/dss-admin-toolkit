@@ -10,7 +10,6 @@ interface UseKeyboardNavigationOptions {
 const PAGE_ORDER: PageId[] = [
   'summary',
   'issues',
-  'settings',
   'filesystem',
   'memory',
   'connections',
@@ -30,13 +29,12 @@ const PAGE_ORDER: PageId[] = [
 const NUMBER_KEY_MAP: Record<string, PageId> = {
   '1': 'summary',
   '2': 'issues',
-  '3': 'settings',
-  '4': 'filesystem',
-  '5': 'memory',
-  '6': 'connections',
-  '7': 'runtime-config',
-  '8': 'logs',
-  '9': 'plugins',
+  '3': 'filesystem',
+  '4': 'memory',
+  '5': 'connections',
+  '6': 'runtime-config',
+  '7': 'logs',
+  '8': 'plugins',
 };
 
 function isInputFocused(): boolean {

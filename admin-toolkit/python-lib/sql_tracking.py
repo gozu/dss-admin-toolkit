@@ -21,11 +21,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def _q(prefix: Optional[str], table: str) -> str:
-    """Prefix a table name (e.g. 'adtk' + 'runs' → 'adtk_runs')."""
-    if prefix:
-        return f"{prefix}_{table}"
-    return table
+def _q(prefix: Optional[str], table: str, schema: Optional[str] = None) -> str:
+    """Prefix a table name, optionally schema-qualified."""
+    name = f"{prefix}_{table}" if prefix else table
+    if schema:
+        return f"{schema}.{name}"
+    return name
 
 
 def _L(val) -> str:
@@ -79,6 +80,7 @@ _ALL_TABLES = [
     'run_campaign_summaries', 'run_sections', 'findings', 'issues',
     'outreach_emails', 'outreach_email_issues', 'known_users',
     'known_projects', 'issue_notes', 'campaign_settings', 'campaign_exemptions',
+    'user_snapshots', 'project_snapshots', 'run_plugins', 'run_connections',
 ]
 
 
@@ -86,11 +88,12 @@ class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
-    _TARGET_SCHEMA_VERSION = 4
+    _TARGET_SCHEMA_VERSION = 6
 
-    def __init__(self, connection_name: str, table_prefix: Optional[str] = None):
+    def __init__(self, connection_name: str, table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._connection_name = connection_name
         self._prefix = table_prefix
+        self._schema = schema
         self._lock = threading.Lock()
         self._initialized = False
 
@@ -116,8 +119,8 @@ class SQLTrackingDB:
         return rows[0] if rows else None
 
     def _t(self, table: str) -> str:
-        """Shortcut: prefix table name."""
-        return _q(self._prefix, table)
+        """Shortcut: prefix + schema-qualify table name."""
+        return _q(self._prefix, table, self._schema)
 
     def _idx(self, name: str) -> str:
         """Prefix an index name."""
@@ -147,7 +150,113 @@ class SQLTrackingDB:
             executor = self._get_executor()
             ddl = self._get_ddl_statements()
             executor.query_to_df("SELECT 1", pre_queries=ddl, post_queries=['COMMIT'])
+            # V5 migration: add snapshot columns to existing run_health_metrics tables
+            self._migrate_v5(executor)
+            # V6 migration: add over-time snapshot tables
+            self._migrate_v6(executor)
+            # Schema migration: move tables from default schema if schema is configured
+            if self._schema:
+                self._migrate_from_default_schema(executor)
             self._initialized = True
+
+    def _migrate_from_default_schema(self, executor) -> None:
+        """Copy data from unqualified tables to schema-qualified tables, then drop old."""
+        for table in _ALL_TABLES:
+            old = _q(self._prefix, table)
+            new = _q(self._prefix, table, self._schema)
+            try:
+                old_rows = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {old}")
+                if not old_rows:
+                    continue
+                old_count = old_rows['cnt']
+            except Exception:
+                continue  # old table doesn't exist, skip
+            try:
+                new_rows = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {new}")
+                if new_rows and new_rows['cnt'] > 0:
+                    continue  # new table already has data, skip
+            except Exception:
+                continue  # new table doesn't exist yet, skip
+            try:
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"INSERT INTO {new} SELECT * FROM {old}"],
+                                     post_queries=['COMMIT'])
+                verify = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {new}")
+                verify_count = verify['cnt'] if verify else 0
+                if verify_count != old_count:
+                    _log.error("[sql_tracking] schema migration: row count mismatch for %s "
+                               "(old=%d, new=%d) — keeping old table", table, old_count, verify_count)
+                    continue
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"DROP TABLE {old}"],
+                                     post_queries=['COMMIT'])
+                _log.info("[sql_tracking] schema migration: migrated %d rows from %s → %s",
+                          old_count, old, new)
+            except Exception as exc:
+                _log.error("[sql_tracking] schema migration failed for %s: %s", table, exc)
+
+    def _migrate_v5(self, executor) -> None:
+        """Add V5 snapshot columns to run_health_metrics if missing (idempotent)."""
+        t = self._t('run_health_metrics')
+        v5_columns = [
+            'plugins_json TEXT',
+            'connections_json TEXT',
+            'filesystem_mounts_json TEXT',
+            'user_profile_stats_json TEXT',
+            'os_info TEXT',
+            'spark_version TEXT',
+        ]
+        for col_def in v5_columns:
+            try:
+                executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN {col_def}")
+            except Exception:
+                pass  # column already exists
+
+    def _migrate_v6(self, executor) -> None:
+        """Add V6 snapshot tables if missing (idempotent)."""
+        v6_ddl = [
+            f"""CREATE TABLE IF NOT EXISTS {self._t('user_snapshots')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                login        TEXT NOT NULL,
+                display_name TEXT,
+                email        TEXT,
+                user_profile TEXT,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (run_id, instance_id, login)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_user_snapshots_instance_run')} ON {self._t('user_snapshots')}(instance_id, run_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('project_snapshots')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                name         TEXT,
+                owner_login  TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_project_snapshots_instance_run')} ON {self._t('project_snapshots')}(instance_id, run_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_plugins')} (
+                run_id    INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                plugin_id TEXT NOT NULL,
+                label     TEXT,
+                version   TEXT,
+                is_dev    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (run_id, plugin_id)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_plugins_plugin')} ON {self._t('run_plugins')}(plugin_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_connections')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                connection_name TEXT NOT NULL,
+                connection_type TEXT,
+                PRIMARY KEY (run_id, connection_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_connections_type')} ON {self._t('run_connections')}(connection_type)",
+        ]
+        for stmt in v6_ddl:
+            try:
+                executor.query_to_df("SELECT 1", pre_queries=[stmt], post_queries=['COMMIT'])
+            except Exception:
+                pass  # table/index already exists
 
     def _get_ddl_statements(self) -> List[str]:
         """Return list of CREATE TABLE/INDEX statements."""
@@ -205,7 +314,13 @@ class SQLTrackingDB:
                 license_concurrent_users_pct    DOUBLE PRECISION,
                 license_projects_pct            DOUBLE PRECISION,
                 license_connections_pct         DOUBLE PRECISION,
-                license_expiry_date             TEXT
+                license_expiry_date             TEXT,
+                plugins_json                    TEXT,
+                connections_json                TEXT,
+                filesystem_mounts_json          TEXT,
+                user_profile_stats_json         TEXT,
+                os_info                         TEXT,
+                spark_version                   TEXT
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('run_campaign_summaries')} (
                 run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
@@ -329,6 +444,43 @@ class SQLTrackingDB:
                 created_at    TEXT NOT NULL,
                 UNIQUE(campaign_id, entity_type, entity_key)
             )""",
+            # V6 tables: over-time snapshot tables
+            f"""CREATE TABLE IF NOT EXISTS {self._t('user_snapshots')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                login        TEXT NOT NULL,
+                display_name TEXT,
+                email        TEXT,
+                user_profile TEXT,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (run_id, instance_id, login)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_user_snapshots_instance_run')} ON {self._t('user_snapshots')}(instance_id, run_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('project_snapshots')} (
+                run_id       INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                instance_id  TEXT NOT NULL,
+                project_key  TEXT NOT NULL,
+                name         TEXT,
+                owner_login  TEXT,
+                PRIMARY KEY (run_id, instance_id, project_key)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_project_snapshots_instance_run')} ON {self._t('project_snapshots')}(instance_id, run_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_plugins')} (
+                run_id    INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                plugin_id TEXT NOT NULL,
+                label     TEXT,
+                version   TEXT,
+                is_dev    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (run_id, plugin_id)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_plugins_plugin')} ON {self._t('run_plugins')}(plugin_id)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_connections')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                connection_name TEXT NOT NULL,
+                connection_type TEXT,
+                PRIMARY KEY (run_id, connection_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_connections_type')} ON {self._t('run_connections')}(connection_type)",
             # Record schema version (skip if already recorded)
             f"INSERT INTO {self._t('schema_version')} (version, applied_at) "
             f"SELECT {self._TARGET_SCHEMA_VERSION}, {_L(_now_iso())} "
@@ -388,6 +540,7 @@ class SQLTrackingDB:
         sections: Dict[str, Dict[str, Any]],
         health_metrics: Optional[Dict[str, Any]] = None,
         campaign_summaries: Optional[List[Dict[str, Any]]] = None,
+        snapshot_data: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Ingest a complete run. Returns the new run_id."""
         self._init_tables()
@@ -432,6 +585,11 @@ class SQLTrackingDB:
         # Health metrics
         if health_metrics:
             hm = health_metrics
+            snap = snapshot_data or {}
+            plugins_json = _L(json.dumps(snap['plugins'])) if snap.get('plugins') is not None else 'NULL'
+            connections_json = _L(json.dumps(snap['connections'])) if snap.get('connections') is not None else 'NULL'
+            filesystem_mounts_json = _L(json.dumps(snap['filesystem_mounts'])) if snap.get('filesystem_mounts') is not None else 'NULL'
+            user_profile_stats_json = _L(json.dumps(snap['user_profile_stats'])) if snap.get('user_profile_stats') is not None else 'NULL'
             pre.append(
                 f"INSERT INTO {self._t('run_health_metrics')} "
                 f"(run_id, cpu_cores, memory_total_mb, memory_used_mb, "
@@ -443,7 +601,10 @@ class SQLTrackingDB:
                 f"configuration_score, security_isolation_score, "
                 f"license_named_users_pct, license_concurrent_users_pct, "
                 f"license_projects_pct, license_connections_pct, "
-                f"license_expiry_date) "
+                f"license_expiry_date, "
+                f"plugins_json, connections_json, "
+                f"filesystem_mounts_json, user_profile_stats_json, "
+                f"os_info, spark_version) "
                 f"VALUES ({run_id}, {_int_val(hm.get('cpu_cores'))}, {_int_val(hm.get('memory_total_mb'))}, "
                 f"{_int_val(hm.get('memory_used_mb'))}, {_int_val(hm.get('memory_available_mb'))}, "
                 f"{_int_val(hm.get('swap_total_mb'))}, {_int_val(hm.get('swap_used_mb'))}, "
@@ -454,7 +615,10 @@ class SQLTrackingDB:
                 f"{_float_val(hm.get('configuration_score'))}, {_float_val(hm.get('security_isolation_score'))}, "
                 f"{_float_val(hm.get('license_named_users_pct'))}, {_float_val(hm.get('license_concurrent_users_pct'))}, "
                 f"{_float_val(hm.get('license_projects_pct'))}, {_float_val(hm.get('license_connections_pct'))}, "
-                f"{_L(hm.get('license_expiry_date'))})"
+                f"{_L(hm.get('license_expiry_date'))}, "
+                f"{plugins_json}, {connections_json}, "
+                f"{filesystem_mounts_json}, {user_profile_stats_json}, "
+                f"{_L(snap.get('os_info'))}, {_L(snap.get('spark_version'))})"
             )
 
         # Campaign summaries
@@ -526,6 +690,76 @@ class SQLTrackingDB:
                 f"SELECT {_L(instance_id)}, {_L(pkey)}, {_L(name)}, "
                 f"{_L(owner)}, {run_id}, {run_id} "
                 f"WHERE NOT EXISTS (SELECT 1 FROM {t_projects} WHERE instance_id = {_L(instance_id)} AND project_key = {_L(pkey)})"
+            )
+
+        # User snapshots (per-run roster for over-time tracking)
+        t_user_snap = self._t('user_snapshots')
+        for user in users:
+            login = user.get('login')
+            if not login:
+                continue
+            enabled = 1 if user.get('enabled', True) else 0
+            display_name = user.get('display_name') or user.get('displayName')
+            user_profile = user.get('user_profile') or user.get('userProfile')
+            pre.append(
+                f"INSERT INTO {t_user_snap} "
+                f"(run_id, instance_id, login, display_name, email, user_profile, enabled) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(login)}, "
+                f"{_L(display_name)}, {_L(user.get('email'))}, {_L(user_profile)}, {enabled} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_user_snap} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} AND login = {_L(login)})"
+            )
+
+        # Project snapshots (per-run roster for over-time tracking)
+        t_proj_snap = self._t('project_snapshots')
+        for proj in projects:
+            pkey = proj.get('project_key') or proj.get('projectKey')
+            if not pkey:
+                continue
+            owner = proj.get('owner') or proj.get('owner_login')
+            pre.append(
+                f"INSERT INTO {t_proj_snap} "
+                f"(run_id, instance_id, project_key, name, owner_login) "
+                f"SELECT {run_id}, {_L(instance_id)}, {_L(pkey)}, {_L(proj.get('name'))}, {_L(owner)} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_proj_snap} "
+                f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} AND project_key = {_L(pkey)})"
+            )
+
+        # Plugin snapshots (normalized from snapshot_data)
+        snap = snapshot_data or {}
+        t_run_plugins = self._t('run_plugins')
+        for plugin in (snap.get('plugins') or []):
+            if not isinstance(plugin, dict):
+                continue
+            pid = plugin.get('id')
+            if not pid:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_plugins} "
+                f"(run_id, plugin_id, label, version, is_dev) "
+                f"SELECT {run_id}, {_L(pid)}, {_L(plugin.get('label'))}, "
+                f"{_L(plugin.get('installedVersion'))}, "
+                f"{1 if plugin.get('isDev') else 0} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_plugins} "
+                f"WHERE run_id = {run_id} AND plugin_id = {_L(pid)})"
+            )
+
+        # Connection snapshots (normalized from snapshot_data)
+        connections_obj = snap.get('connections')
+        conn_details = (connections_obj.get('details') or []) if isinstance(connections_obj, dict) else []
+        t_run_conns = self._t('run_connections')
+        for conn in conn_details:
+            if not isinstance(conn, dict):
+                continue
+            cname = conn.get('name')
+            if not cname:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_conns} "
+                f"(run_id, connection_name, connection_type) "
+                f"SELECT {run_id}, {_L(cname)}, {_L(conn.get('type'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_conns} "
+                f"WHERE run_id = {run_id} AND connection_name = {_L(cname)})"
             )
 
         # Findings (skip if exists, with pre-generated IDs)

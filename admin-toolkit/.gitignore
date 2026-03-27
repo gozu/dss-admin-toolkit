@@ -89,6 +89,9 @@ resource/frontend/remote-compare.mjs
 resource/frontend/screenshot-test.ts
 resource/frontend/take-screenshots.mjs
 
+# API reference data (large, not needed in deploys)
+dssapiref/
+
 # Old standalone tool (merged into main plugin)
 tools/
 

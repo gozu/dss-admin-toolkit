@@ -304,16 +304,18 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
       try {
         const overviewStart = nowMs();
+        const overviewStartTs = new Date().toISOString().slice(11, 19);
         log('GET /api/overview');
         const overview = await fetchJson<OverviewResponse>('/api/overview');
-        log(`GET /api/overview OK (${fmtMs(overviewStart)})`);
+        log(`GET /api/overview OK (${fmtMs(overviewStart)}) [${overviewStartTs}→${new Date().toISOString().slice(11, 19)}]`);
         recordTiming('/api/overview', nowMs() - overviewStart);
         let rawSettings: Record<string, unknown> = {};
         try {
           const settingsStart = nowMs();
+          const settingsStartTs = new Date().toISOString().slice(11, 19);
           log('GET /api/settings/raw');
           rawSettings = await fetchJson<Record<string, unknown>>('/api/settings/raw');
-          log(`GET /api/settings/raw OK (${fmtMs(settingsStart)})`);
+          log(`GET /api/settings/raw OK (${fmtMs(settingsStart)}) [${settingsStartTs}→${new Date().toISOString().slice(11, 19)}]`);
           recordTiming('/api/settings/raw', nowMs() - settingsStart);
         } catch {
           log('GET /api/settings/raw failed, continuing with defaults', 'warn');
@@ -529,14 +531,16 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         log('Phase 3 starting');
         const timed = <T>(path: string, timeoutMs: number): Promise<T> => {
           const started = nowMs();
+          const startTs = new Date().toISOString().slice(11, 19);
           log(`GET ${path}`);
           return withTimeout(fetchJson<T>(path), path, timeoutMs).then(
             (value) => {
-              log(`GET ${path} OK (${fmtMs(started)})`);
+              log(`GET ${path} OK (${fmtMs(started)}) [${startTs}→${new Date().toISOString().slice(11, 19)}]`);
               recordTiming(path, nowMs() - started);
               return value;
             },
             (err) => {
+              log(`GET ${path} FAIL (${fmtMs(started)}) [${startTs}→${new Date().toISOString().slice(11, 19)}]`);
               recordTiming(path, nowMs() - started, 'fail');
               throw err;
             },
@@ -565,6 +569,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             log(`Heavy endpoints still loading after 8000ms: ${waiting.join(', ')}`, 'warn');
           }
         }, 8000);
+
+        const deferredTails: Promise<unknown>[] = [];
 
         const runCodeEnvs = async () => {
           codeEnvsInterpolationEnabledRef.current = true;
@@ -841,20 +847,22 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               phase: 'done',
               message: 'Code env analysis completed',
             });
-            fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
-              .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
-              .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
-            // Lazy-load code env sizes (global footprint is deferred)
-            fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
-              .then((r) => {
-                if (r?.sizes && typeof r.sizes === 'object') {
-                  dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
-                }
-                // Pre-warm dir-tree backend cache after global footprint completes
-                log('Pre-warming /api/dir-tree after global footprint');
-                fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
-              })
-              .catch(() => { /* sizes optional */ });
+            deferredTails.push(
+              fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+                .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+                .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } })),
+            );
+            deferredTails.push(
+              fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                .then((r) => {
+                  if (r?.sizes && typeof r.sizes === 'object') {
+                    dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                  }
+                  log('Pre-warming /api/dir-tree after global footprint');
+                  fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+                })
+                .catch(() => { /* sizes optional */ }),
+            );
             codeEnvsInterpolator.setBackendProgress(100);
             codeEnvsLastProgressRef.current = 100;
             codeEnvsInterpolationEnabledRef.current = false;
@@ -926,20 +934,22 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'done',
                 message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
               });
-              fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
-                .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
-                .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } }));
-              // Lazy-load code env sizes (global footprint is deferred)
-              fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
-                .then((r) => {
-                  if (r?.sizes && typeof r.sizes === 'object') {
-                    dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
-                  }
-                  // Pre-warm dir-tree backend cache after global footprint completes
-                  log('Pre-warming /api/dir-tree after global footprint');
-                  fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
-                })
-                .catch(() => { /* sizes optional */ });
+              deferredTails.push(
+                fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
+                  .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
+                  .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } })),
+              );
+              deferredTails.push(
+                fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                  .then((r) => {
+                    if (r?.sizes && typeof r.sizes === 'object') {
+                      dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                    }
+                    log('Pre-warming /api/dir-tree after global footprint');
+                    fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+                  })
+                  .catch(() => { /* sizes optional */ }),
+              );
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
               dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });
@@ -1417,6 +1427,16 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           log(`TIMING_TABLE:${rows.join(';;')}`);
         }
         log('Live data load completed');
+        deferredTails.push(
+          fetchJson('/api/tools/outreach-data')
+            .finally(() => dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } })),
+        );
+        if (deferredTails.length > 0) {
+          log(`Awaiting ${deferredTails.length} deferred tail requests`);
+          await Promise.allSettled(deferredTails);
+          log('Deferred tails resolved');
+        }
+        dispatch({ type: 'SET_PARSED_DATA', payload: { dataReady: true } });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         log(`Live data load failed: ${message}`, 'error');
