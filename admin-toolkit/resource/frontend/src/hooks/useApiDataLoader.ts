@@ -14,6 +14,7 @@ import type {
   ProjectFootprintRow,
   PluginInfo,
   CodeEnvCompareResult,
+  OutreachData,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
 import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
@@ -1428,7 +1429,13 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         }
         log('Live data load completed');
         deferredTails.push(
-          fetchJson('/api/tools/outreach-data'),
+          fetchJson<OutreachData>('/api/tools/outreach-data')
+            .then((res) => {
+              if (!cancelled) {
+                dispatch({ type: 'SET_PARSED_DATA', payload: { outreachData: res, outreachApiLoaded: true } });
+              }
+            })
+            .catch(() => { /* non-critical, ToolsView Effect 2 is fallback */ }),
         );
         if (deferredTails.length > 0) {
           log(`Awaiting ${deferredTails.length} deferred tail requests`);

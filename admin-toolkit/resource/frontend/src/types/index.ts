@@ -509,6 +509,7 @@ export interface ParsedData {
   // Loading state
   dataReady?: boolean;
   outreachApiLoaded?: boolean;
+  outreachData?: OutreachData;
 
   // Directory listing
   dirTree?: DirTreeData;

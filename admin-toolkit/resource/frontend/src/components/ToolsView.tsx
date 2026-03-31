@@ -1185,9 +1185,9 @@ export function ToolsView() {
     () => loadFromStorage('selectedCampaignId', CAMPAIGN_CONFIGS[0].id) as CampaignId,
   );
   const { thresholds } = useThresholds();
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!parsedData.outreachData);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<OutreachData | null>(null);
+  const [data, setData] = useState<OutreachData | null>(() => parsedData.outreachData ?? null);
 
   const [selectedChannel, setSelectedChannel] = useState(() =>
     loadFromStorage('selectedChannel', ''),
@@ -1405,6 +1405,7 @@ export function ToolsView() {
     if (!parsedData.outreachApiLoaded) {
       fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
         if (cancelled) return;
+        let finalData: OutreachData = apiData;
         setData((prev) => {
           if (!prev) {
             // No ZIP data yet — use API data entirely and restore defaults
@@ -1435,9 +1436,10 @@ export function ToolsView() {
               }
             }
           }
+          finalData = merged;
           return merged;
         });
-        dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
+        dispatch({ type: 'SET_PARSED_DATA', payload: { outreachData: finalData, outreachApiLoaded: true } });
         log(`API outreach data loaded: channels=${apiData.mailChannels?.length ?? 0}, apiUnusedCodeEnvs=${apiData.summary?.unusedCodeEnvCount ?? 0}, apiUnusedRecipients=${apiData.unusedCodeEnvRecipients?.length ?? 0}`);
       }).catch((err) => {
         if (cancelled) return;
@@ -1445,10 +1447,7 @@ export function ToolsView() {
         log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
       });
     }
-    return () => {
-      cancelled = true;
-      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: false } });
-    };
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
