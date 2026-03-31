@@ -1177,12 +1177,13 @@ function getSummaryCount(data: OutreachData, config: CampaignConfig): number {
 // ── Main component ──
 
 export function ToolsView() {
-  const { dispatch, state, setOutreachCampaignId, setOutreachSidebarItems } = useDiag();
+  const { dispatch, state } = useDiag();
   const { ultraWideEnabled } = useUltraWideLayout();
   const previewModal = useModal();
   const { parsedData, activePage } = state;
-  const selectedCampaignId = state.outreachCampaignId;
-  const setSelectedCampaignId = setOutreachCampaignId;
+  const [selectedCampaignId, setSelectedCampaignId] = useState<CampaignId>(
+    () => loadFromStorage('selectedCampaignId', CAMPAIGN_CONFIGS[0].id) as CampaignId,
+  );
   const { thresholds } = useThresholds();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1223,7 +1224,9 @@ export function ToolsView() {
   const [exemptions, setExemptions] = useState<Map<CampaignId, Map<string, number>>>(new Map());
   const exemptionsRef = useRef(exemptions);
   exemptionsRef.current = exemptions;
-  // selectedCampaignId is now managed via DiagContext (outreachCampaignId)
+  useEffect(() => {
+    saveToStorage('selectedCampaignId', selectedCampaignId);
+  }, [selectedCampaignId]);
 
   const log = useCallback(
     (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
@@ -1398,46 +1401,54 @@ export function ToolsView() {
   // Effect 2: Fetch API outreach data in background — triggers server-side tracking ingest
   // and enriches data with real mail channels. Skipped if app-level loader already fetched.
   useEffect(() => {
-    if (parsedData.outreachApiLoaded) return;
-    fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
-      setData((prev) => {
-        if (!prev) {
-          // No ZIP data yet — use API data entirely and restore defaults
-          restoreFromSource(apiData);
-          setIsLoading(false);
-          return apiData;
-        }
-        // Merge: keep ZIP-derived recipients (richer), take API mail channels + templates.
-        // For API-only campaigns (ones the local seed can't compute), pull in API recipients and counts.
-        const merged: OutreachData = {
-          ...prev,
-          mailChannels: apiData.mailChannels ?? prev.mailChannels,
-          templates: apiData.templates ?? prev.templates,
-          summary: { ...prev.summary },
-        };
-        // Backfill API-only recipient arrays and summary counts
-        for (const config of CAMPAIGN_CONFIGS) {
-          const rKey = config.recipientsKey as keyof OutreachData;
-          const sKey = config.summaryKey as keyof OutreachData['summary'];
-          const localRecipients = (prev as unknown as Record<string, unknown>)[rKey] as OutreachRecipient[] | undefined;
-          const apiRecipients = (apiData as unknown as Record<string, unknown>)[rKey] as OutreachRecipient[] | undefined;
-          // If local has no recipients but API does, backfill
-          if ((!localRecipients || localRecipients.length === 0) && apiRecipients && apiRecipients.length > 0) {
-            (merged as unknown as Record<string, unknown>)[rKey] = apiRecipients;
-            const apiCount = (apiData.summary as Record<string, unknown>)[sKey];
-            if (apiCount != null) {
-              (merged.summary as Record<string, unknown>)[sKey] = apiCount;
+    let cancelled = false;
+    if (!parsedData.outreachApiLoaded) {
+      fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
+        if (cancelled) return;
+        setData((prev) => {
+          if (!prev) {
+            // No ZIP data yet — use API data entirely and restore defaults
+            restoreFromSource(apiData);
+            setIsLoading(false);
+            return apiData;
+          }
+          // Merge: keep ZIP-derived recipients (richer), take API mail channels + templates.
+          // For API-only campaigns (ones the local seed can't compute), pull in API recipients and counts.
+          const merged: OutreachData = {
+            ...prev,
+            mailChannels: apiData.mailChannels ?? prev.mailChannels,
+            templates: apiData.templates ?? prev.templates,
+            summary: { ...prev.summary },
+          };
+          // Backfill API-only recipient arrays and summary counts
+          for (const config of CAMPAIGN_CONFIGS) {
+            const rKey = config.recipientsKey as keyof OutreachData;
+            const sKey = config.summaryKey as keyof OutreachData['summary'];
+            const localRecipients = (prev as unknown as Record<string, unknown>)[rKey] as OutreachRecipient[] | undefined;
+            const apiRecipients = (apiData as unknown as Record<string, unknown>)[rKey] as OutreachRecipient[] | undefined;
+            // If local has no recipients but API does, backfill
+            if ((!localRecipients || localRecipients.length === 0) && apiRecipients && apiRecipients.length > 0) {
+              (merged as unknown as Record<string, unknown>)[rKey] = apiRecipients;
+              const apiCount = (apiData.summary as Record<string, unknown>)[sKey];
+              if (apiCount != null) {
+                (merged.summary as Record<string, unknown>)[sKey] = apiCount;
+              }
             }
           }
-        }
-        return merged;
+          return merged;
+        });
+        dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
+        log(`API outreach data loaded: channels=${apiData.mailChannels?.length ?? 0}, apiUnusedCodeEnvs=${apiData.summary?.unusedCodeEnvCount ?? 0}, apiUnusedRecipients=${apiData.unusedCodeEnvRecipients?.length ?? 0}`);
+      }).catch((err) => {
+        if (cancelled) return;
+        dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
+        log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
       });
-      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
-      log(`API outreach data loaded: channels=${apiData.mailChannels?.length ?? 0}, apiUnusedCodeEnvs=${apiData.summary?.unusedCodeEnvCount ?? 0}, apiUnusedRecipients=${apiData.unusedCodeEnvRecipients?.length ?? 0}`);
-    }).catch((err) => {
-      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } });
-      log(`API outreach data fetch failed (non-critical): ${String(err)}`, 'error');
-    });
+    }
+    return () => {
+      cancelled = true;
+      dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: false } });
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1752,20 +1763,6 @@ export function ToolsView() {
     });
   }, [data, disabledCampaigns, exemptions]);
 
-  // Sync sidebar items to context for the Sidebar component
-  useEffect(() => {
-    if (campaignSidebarItems.length > 0) {
-      setOutreachSidebarItems(
-        campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => ({
-          id: config.id,
-          title: config.title,
-          count: recipientCount,
-          isDisabled,
-        })),
-      );
-    }
-  }, [campaignSidebarItems, setOutreachSidebarItems]);
-
   // Selected campaign detail
   const selectedConfig = useMemo(
     () => CAMPAIGN_CONFIGS.find((c) => c.id === selectedCampaignId) ?? CAMPAIGN_CONFIGS[0],
@@ -1866,44 +1863,98 @@ export function ToolsView() {
                   </section>
                 )}
 
-                {/* Campaign detail layout */}
-                <div className="flex flex-col gap-4 flex-1 min-h-0">
-                  {/* Mobile: horizontal scrollable tab bar (hidden on desktop where app sidebar handles it) */}
-                  <div className="flex lg:hidden gap-2 overflow-x-auto pb-2">
-                    {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
+                {/* Sidebar + Detail layout */}
+                <div className="flex flex-col lg:flex-row gap-4 flex-1 min-h-0">
+                  {/* Campaign sidebar - vertical on lg+, horizontal tabs below lg */}
+                  <aside className="lg:w-64 shrink-0 lg:sticky lg:top-4 lg:self-start">
+                    {/* Mobile: horizontal scrollable tab bar */}
+                    <div className="flex lg:hidden gap-2 overflow-x-auto pb-2">
+                      {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
+                        <button
+                          key={config.id}
+                          onClick={() => setSelectedCampaignId(config.id)}
+                          className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                            selectedCampaignId === config.id
+                              ? 'bg-[var(--accent-muted)] text-[var(--accent)] border-[var(--accent)]'
+                              : 'bg-[var(--bg-glass)] text-[var(--text-secondary)] border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]'
+                          }`}
+                        >
+                          {config.title}
+                          {!isDisabled && recipientCount > 0 && (
+                            <span className="ml-1.5 font-mono">{recipientCount}</span>
+                          )}
+                          {isDisabled && (
+                            <span className="ml-1.5 text-amber-400">Off</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Mobile: Send All below tab bar */}
+                    <div className="flex lg:hidden items-center gap-3 mt-2">
                       <button
-                        key={config.id}
-                        onClick={() => setSelectedCampaignId(config.id)}
-                        className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                          selectedCampaignId === config.id
-                            ? 'bg-[var(--accent-muted)] text-[var(--accent)] border-[var(--accent)]'
-                            : 'bg-[var(--bg-glass)] text-[var(--text-secondary)] border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]'
-                        }`}
+                        onClick={() => setShowSendAllConfirm(true)}
+                        disabled={sendAllLoading || previewLoading || !data}
+                        data-testid="send-all-campaigns-mobile"
+                        className="px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
                       >
-                        {config.title}
-                        {!isDisabled && recipientCount > 0 && (
-                          <span className="ml-1.5 font-mono">{recipientCount}</span>
-                        )}
-                        {isDisabled && (
-                          <span className="ml-1.5 text-amber-400">Off</span>
-                        )}
+                        {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
                       </button>
-                    ))}
-                  </div>
-                  {/* Mobile: Send All below tab bar */}
-                  <div className="flex lg:hidden items-center gap-3">
-                    <button
-                      onClick={() => setShowSendAllConfirm(true)}
-                      disabled={sendAllLoading || previewLoading || !data}
-                      data-testid="send-all-campaigns-mobile"
-                      className="px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
-                    >
-                      {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
-                    </button>
-                    {sendAllStatus && !sendAllLoading && (
-                      <span className="text-sm text-[var(--text-secondary)]">{sendAllStatus}</span>
-                    )}
-                  </div>
+                      {sendAllStatus && !sendAllLoading && (
+                        <span className="text-sm text-[var(--text-secondary)]">{sendAllStatus}</span>
+                      )}
+                    </div>
+
+                    {/* Desktop: vertical sidebar */}
+                    <div className="hidden lg:flex flex-col glass-card p-2">
+                      <nav className="flex-1 flex flex-col gap-0.5">
+                        {campaignSidebarItems.map(({ config, recipientCount, isDisabled }) => (
+                          <button
+                            key={config.id}
+                            onClick={() => setSelectedCampaignId(config.id)}
+                            className={`relative w-full flex items-center gap-3 px-2.5 py-1.5 rounded-md text-left text-sm transition-colors ${
+                              selectedCampaignId === config.id
+                                ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
+                                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+                            }`}
+                          >
+                            {selectedCampaignId === config.id && (
+                              <motion.div
+                                layoutId="outreach-sidebar-active"
+                                className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)]"
+                                transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                              />
+                            )}
+                            <span className="flex-1 truncate">{config.title}</span>
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              {isDisabled && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
+                                  Off
+                                </span>
+                              )}
+                              {!isDisabled && recipientCount > 0 && (
+                                <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
+                                  {recipientCount}
+                                </span>
+                              )}
+                            </span>
+                          </button>
+                        ))}
+                      </nav>
+                      <div className="pt-2 border-t border-[var(--border-default)]">
+                        <button
+                          onClick={() => setShowSendAllConfirm(true)}
+                          disabled={sendAllLoading || previewLoading || !data}
+                          data-testid="send-all-campaigns"
+                          className="w-full px-4 py-2 rounded btn-primary disabled:opacity-50 text-sm font-medium"
+                        >
+                          {sendAllLoading ? (sendAllStatus ?? 'Sending\u2026') : 'Send All Campaigns'}
+                        </button>
+                        {sendAllStatus && !sendAllLoading && (
+                          <div className="text-xs text-[var(--text-secondary)] mt-1 text-center">{sendAllStatus}</div>
+                        )}
+                      </div>
+                    </div>
+                  </aside>
 
                   {/* Detail area */}
                   <div className="flex-1 min-w-0 flex flex-col">

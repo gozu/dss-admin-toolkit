@@ -199,13 +199,6 @@ export type CampaignId =
   | 'inactive_project'
   | 'unused_code_env';
 
-export interface OutreachSidebarItem {
-  id: CampaignId;
-  title: string;
-  count: number;
-  isDisabled: boolean;
-}
-
 export interface OutreachRecipient {
   recipientKey: string;
   owner: string;
@@ -846,8 +839,7 @@ export interface DiagStateWithComparison extends DiagState {
   mode: AppMode;
   activePage: PageId;
   comparison: ComparisonState;
-  outreachCampaignId: CampaignId;
-  outreachSidebarItems: OutreachSidebarItem[];
+
 }
 
 // New actions for comparison
@@ -862,9 +854,7 @@ export type ComparisonAction =
       type: 'SET_COMPARISON_PROCESSING';
       payload: { slot: 'before' | 'after'; isProcessing: boolean };
     }
-  | { type: 'RESET_COMPARISON' }
-  | { type: 'SET_OUTREACH_CAMPAIGN'; payload: CampaignId }
-  | { type: 'SET_OUTREACH_SIDEBAR'; payload: OutreachSidebarItem[] };
+  | { type: 'RESET_COMPARISON' };
 
 // Combined action type
 export type DiagActionWithComparison = DiagAction | ComparisonAction;

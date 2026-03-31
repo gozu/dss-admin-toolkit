@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
-import { CAMPAIGN_CONFIGS } from '../ToolsView';
+
 import { getPageAvailability, type PageAvailability } from '../../utils/pageAvailability';
 
 /* ------------------------------------------------------------------ */
@@ -231,9 +231,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
-  const { state, setActivePage, addDebugLog, setOutreachCampaignId } = useDiag();
-  const { activePage, parsedData, outreachCampaignId, outreachSidebarItems } = state;
-  const isOutreach = activePage === 'outreach';
+  const { state, setActivePage, addDebugLog } = useDiag();
+  const { activePage, parsedData } = state;
   const dataReady = !!parsedData.dataReady;
 
   const [statusPhase, setStatusPhase] = useState<'loading' | 'complete' | 'refresh'>(
@@ -447,81 +446,7 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0">
-        {isOutreach ? (
-          <>
-            {/* Back button */}
-            <button
-              type="button"
-              onClick={() => {
-                addDebugLog('Navigate: outreach → summary (back)', 'navigation');
-                setActivePage('summary');
-              }}
-              className={`flex items-center gap-2 w-full rounded-md px-2.5 py-1.5 mb-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors ${collapsed ? 'justify-center' : ''}`}
-              title={collapsed ? 'Back' : undefined}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
-              </svg>
-              {!collapsed && <span>Back</span>}
-            </button>
-            <div className="mx-1 border-t border-[var(--border-default)] mb-2" />
-            {!collapsed && (
-              <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
-                Outreach
-              </div>
-            )}
-            <div className="flex flex-col gap-0.5">
-              {(outreachSidebarItems.length > 0
-                ? outreachSidebarItems
-                : CAMPAIGN_CONFIGS.map((c) => ({ id: c.id, title: c.title, count: 0, isDisabled: false }))
-              ).map((item) => {
-                const isActive = outreachCampaignId === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      addDebugLog(`Outreach campaign: ${item.title}`, 'navigation');
-                      setOutreachCampaignId(item.id);
-                    }}
-                    title={collapsed ? item.title : undefined}
-                    className={`relative flex items-center gap-3 w-full rounded-md px-2.5 py-1.5 text-sm transition-all duration-200 ${
-                      isActive
-                        ? 'bg-[var(--accent-muted)] text-[var(--accent)]'
-                        : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-                    } ${collapsed ? 'justify-center px-0' : ''}`}
-                  >
-                    {isActive && (
-                      <motion.div
-                        layoutId="sidebar-active"
-                        className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r bg-[var(--accent)]"
-                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                      />
-                    )}
-                    <span className="flex-shrink-0">{icons.outreach}</span>
-                    {!collapsed && (
-                      <>
-                        <span className="flex-1 text-left whitespace-nowrap">{item.title}</span>
-                        {item.isDisabled && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
-                            Off
-                          </span>
-                        )}
-                        {!item.isDisabled && item.count > 0 && (
-                          <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
-                            {item.count}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        ) : (
-          NAV_SECTIONS.map((section, idx) => renderSection(section, idx))
-        )}
+        {NAV_SECTIONS.map((section, idx) => renderSection(section, idx))}
       </nav>
 
       {/* Contact author */}

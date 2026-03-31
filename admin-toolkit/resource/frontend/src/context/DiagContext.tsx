@@ -16,8 +16,6 @@ import type {
   DebugLevel,
   LayoutMode,
   ApiDirTreeState,
-  CampaignId,
-  OutreachSidebarItem,
 } from '../types';
 
 const DEFAULT_DSSHOME = 'data/dataiku/dss_data/';
@@ -69,8 +67,6 @@ function buildInitialState(layoutMode: LayoutMode): DiagStateWithComparison {
     mode: 'single',
     activePage: 'summary' as PageId,
     comparison: initialComparisonState,
-    outreachCampaignId: 'project' as CampaignId,
-    outreachSidebarItems: [],
   };
 }
 
@@ -218,10 +214,6 @@ function diagReducer(
       return { ...state, mode: action.payload };
     case 'SET_ACTIVE_PAGE':
       return { ...state, activePage: action.payload };
-    case 'SET_OUTREACH_CAMPAIGN':
-      return { ...state, outreachCampaignId: action.payload };
-    case 'SET_OUTREACH_SIDEBAR':
-      return { ...state, outreachSidebarItems: action.payload };
     case 'SET_COMPARISON_FILE':
       return {
         ...state,
@@ -302,8 +294,6 @@ interface DiagContextValue {
   setComparisonViewMode: (mode: ComparisonViewMode) => void;
   setComparisonProcessing: (slot: 'before' | 'after', isProcessing: boolean) => void;
   resetComparison: () => void;
-  setOutreachCampaignId: (id: CampaignId) => void;
-  setOutreachSidebarItems: (items: OutreachSidebarItem[]) => void;
 }
 
 const DiagContext = createContext<DiagContextValue | undefined>(undefined);
@@ -345,8 +335,6 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   const setComparisonProcessing = useCallback((slot: 'before' | 'after', isProcessing: boolean) =>
     dispatch({ type: 'SET_COMPARISON_PROCESSING', payload: { slot, isProcessing } }), [dispatch]);
   const resetComparison = useCallback(() => dispatch({ type: 'RESET_COMPARISON' }), [dispatch]);
-  const setOutreachCampaignId = useCallback((id: CampaignId) => dispatch({ type: 'SET_OUTREACH_CAMPAIGN', payload: id }), [dispatch]);
-  const setOutreachSidebarItems = useCallback((items: OutreachSidebarItem[]) => dispatch({ type: 'SET_OUTREACH_SIDEBAR', payload: items }), [dispatch]);
 
   const value = useMemo<DiagContextValue>(() => ({
     state, dispatch,
@@ -355,7 +343,6 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     addDebugLog, clearDebugLogs, reset,
     setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
     setComparisonViewMode, setComparisonProcessing, resetComparison,
-    setOutreachCampaignId, setOutreachSidebarItems,
   }), [
     state, dispatch,
     setLoading, setError, setExtractedFiles, setParsedData, setActiveFilter, setLayoutMode,
@@ -363,7 +350,6 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     addDebugLog, clearDebugLogs, reset,
     setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
     setComparisonViewMode, setComparisonProcessing, resetComparison,
-    setOutreachCampaignId, setOutreachSidebarItems,
   ]);
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;
