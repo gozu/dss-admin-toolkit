@@ -1428,8 +1428,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         }
         log('Live data load completed');
         deferredTails.push(
-          fetchJson('/api/tools/outreach-data')
-            .finally(() => dispatch({ type: 'SET_PARSED_DATA', payload: { outreachApiLoaded: true } })),
+          fetchJson('/api/tools/outreach-data'),
         );
         if (deferredTails.length > 0) {
           log(`Awaiting ${deferredTails.length} deferred tail requests`);
