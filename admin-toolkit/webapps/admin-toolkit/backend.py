@@ -25,6 +25,15 @@ app = Flask(__name__)
 # Suppress noisy per-request and per-project scan logging
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
+class _SqlNoiseFilter(logging.Filter):
+    """Drop repetitive Dataiku SQLExecutor log lines."""
+    _PATTERNS = ("SQL query reader", "SQL query response")
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(p in msg for p in self._PATTERNS)
+
+logging.getLogger().addFilter(_SqlNoiseFilter())
+
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 _SHARED_USAGE_SCANS: Dict[str, Dict[str, Any]] = {}

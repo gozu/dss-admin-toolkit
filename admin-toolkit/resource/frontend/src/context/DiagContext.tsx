@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import React, { createContext, useContext, useReducer } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useReducer } from 'react';
 import type {
   ExtractedFiles,
   ParsedData,
@@ -313,48 +313,58 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     buildInitialState(loadLayoutMode()),
   );
 
-  const value: DiagContextValue = {
-    state,
-    dispatch,
-    // Original methods
-    setLoading: (loading) => dispatch({ type: 'SET_LOADING', payload: loading }),
-    setError: (error) => dispatch({ type: 'SET_ERROR', payload: error }),
-    setExtractedFiles: (files) => dispatch({ type: 'SET_EXTRACTED_FILES', payload: files }),
-    setParsedData: (data) => dispatch({ type: 'SET_PARSED_DATA', payload: data }),
-    setActiveFilter: (filter) => dispatch({ type: 'SET_ACTIVE_FILTER', payload: filter }),
-    setLayoutMode: (mode) => {
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, mode);
-      }
-      dispatch({ type: 'SET_LAYOUT_MODE', payload: mode });
-    },
-    setDiagType: (type) => dispatch({ type: 'SET_DIAG_TYPE', payload: type }),
-    setRootFiles: (files) => dispatch({ type: 'SET_ROOT_FILES', payload: files }),
-    setProjectFiles: (files) => dispatch({ type: 'SET_PROJECT_FILES', payload: files }),
-    setDsshome: (path) => dispatch({ type: 'SET_DSSHOME', payload: path }),
-    setOriginalFile: (file) => dispatch({ type: 'SET_ORIGINAL_FILE', payload: file }),
-    setDataSource: (source) => dispatch({ type: 'SET_DATA_SOURCE', payload: source }),
-    addDebugLog: (message, scope, level = 'info') =>
-      dispatch({
-        type: 'ADD_DEBUG_LOG',
-        payload: { message, scope, level },
-      }),
-    clearDebugLogs: () => dispatch({ type: 'CLEAR_DEBUG_LOGS' }),
-    reset: () => dispatch({ type: 'RESET' }),
-    // New comparison methods
-    setMode: (mode) => dispatch({ type: 'SET_MODE', payload: mode }),
-    setActivePage: (page) => dispatch({ type: 'SET_ACTIVE_PAGE', payload: page }),
-    setComparisonFile: (slot, file) =>
-      dispatch({ type: 'SET_COMPARISON_FILE', payload: { slot, file } }),
-    clearComparisonFile: (slot) => dispatch({ type: 'CLEAR_COMPARISON_FILE', payload: slot }),
-    setComparisonResult: (result) => dispatch({ type: 'SET_COMPARISON_RESULT', payload: result }),
-    setComparisonViewMode: (mode) => dispatch({ type: 'SET_COMPARISON_VIEW_MODE', payload: mode }),
-    setComparisonProcessing: (slot, isProcessing) =>
-      dispatch({ type: 'SET_COMPARISON_PROCESSING', payload: { slot, isProcessing } }),
-    resetComparison: () => dispatch({ type: 'RESET_COMPARISON' }),
-    setOutreachCampaignId: (id) => dispatch({ type: 'SET_OUTREACH_CAMPAIGN', payload: id }),
-    setOutreachSidebarItems: (items) => dispatch({ type: 'SET_OUTREACH_SIDEBAR', payload: items }),
-  };
+  // Stable callbacks — dispatch from useReducer is identity-stable
+  const setLoading = useCallback((loading: boolean) => dispatch({ type: 'SET_LOADING', payload: loading }), [dispatch]);
+  const setError = useCallback((error: string | null) => dispatch({ type: 'SET_ERROR', payload: error }), [dispatch]);
+  const setExtractedFiles = useCallback((files: ExtractedFiles) => dispatch({ type: 'SET_EXTRACTED_FILES', payload: files }), [dispatch]);
+  const setParsedData = useCallback((data: Partial<ParsedData>) => dispatch({ type: 'SET_PARSED_DATA', payload: data }), [dispatch]);
+  const setActiveFilter = useCallback((filter: string) => dispatch({ type: 'SET_ACTIVE_FILTER', payload: filter }), [dispatch]);
+  const setLayoutMode = useCallback((mode: LayoutMode) => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(LAYOUT_MODE_STORAGE_KEY, mode);
+    }
+    dispatch({ type: 'SET_LAYOUT_MODE', payload: mode });
+  }, [dispatch]);
+  const setDiagType = useCallback((type: DiagType) => dispatch({ type: 'SET_DIAG_TYPE', payload: type }), [dispatch]);
+  const setRootFiles = useCallback((files: string[]) => dispatch({ type: 'SET_ROOT_FILES', payload: files }), [dispatch]);
+  const setProjectFiles = useCallback((files: string[]) => dispatch({ type: 'SET_PROJECT_FILES', payload: files }), [dispatch]);
+  const setDsshome = useCallback((path: string) => dispatch({ type: 'SET_DSSHOME', payload: path }), [dispatch]);
+  const setOriginalFile = useCallback((file: File | null) => dispatch({ type: 'SET_ORIGINAL_FILE', payload: file }), [dispatch]);
+  const setDataSource = useCallback((source: DataSource) => dispatch({ type: 'SET_DATA_SOURCE', payload: source }), [dispatch]);
+  const addDebugLog = useCallback((message: string, scope?: string, level: DebugLevel = 'info') =>
+    dispatch({ type: 'ADD_DEBUG_LOG', payload: { message, scope, level } }), [dispatch]);
+  const clearDebugLogs = useCallback(() => dispatch({ type: 'CLEAR_DEBUG_LOGS' }), [dispatch]);
+  const reset = useCallback(() => dispatch({ type: 'RESET' }), [dispatch]);
+  const setMode = useCallback((mode: AppMode) => dispatch({ type: 'SET_MODE', payload: mode }), [dispatch]);
+  const setActivePage = useCallback((page: PageId) => dispatch({ type: 'SET_ACTIVE_PAGE', payload: page }), [dispatch]);
+  const setComparisonFile = useCallback((slot: 'before' | 'after', file: DiagFile) =>
+    dispatch({ type: 'SET_COMPARISON_FILE', payload: { slot, file } }), [dispatch]);
+  const clearComparisonFile = useCallback((slot: 'before' | 'after') => dispatch({ type: 'CLEAR_COMPARISON_FILE', payload: slot }), [dispatch]);
+  const setComparisonResult = useCallback((result: ComparisonResult) => dispatch({ type: 'SET_COMPARISON_RESULT', payload: result }), [dispatch]);
+  const setComparisonViewMode = useCallback((mode: ComparisonViewMode) => dispatch({ type: 'SET_COMPARISON_VIEW_MODE', payload: mode }), [dispatch]);
+  const setComparisonProcessing = useCallback((slot: 'before' | 'after', isProcessing: boolean) =>
+    dispatch({ type: 'SET_COMPARISON_PROCESSING', payload: { slot, isProcessing } }), [dispatch]);
+  const resetComparison = useCallback(() => dispatch({ type: 'RESET_COMPARISON' }), [dispatch]);
+  const setOutreachCampaignId = useCallback((id: CampaignId) => dispatch({ type: 'SET_OUTREACH_CAMPAIGN', payload: id }), [dispatch]);
+  const setOutreachSidebarItems = useCallback((items: OutreachSidebarItem[]) => dispatch({ type: 'SET_OUTREACH_SIDEBAR', payload: items }), [dispatch]);
+
+  const value = useMemo<DiagContextValue>(() => ({
+    state, dispatch,
+    setLoading, setError, setExtractedFiles, setParsedData, setActiveFilter, setLayoutMode,
+    setDiagType, setRootFiles, setProjectFiles, setDsshome, setOriginalFile, setDataSource,
+    addDebugLog, clearDebugLogs, reset,
+    setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
+    setComparisonViewMode, setComparisonProcessing, resetComparison,
+    setOutreachCampaignId, setOutreachSidebarItems,
+  }), [
+    state, dispatch,
+    setLoading, setError, setExtractedFiles, setParsedData, setActiveFilter, setLayoutMode,
+    setDiagType, setRootFiles, setProjectFiles, setDsshome, setOriginalFile, setDataSource,
+    addDebugLog, clearDebugLogs, reset,
+    setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
+    setComparisonViewMode, setComparisonProcessing, resetComparison,
+    setOutreachCampaignId, setOutreachSidebarItems,
+  ]);
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;
 }
