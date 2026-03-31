@@ -23,9 +23,7 @@ interface DbOverview {
   canWrite: boolean;
   queryMethod: string;
   warnings?: string[];
-  needsPassword?: boolean;
   driverLog?: string[];
-  reason?: string;
 }
 
 interface TableInfo {
@@ -112,7 +110,7 @@ function TableRow({ t, overview, actionLoading, handleAction }: {
   t: TableInfo;
   overview: DbOverview | null;
   actionLoading: Record<string, string>;
-  handleAction: (action: 'vacuum' | 'analyze', tableName: string, password?: string) => void;
+  handleAction: (action: 'vacuum' | 'analyze', tableName: string) => void;
 }) {
   return (
     <tr className="border-b border-[var(--border-default)]/30 hover:bg-[var(--bg-glass-hover)]">
@@ -177,9 +175,6 @@ export function DbHealthPage() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
-  // Password state (for psql fallback when psycopg2 unavailable)
-  const [dbPassword, setDbPassword] = useState<string>('');
-
   // Action state
   const [actionLoading, setActionLoading] = useState<Record<string, string>>({});
 
@@ -190,7 +185,7 @@ export function DbHealthPage() {
   // Load connections on mount
   useEffect(() => {
     setConnLoading(true);
-    fetchJson<{ connections: PgConnection[]; configuredConnection?: string; hasConfiguredPassword?: boolean }>('/api/tools/db-health/connections')
+    fetchJson<{ connections: PgConnection[]; configuredConnection?: string }>('/api/tools/db-health/connections')
       .then((data) => {
         setConnections(data.connections || []);
         if (data.connections?.length) {
@@ -204,37 +199,20 @@ export function DbHealthPage() {
       .finally(() => setConnLoading(false));
   }, []);
 
-  // Load data when connection or password changes
+  // Load data when connection changes
   useEffect(() => {
     if (!selectedConn) return;
     setDataLoading(true);
     setDataError(null);
     setWarnings([]);
     const q = encodeURIComponent(selectedConn);
-    const pw = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
 
-    // First check overview — it may return needsPassword
-    fetchJson<DbOverview>(`/api/tools/db-health/overview?connection=${q}${pw}`)
+    fetchJson<DbOverview>(`/api/tools/db-health/overview?connection=${q}`)
       .then((ov) => {
-        if (ov.needsPassword) {
-          const userPw = window.prompt(
-            `${ov.reason || 'psycopg2 not available'}\n\nEnter the unencrypted PostgreSQL password:`,
-          );
-          if (userPw) {
-            setDbPassword(userPw);
-            // Re-fetch will trigger via the dbPassword dependency
-          } else {
-            setDataError('Password required — psycopg2 could not be installed.');
-          }
-          setDataLoading(false);
-          return;
-        }
         setOverview(ov);
-        // Overview succeeded — fetch tables and per-project in parallel
-        const pw2 = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
         return Promise.all([
-          fetchJson<{ tables: TableInfo[]; warnings?: string[] }>(`/api/tools/db-health/tables?connection=${q}${pw2}`),
-          fetchJson<PerProjectResponse>(`/api/tools/db-health/per-project?connection=${q}${pw2}`),
+          fetchJson<{ tables: TableInfo[]; warnings?: string[] }>(`/api/tools/db-health/tables?connection=${q}`),
+          fetchJson<PerProjectResponse>(`/api/tools/db-health/per-project?connection=${q}`),
         ]).then(([tb, pp]) => {
           setTables(tb.tables || []);
           setPerProject(pp);
@@ -244,7 +222,7 @@ export function DbHealthPage() {
       })
       .catch((err) => setDataError(String(err)))
       .finally(() => setDataLoading(false));
-  }, [selectedConn, dbPassword]);
+  }, [selectedConn]);
 
   // Sort tables
   const sortedTables = useMemo(() => {
@@ -273,16 +251,14 @@ export function DbHealthPage() {
   }, []);
 
   // Actions
-  const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string, password?: string) => {
+  const handleAction = useCallback(async (action: 'vacuum' | 'analyze', tableName: string) => {
     if (!selectedConn) return;
-    const effectivePw = password ?? dbPassword;
 
     const key = `${action}-${tableName}`;
     setActionLoading((prev) => ({ ...prev, [key]: action }));
     try {
       const payload: Record<string, string> = { connection: selectedConn, table: tableName };
-      if (effectivePw) payload.password = effectivePw;
-      const res = await fetchJson<{ success?: boolean; error?: string; needsPassword?: boolean; reason?: string }>(
+      const res = await fetchJson<{ success?: boolean; error?: string }>(
         `/api/tools/db-health/${action}`,
         {
           method: 'POST',
@@ -290,23 +266,12 @@ export function DbHealthPage() {
           body: JSON.stringify(payload),
         },
       );
-      if (res.needsPassword) {
-        const pw = window.prompt(
-          `${res.reason || 'psycopg2 not available'}\n\nEnter the unencrypted PostgreSQL password:`,
-        );
-        if (pw) {
-          setDbPassword(pw);
-          setActionLoading((prev) => { const next = { ...prev }; delete next[key]; return next; });
-          return handleAction(action, tableName, pw);
-        }
-        alert(`${action.toUpperCase()} cancelled — password required.`);
-      } else if (res.error) {
+      if (res.error) {
         alert(`${action.toUpperCase()} failed: ${res.error}`);
       } else {
         // Refresh table data
         const q = encodeURIComponent(selectedConn);
-        const pw2 = effectivePw ? `&password=${encodeURIComponent(effectivePw)}` : '';
-        const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}${pw2}`);
+        const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}`);
         setTables(tb.tables || []);
       }
     } catch (err) {
@@ -318,7 +283,7 @@ export function DbHealthPage() {
         return next;
       });
     }
-  }, [selectedConn, dbPassword]);
+  }, [selectedConn]);
 
   // Per-project: split into main (>=5KB) and small (<5KB)
   const SMALL_PROJECT_THRESHOLD = 5 * 1024; // 5 KB
@@ -399,9 +364,7 @@ export function DbHealthPage() {
     for (const t of tables) {
       setBulkProgress(`${done + 1}/${total}: ${t.name}`);
       try {
-        const effectivePw = dbPassword;
         const payload: Record<string, string> = { connection: selectedConn, table: t.name };
-        if (effectivePw) payload.password = effectivePw;
         await fetchJson(`/api/tools/db-health/vacuum`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -417,10 +380,9 @@ export function DbHealthPage() {
     setBulkRunning(false);
     // Refresh table data
     const q = encodeURIComponent(selectedConn);
-    const pw = dbPassword ? `&password=${encodeURIComponent(dbPassword)}` : '';
-    const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}${pw}`);
+    const tb = await fetchJson<{ tables: TableInfo[] }>(`/api/tools/db-health/tables?connection=${q}`);
     setTables(tb.tables || []);
-  }, [selectedConn, tables, dbPassword]);
+  }, [selectedConn, tables]);
 
   return (
     <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col gap-4">
