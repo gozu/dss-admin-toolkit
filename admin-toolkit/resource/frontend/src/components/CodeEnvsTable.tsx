@@ -28,7 +28,7 @@ export function CodeEnvsTable() {
     });
   }, [rawCodeEnvs, codeEnvSizes]);
   const provisionalCodeEnvs = parsedData.provisionalCodeEnvs || [];
-  const loading = parsedData.analysisLoading;
+  const loading = parsedData.codeEnvsLoading;
   const isLoading = Boolean(loading?.active);
   const pythonVersionCounts = parsedData.pythonVersionCounts || {};
   const rVersionCounts = parsedData.rVersionCounts || {};

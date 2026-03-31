@@ -13,7 +13,6 @@ import type {
   ProvisionalCodeEnv,
   ProjectFootprintRow,
   PluginInfo,
-  CodeEnvCompareResult,
   OutreachData,
 } from '../types';
 import { fetchJson, fetchText } from '../utils/api';
@@ -849,11 +848,6 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               message: 'Code env analysis completed',
             });
             deferredTails.push(
-              fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
-                .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
-                .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } })),
-            );
-            deferredTails.push(
               fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
                 .then((r) => {
                   if (r?.sizes && typeof r.sizes === 'object') {
@@ -936,11 +930,6 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
               });
               deferredTails.push(
-                fetchJson<CodeEnvCompareResult>('/api/code-envs/compare')
-                  .then((r) => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: r } }))
-                  .catch(() => dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } })),
-              );
-              deferredTails.push(
                 fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
                   .then((r) => {
                     if (r?.sizes && typeof r.sizes === 'object') {
@@ -960,7 +949,6 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'error',
                 message: 'Code env analysis failed',
               });
-              dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvsCompare: null } });
             }
             log(`Failed /api/code-envs: ${settledError(codeEnvsRes)}`, 'warn');
           }

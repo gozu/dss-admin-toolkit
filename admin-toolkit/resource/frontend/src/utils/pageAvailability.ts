@@ -74,7 +74,7 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       return d.codeEnvSizes && Object.keys(d.codeEnvSizes).length > 0 ? 'ready' : 'partial';
     }
     case 'code-envs-comparison':
-      return d.codeEnvsCompare != null
+      return Array.isArray(d.codeEnvs) && d.codeEnvs.length > 0 && d.codeEnvsLoading?.active === false
         ? 'ready'
         : 'loading';
     case 'outreach':
