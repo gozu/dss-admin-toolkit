@@ -3205,6 +3205,16 @@ def _render_template_text(template: str, variables: Dict[str, str]) -> str:
     return out
 
 
+def _get_configured_mail_channel() -> str:
+    """Read the outreach_mail_channel plugin param (empty string if unset)."""
+    try:
+        raw = dataiku.api_client().get_plugin('admin-toolkit').get_settings().get_raw()
+        config = raw.get('config', {}) if isinstance(raw, dict) else {}
+        return (config.get('outreach_mail_channel') or '').strip()
+    except Exception:
+        return ''
+
+
 def _list_mail_channels(client: Any, diagnostics: Optional[List[str]] = None) -> List[Dict[str, str]]:
     diag = diagnostics if diagnostics is not None else []
     channels: List[Dict[str, str]] = []
@@ -6994,6 +7004,7 @@ def api_tools_outreach_data():
                 'oversharedProjectCount': overshared_project_count,
             },
             'mailChannels': mail_channels,
+            'configuredMailChannel': _get_configured_mail_channel(),
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
             'unhealthyProjects': unhealthy_projects,
             'unhealthyCodeEnvs': unhealthy_code_envs,
@@ -7307,10 +7318,12 @@ def api_tools_email_send():
         app.logger.warning("[tools] send failed: no DSS mail channel configured")
         return jsonify({'error': 'No DSS mail channel configured'}), 400
 
+    # Priority: request payload > plugin param > first available
+    effective_channel = requested_channel or _get_configured_mail_channel() or None
     selected = channels[0]
-    if requested_channel:
+    if effective_channel:
         for channel in channels:
-            if channel.get('id') == requested_channel:
+            if channel.get('id') == effective_channel:
                 selected = channel
                 break
     selected_id = str(selected.get('id') or '')

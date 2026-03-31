@@ -1189,20 +1189,10 @@ export function ToolsView() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<OutreachData | null>(() => parsedData.outreachData ?? null);
 
-  const [selectedChannel, setSelectedChannel] = useState(() =>
-    loadFromStorage('selectedChannel', ''),
-  );
   const mailChannels = data?.mailChannels ?? [];
-
-  useEffect(() => {
-    if (!selectedChannel && mailChannels.length > 0) {
-      setSelectedChannel(mailChannels[0].id);
-    }
-  }, [selectedChannel, mailChannels]);
-
-  useEffect(() => {
-    saveToStorage('selectedChannel', selectedChannel);
-  }, [selectedChannel]);
+  const selectedChannel = data?.configuredMailChannel
+    || mailChannels[0]?.id
+    || '';
 
   // Data-driven state: templates and selections keyed by campaign ID
   const [templates, setTemplates] = useState<Record<string, EmailTemplate>>(() =>

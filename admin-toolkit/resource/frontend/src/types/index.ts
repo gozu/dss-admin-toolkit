@@ -264,6 +264,7 @@ export interface OutreachData {
     unusedCodeEnvCount?: number;
   };
   mailChannels: MailChannel[];
+  configuredMailChannel?: string;
   templates: Record<CampaignId, { subject: string; body: string }>;
   unhealthyProjects: ProjectFootprintRow[];
   unhealthyCodeEnvs: CodeEnv[];
