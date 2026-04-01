@@ -7,7 +7,7 @@ import { exportReportAsHtml } from '../../utils/exportReport';
 import { extractAllCSS } from '../../utils/extractCSS';
 import { prepareReportData } from '../../utils/prepareReportData';
 import { useTheme } from '../../hooks/useTheme';
-import { getProgressMessage } from '../../utils/progressMessages';
+
 
 export function ReportPage() {
   const { state } = useDiag();
@@ -63,10 +63,22 @@ export function ReportPage() {
     }
   }, [logs]);
 
-  // Track phase changes in verbose log
+  // Track phase changes in verbose log (update last line in-place for chunk progress)
   useEffect(() => {
     if (phase) {
-      addLog(`Phase: ${phase}`);
+      const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+      const line = `[${ts}] Phase: ${phase}`;
+      if (phase.startsWith('Generating report')) {
+        // Update the last log line in-place instead of appending
+        setLogs((prev) => {
+          if (prev.length > 0 && prev[prev.length - 1].includes('Generating report')) {
+            return [...prev.slice(0, -1), line];
+          }
+          return [...prev, line];
+        });
+      } else {
+        addLog(`Phase: ${phase}`);
+      }
     }
   }, [phase, addLog]);
 
@@ -76,14 +88,6 @@ export function ReportPage() {
       addLog(`ERROR: ${error}`);
     }
   }, [error, addLog]);
-
-  // Escalating humor progress messages while LLM thinks
-  useEffect(() => {
-    if (status !== 'generating') return;
-    let n = 0;
-    const id = setInterval(() => addLog(getProgressMessage(n++)), 3000 + Math.random() * 4000);
-    return () => clearInterval(id);
-  }, [status, addLog]);
 
   // Elapsed timer during generation
   useEffect(() => {
