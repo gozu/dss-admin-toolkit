@@ -8875,9 +8875,25 @@ def api_report_generate():
             completion.with_message(message=_REPORT_SYSTEM_PROMPT, role='system')
             completion.with_message(message=user_message, role='user')
 
-            # Non-streamed call — JSON output cannot be progressively rendered
-            resp = completion.execute()
-            report_text = str(resp.text)
+            # Streamed call — avoids LLM Mesh gateway timeout (~263s)
+            report_parts = []
+            char_count = 0
+            for chunk in completion.execute_streamed():
+                if chunk.type == "footer":
+                    break
+                if chunk.type == "content" and chunk.text:
+                    report_parts.append(chunk.text)
+                    char_count += len(chunk.text)
+                    yield "event: chunk\ndata: %s\n\n" % json.dumps({
+                        "text": chunk.text,
+                        "totalChars": char_count,
+                    })
+                elif chunk.type == "event":
+                    yield "event: phase\ndata: %s\n\n" % json.dumps({
+                        "phase": "Thinking: %s" % (chunk.event_kind or "reasoning"),
+                    })
+
+            report_text = ''.join(report_parts)
 
             # Strip markdown fences if present
             import re

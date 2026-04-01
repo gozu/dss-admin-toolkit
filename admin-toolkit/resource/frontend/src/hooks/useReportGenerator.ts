@@ -144,6 +144,9 @@ export function useReportGenerator(): UseReportGeneratorReturn {
 
             if (eventType === 'phase') {
               setPhase(String(payload.phase || ''));
+            } else if (eventType === 'chunk') {
+              const totalChars = (payload.totalChars as number) || 0;
+              setPhase(`Generating report\u2026 (${totalChars.toLocaleString()} chars)`);
             } else if (eventType === 'done') {
               const jsonStr = stripMarkdownFences(String(payload.report || '{}'));
               try {
