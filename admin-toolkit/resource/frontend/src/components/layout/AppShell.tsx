@@ -11,6 +11,7 @@ import { SqliteWarningBanner } from '../SqliteWarningBanner';
 import { useReportGenerator } from '../../hooks/useReportGenerator';
 import { ReportOverlay } from '../ReportOverlay';
 import { SearchableCombobox } from '../SearchableCombobox';
+import { extractAllCSS } from '../../utils/extractCSS';
 
 const COLLAPSE_BREAKPOINT = 1280;
 const SIDEBAR_COLLAPSED = 56;
@@ -77,9 +78,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
         const overlay = document.querySelector('.report-overlay') as HTMLElement;
         if (overlay) {
           // Extract styles and clone DOM for new tab
-          const styleTags = Array.from(document.querySelectorAll('head style'));
-          let css = '';
-          for (const tag of styleTags) css += tag.textContent + '\n';
+          const css = extractAllCSS();
 
           const clone = overlay.cloneNode(true) as HTMLElement;
           // Set first slide active

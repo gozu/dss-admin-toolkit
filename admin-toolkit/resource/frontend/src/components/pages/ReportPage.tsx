@@ -4,6 +4,7 @@ import { useReportGenerator } from '../../hooks/useReportGenerator';
 import { SearchableCombobox } from '../SearchableCombobox';
 import { ReportOverlay } from '../ReportOverlay';
 import { exportReportAsHtml } from '../../utils/exportReport';
+import { extractAllCSS } from '../../utils/extractCSS';
 import { prepareReportData } from '../../utils/prepareReportData';
 import { useTheme } from '../../hooks/useTheme';
 import { getProgressMessage } from '../../utils/progressMessages';
@@ -128,9 +129,7 @@ export function ReportPage() {
       requestAnimationFrame(() => {
         const overlay = document.querySelector('.report-overlay') as HTMLElement;
         if (overlay) {
-          const styleTags = Array.from(document.querySelectorAll('head style'));
-          let css = '';
-          for (const tag of styleTags) css += tag.textContent + '\n';
+          const css = extractAllCSS();
 
           const clone = overlay.cloneNode(true) as HTMLElement;
           const slides = clone.querySelectorAll('[data-slide-index]');
@@ -162,15 +161,19 @@ export function ReportPage() {
   }, [reportData, openOverlay, closeOverlay, parsedData.company, theme]);
 
   const handleDownload = useCallback(() => {
-    // We need to briefly show the overlay to capture DOM, then export
+    // Briefly show the overlay to render the portal DOM, then export
     openOverlay();
-    // Wait for render, then export
     setTimeout(() => {
-      if (overlayRef.current) {
-        exportReportAsHtml(overlayRef.current, parsedData.company || 'unknown', theme);
+      try {
+        const overlay = document.querySelector('.report-overlay') as HTMLElement;
+        if (overlay) {
+          exportReportAsHtml(overlay, parsedData.company || 'unknown', theme);
+        }
+      } finally {
+        closeOverlay();
       }
     }, 500);
-  }, [openOverlay, parsedData.company, theme]);
+  }, [openOverlay, closeOverlay, parsedData.company, theme]);
 
   const formatElapsed = (ms: number) => {
     if (ms < 1000) return `${ms}ms`;

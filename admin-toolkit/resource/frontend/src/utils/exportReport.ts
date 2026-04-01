@@ -1,18 +1,16 @@
+import { extractAllCSS } from './extractCSS';
+
 /**
  * Export the report overlay as a self-contained HTML file.
- * Uses style-tag extraction (not per-element getComputedStyle) for compact output.
+ * Uses CSSOM extraction to capture Vite-bundled and Tailwind styles.
  */
 export async function exportReportAsHtml(
   overlayElement: HTMLElement,
   company: string,
   theme: string,
 ): Promise<void> {
-  // 1. Extract all <style> tags from document.head
-  const styleTags = Array.from(document.querySelectorAll('head style'));
-  let combinedCSS = '';
-  for (const tag of styleTags) {
-    combinedCSS += tag.textContent + '\n';
-  }
+  // 1. Extract all active CSS via CSSOM
+  const combinedCSS = extractAllCSS();
 
   // 2. Clone the overlay DOM
   const clone = overlayElement.cloneNode(true) as HTMLElement;
@@ -91,9 +89,9 @@ export async function exportReportAsHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Health Check - ${company} - ${date}</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&family=Roboto:wght@400;500;700&display=swap');
 ${combinedCSS}
-body { margin: 0; padding: 0; overflow: hidden; font-family: 'Inter', system-ui, sans-serif; }
+body { margin: 0; padding: 0; overflow: hidden; font-family: 'Roboto', sans-serif; }
 </style>
 </head>
 <body>
