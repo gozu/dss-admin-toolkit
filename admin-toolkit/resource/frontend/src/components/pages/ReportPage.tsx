@@ -132,6 +132,20 @@ export function ReportPage() {
           const css = extractAllCSS();
 
           const clone = overlay.cloneNode(true) as HTMLElement;
+          // Convert images to base64 for the blob context
+          const clonedImgs = clone.querySelectorAll('img');
+          const originalImgs = overlay.querySelectorAll('img');
+          for (let i = 0; i < clonedImgs.length; i++) {
+            const orig = originalImgs[i] as HTMLImageElement | undefined;
+            if (orig && orig.complete && orig.naturalWidth > 0) {
+              try {
+                const c = document.createElement('canvas');
+                c.width = orig.naturalWidth; c.height = orig.naturalHeight;
+                const ctx = c.getContext('2d');
+                if (ctx) { ctx.drawImage(orig, 0, 0); clonedImgs[i].src = c.toDataURL('image/png'); }
+              } catch { /* CORS */ }
+            }
+          }
           const slides = clone.querySelectorAll('[data-slide-index]');
           slides.forEach((s, i) => {
             (s as HTMLElement).classList.remove('active');

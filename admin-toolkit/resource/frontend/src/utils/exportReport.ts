@@ -15,10 +15,11 @@ export async function exportReportAsHtml(
   // 2. Clone the overlay DOM
   const clone = overlayElement.cloneNode(true) as HTMLElement;
 
-  // 3. Convert logo images to base64 data URIs
-  const imgs = clone.querySelectorAll('img');
-  for (const img of imgs) {
-    const originalImg = overlayElement.querySelector(`#${img.id || ''}`) as HTMLImageElement | null;
+  // 3. Convert images to base64 data URIs (needed for blob/file contexts)
+  const clonedImgs = clone.querySelectorAll('img');
+  const originalImgs = overlayElement.querySelectorAll('img');
+  for (let i = 0; i < clonedImgs.length; i++) {
+    const originalImg = originalImgs[i] as HTMLImageElement | undefined;
     if (originalImg && originalImg.complete && originalImg.naturalWidth > 0) {
       try {
         const canvas = document.createElement('canvas');
@@ -27,7 +28,7 @@ export async function exportReportAsHtml(
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(originalImg, 0, 0);
-          img.src = canvas.toDataURL('image/png');
+          clonedImgs[i].src = canvas.toDataURL('image/png');
         }
       } catch {
         // CORS or tainted canvas — leave original src
