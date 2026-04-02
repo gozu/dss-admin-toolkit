@@ -9565,12 +9565,49 @@ _ecr_boto3_client = None
 _ecr_boto3_lock = threading.Lock()
 
 
+def _ensure_boto3():
+    """Import boto3, auto-installing if necessary (same strategy as psycopg2)."""
+    try:
+        import boto3
+        return boto3
+    except ImportError:
+        pass
+
+    _tmp_target = os.path.join(tempfile.gettempdir(), 'dku_boto3')
+    _datadir_target = os.path.join(os.environ.get('DIP_HOME', '/tmp'), 'lib', 'python', 'boto3')
+    install_attempts = [
+        ('pip install (default)', [sys.executable, '-m', 'pip', 'install', 'boto3', '--quiet']),
+        ('pip install --user', [sys.executable, '-m', 'pip', 'install', 'boto3', '--quiet', '--user']),
+        ('pip install --break-system-packages', [sys.executable, '-m', 'pip', 'install', 'boto3', '--quiet', '--break-system-packages']),
+        ('pip install --target %s' % _tmp_target, [sys.executable, '-m', 'pip', 'install', 'boto3', '--quiet', '--target', _tmp_target]),
+        ('pip install --target %s' % _datadir_target, [sys.executable, '-m', 'pip', 'install', 'boto3', '--quiet', '--target', _datadir_target]),
+    ]
+    for label, cmd in install_attempts:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                continue
+            for tgt in (_tmp_target, _datadir_target):
+                if tgt not in sys.path and os.path.isdir(tgt):
+                    sys.path.insert(0, tgt)
+            try:
+                import boto3
+                app.logger.info("[ecr-image-cleaner] boto3 installed via %s", label)
+                return boto3
+            except ImportError:
+                pass
+        except Exception:
+            pass
+
+    raise ImportError("boto3 is not installed and auto-install failed. Install boto3 in the DSS Python environment.")
+
+
 def _ecr_client():
     global _ecr_boto3_client
     if _ecr_boto3_client is None:
         with _ecr_boto3_lock:
             if _ecr_boto3_client is None:
-                import boto3
+                boto3 = _ensure_boto3()
                 _ecr_boto3_client = boto3.client('ecr')
     return _ecr_boto3_client
 
