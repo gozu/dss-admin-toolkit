@@ -9602,13 +9602,62 @@ def _ensure_boto3():
     raise ImportError("boto3 is not installed and auto-install failed. Install boto3 in the DSS Python environment.")
 
 
+def _ecr_detect_region():
+    """Auto-detect AWS region from env, IMDS, or aws config."""
+    import urllib.request
+    # 1. Environment variables
+    for var in ('AWS_DEFAULT_REGION', 'AWS_REGION'):
+        val = os.environ.get(var, '').strip()
+        if val:
+            return val
+    # 2. EC2 instance metadata (IMDSv2 with token, then IMDSv1 fallback)
+    try:
+        token_req = urllib.request.Request(
+            'http://169.254.169.254/latest/api/token',
+            headers={'X-aws-ec2-metadata-token-ttl-seconds': '30'},
+            method='PUT',
+        )
+        token = urllib.request.urlopen(token_req, timeout=2).read().decode().strip()
+        region_req = urllib.request.Request(
+            'http://169.254.169.254/latest/meta-data/placement/region',
+            headers={'X-aws-ec2-metadata-token': token},
+        )
+        return urllib.request.urlopen(region_req, timeout=2).read().decode().strip()
+    except Exception:
+        pass
+    try:
+        return urllib.request.urlopen(
+            'http://169.254.169.254/latest/meta-data/placement/region', timeout=2
+        ).read().decode().strip()
+    except Exception:
+        pass
+    # 3. aws CLI config
+    try:
+        result = subprocess.run(
+            ['aws', 'configure', 'get', 'region'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _ecr_client():
     global _ecr_boto3_client
     if _ecr_boto3_client is None:
         with _ecr_boto3_lock:
             if _ecr_boto3_client is None:
                 boto3 = _ensure_boto3()
-                _ecr_boto3_client = boto3.client('ecr')
+                region = _ecr_detect_region()
+                if not region:
+                    raise ValueError(
+                        "Cannot detect AWS region. Set AWS_DEFAULT_REGION environment variable "
+                        "or configure a region in ~/.aws/config on the DSS server."
+                    )
+                _ecr_boto3_client = boto3.client('ecr', region_name=region)
+                app.logger.info("[ecr-image-cleaner] using AWS region: %s", region)
     return _ecr_boto3_client
 
 
@@ -9661,7 +9710,13 @@ def _ecr_validate_cutoff(cutoff_str):
 @app.route('/api/tools/ecr-image-cleaner/release-date')
 def api_ecr_release_date():
     try:
-        return jsonify(_ecr_get_release_info())
+        info = _ecr_get_release_info()
+        # Pre-warm: install boto3 and detect region now so scan is fast
+        try:
+            _ecr_client()
+        except Exception:
+            pass  # will fail again on scan with a proper error
+        return jsonify(info)
     except Exception as e:
         app.logger.error("[ecr-image-cleaner] release-date error: %s", e)
         return jsonify({'error': str(e)}), 500
