@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { useModal } from '../hooks/useModal';
-import { fetchJson } from '../utils/api';
+import { fetchJson, getBackendUrl } from '../utils/api';
 
 // ── Types ──
 
@@ -21,12 +21,7 @@ interface EcrImage {
 interface EcrRepo {
   name: string;
   images: EcrImage[];
-}
-
-interface ScanResult {
-  cutoff: string;
-  maxCutoffDate: string;
-  repos: EcrRepo[];
+  error?: string;
 }
 
 // ── Sort helpers ──
@@ -68,10 +63,12 @@ export function EcrImageCleaner() {
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [cutoffDate, setCutoffDate] = useState('');
 
-  // Phase 2: scan
-  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  // Phase 2: scan (streaming)
+  const [scanRepos, setScanRepos] = useState<EcrRepo[]>([]);
+  const [scanTotal, setScanTotal] = useState<number | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Sort
   const [sortField, setSortField] = useState<SortField | null>(null);
@@ -112,37 +109,94 @@ export function EcrImageCleaner() {
     loadReleaseDate();
   }
 
-  // ── Phase 2: Scan ──
+  // ── Phase 2: Scan (SSE streaming) ──
 
   const runScan = useCallback(async () => {
     if (!cutoffDate) return;
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setScanLoading(true);
     setScanError(null);
-    setScanResult(null);
+    setScanRepos([]);
+    setScanTotal(null);
     setSelectedKeys(new Set());
     setDeletedKeys(new Set());
     setDeletionEnabled(false);
+
     try {
-      const result = await fetchJson<ScanResult>(`/api/tools/ecr-image-cleaner/scan?cutoff=${cutoffDate}`);
-      setScanResult(result);
+      const url = getBackendUrl(`/api/tools/ecr-image-cleaner/scan?cutoff=${cutoffDate}`);
+      const response = await fetch(url, { credentials: 'same-origin', signal: controller.signal });
+
+      if (!response.ok || !response.body) {
+        const body = await response.text();
+        let msg = `Scan failed: ${response.status} ${response.statusText}`;
+        try {
+          msg = (JSON.parse(body) as { error?: string }).error || msg;
+        } catch {}
+        throw new Error(msg);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          const eventMatch = part.match(/^event:\s*(\S+)/m);
+          const dataMatch = part.match(/^data:\s*(.*)/m);
+          if (!eventMatch || !dataMatch) continue;
+
+          const eventType = eventMatch[1];
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          if (eventType === 'error') {
+            throw new Error(String(payload.error || 'Scan error'));
+          } else if (eventType === 'init') {
+            setScanTotal(Number(payload.total));
+          } else if (eventType === 'repo') {
+            setScanRepos((prev) => [...prev, payload as unknown as EcrRepo]);
+          }
+          // 'done' event — nothing extra needed, loop exits naturally
+        }
+      }
     } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
       setScanError(err instanceof Error ? err.message : String(err));
     } finally {
       setScanLoading(false);
+      abortRef.current = null;
     }
   }, [cutoffDate]);
 
+  const abortScan = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   // Flatten repos into rows
   const allRows = useMemo(() => {
-    if (!scanResult) return [];
     const rows: FlatRow[] = [];
-    for (const repo of scanResult.repos) {
+    for (const repo of scanRepos) {
       for (const img of repo.images) {
         rows.push({ repo: repo.name, image: img, key: `${repo.name}:${img.digest}` });
       }
     }
     return rows;
-  }, [scanResult]);
+  }, [scanRepos]);
 
   const visibleRows = useMemo(
     () => allRows.filter((r) => !deletedKeys.has(r.key)),
@@ -247,6 +301,8 @@ export function EcrImageCleaner() {
 
   const shortDigest = (d: string) => d.replace('sha256:', '').slice(0, 12);
 
+  const hasResults = scanRepos.length > 0;
+
   return (
     <>
       <div className="space-y-4 p-6">
@@ -311,12 +367,22 @@ export function EcrImageCleaner() {
           )}
         </section>
 
-        {/* Phase 2: Scan results */}
+        {/* Phase 2: Scan progress */}
         {scanLoading && (
           <section className="glass-card p-4">
-            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
-              Scanning ECR repositories for images with &quot;dataiku&quot; or &quot;dku&quot; in the name...
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+                {scanTotal !== null
+                  ? `Scanning ECR repositories... ${scanRepos.length} / ${scanTotal}`
+                  : 'Discovering ECR repositories...'}
+              </div>
+              <button
+                onClick={abortScan}
+                className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30 hover:bg-[var(--bg-glass-hover)] transition-colors"
+              >
+                Abort
+              </button>
             </div>
           </section>
         )}
@@ -327,13 +393,15 @@ export function EcrImageCleaner() {
             </div>
           </section>
         )}
-        {scanResult && !scanLoading && (
+
+        {/* Phase 2: Scan results (shown during and after streaming) */}
+        {hasResults && (
           <>
             {/* Stats */}
             <section className="glass-card p-4">
               <div className="grid grid-cols-4 gap-4">
                 <div className="text-center">
-                  <div className="text-2xl font-mono text-[var(--text-primary)]">{scanResult.repos.length}</div>
+                  <div className="text-2xl font-mono text-[var(--text-primary)]">{scanRepos.length}</div>
                   <div className="text-xs text-[var(--text-muted)]">Repositories</div>
                 </div>
                 <div className="text-center">
@@ -352,39 +420,41 @@ export function EcrImageCleaner() {
             </section>
 
             {/* Deletion mode toggle */}
-            <section className="glass-card p-3 flex items-center justify-between">
-              <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={deletionEnabled}
-                  onChange={(e) => {
-                    setDeletionEnabled(e.target.checked);
-                    if (!e.target.checked) setSelectedKeys(new Set());
-                  }}
-                  className="accent-[var(--neon-red)]"
-                />
-                Enable deletion mode
-              </label>
-              {deletionEnabled && selectedKeys.size > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[var(--text-secondary)]">
-                    {selectedKeys.size} selected
-                  </span>
-                  <button
-                    onClick={() => setSelectedKeys(new Set())}
-                    className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] transition-colors"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    onClick={openDeleteConfirm}
-                    className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors"
-                  >
-                    Delete Selected
-                  </button>
-                </div>
-              )}
-            </section>
+            {!scanLoading && (
+              <section className="glass-card p-3 flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={deletionEnabled}
+                    onChange={(e) => {
+                      setDeletionEnabled(e.target.checked);
+                      if (!e.target.checked) setSelectedKeys(new Set());
+                    }}
+                    className="accent-[var(--neon-red)]"
+                  />
+                  Enable deletion mode
+                </label>
+                {deletionEnabled && selectedKeys.size > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-[var(--text-secondary)]">
+                      {selectedKeys.size} selected
+                    </span>
+                    <button
+                      onClick={() => setSelectedKeys(new Set())}
+                      className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] transition-colors"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={openDeleteConfirm}
+                      className="px-3 py-1 rounded-md text-xs font-medium border border-[var(--neon-red)]/30 bg-[var(--neon-red)]/10 text-[var(--neon-red)] hover:bg-[var(--neon-red)]/20 hover:border-[var(--neon-red)]/50 transition-colors"
+                    >
+                      Delete Selected
+                    </button>
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* Image table */}
             <section className="glass-card p-4">
@@ -392,7 +462,7 @@ export function EcrImageCleaner() {
                 <table className="table-dark w-full">
                   <thead>
                     <tr>
-                      {deletionEnabled && (
+                      {deletionEnabled && !scanLoading && (
                         <th className="w-10">
                           <input
                             type="checkbox"
@@ -421,14 +491,14 @@ export function EcrImageCleaner() {
                   <tbody>
                     {sortedRows.length === 0 && (
                       <tr>
-                        <td colSpan={deletionEnabled ? 6 : 5} className="py-6 text-center text-sm text-[var(--text-muted)]">
+                        <td colSpan={deletionEnabled && !scanLoading ? 6 : 5} className="py-6 text-center text-sm text-[var(--text-muted)]">
                           No matching images found in ECR.
                         </td>
                       </tr>
                     )}
                     {sortedRows.map((row) => (
                       <tr key={row.key} className="hover:bg-[var(--bg-glass)]">
-                        {deletionEnabled && (
+                        {deletionEnabled && !scanLoading && (
                           <td>
                             {row.image.deletable ? (
                               <input

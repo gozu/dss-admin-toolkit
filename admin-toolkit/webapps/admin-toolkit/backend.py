@@ -9724,6 +9724,7 @@ def api_ecr_release_date():
 
 @app.route('/api/tools/ecr-image-cleaner/scan')
 def api_ecr_scan():
+    """Stream ECR repo scan results via SSE."""
     cutoff_str = request.args.get('cutoff', '').strip()
     if not cutoff_str:
         return jsonify({'error': 'Missing cutoff parameter'}), 400
@@ -9731,39 +9732,58 @@ def api_ecr_scan():
         cutoff, info = _ecr_validate_cutoff(cutoff_str)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
-    try:
-        ecr = _ecr_client()
-        repo_names = []
-        paginator = ecr.get_paginator('describe_repositories')
-        for page in paginator.paginate():
-            for repo in page.get('repositories', []):
-                name = repo['repositoryName']
-                if 'dataiku' in name.lower() or 'dku' in name.lower():
-                    repo_names.append(name)
 
-        result_repos = []
-        for repo_name in sorted(repo_names):
-            images = []
-            img_paginator = ecr.get_paginator('describe_images')
-            for page in img_paginator.paginate(repositoryName=repo_name):
-                for img in page.get('imageDetails', []):
-                    pushed = img.get('imagePushedAt')
-                    if pushed is None:
-                        continue
-                    pushed_date = pushed.date() if hasattr(pushed, 'date') else datetime.fromisoformat(str(pushed)).date()
-                    images.append({
-                        'digest': img.get('imageDigest', ''),
-                        'tags': img.get('imageTags', []),
-                        'pushedAt': pushed.isoformat() if hasattr(pushed, 'isoformat') else str(pushed),
-                        'deletable': pushed_date < cutoff,
-                    })
-            images.sort(key=lambda x: x['pushedAt'])
-            result_repos.append({'name': repo_name, 'images': images})
+    def generate():
+        t0 = time.time()
+        try:
+            ecr = _ecr_client()
+            repo_names = []
+            paginator = ecr.get_paginator('describe_repositories')
+            for page in paginator.paginate():
+                for repo in page.get('repositories', []):
+                    name = repo['repositoryName']
+                    if 'dataiku' in name.lower() or 'dku' in name.lower():
+                        repo_names.append(name)
+            repo_names.sort()
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({"error": str(e)})
+            return
 
-        return jsonify({'cutoff': cutoff_str, 'maxCutoffDate': info['maxCutoffDate'], 'repos': result_repos})
-    except Exception as e:
-        app.logger.error("[ecr-image-cleaner] scan error: %s", e)
-        return jsonify({'error': str(e)}), 500
+        yield "event: init\ndata: %s\n\n" % json.dumps({
+            "total": len(repo_names),
+            "cutoff": cutoff_str,
+            "maxCutoffDate": info['maxCutoffDate'],
+        })
+
+        for repo_name in repo_names:
+            try:
+                images = []
+                img_paginator = ecr.get_paginator('describe_images')
+                for page in img_paginator.paginate(repositoryName=repo_name):
+                    for img in page.get('imageDetails', []):
+                        pushed = img.get('imagePushedAt')
+                        if pushed is None:
+                            continue
+                        pushed_date = pushed.date() if hasattr(pushed, 'date') else datetime.fromisoformat(str(pushed)).date()
+                        images.append({
+                            'digest': img.get('imageDigest', ''),
+                            'tags': img.get('imageTags', []),
+                            'pushedAt': pushed.isoformat() if hasattr(pushed, 'isoformat') else str(pushed),
+                            'deletable': pushed_date < cutoff,
+                        })
+                images.sort(key=lambda x: x['pushedAt'])
+                yield "event: repo\ndata: %s\n\n" % json.dumps({'name': repo_name, 'images': images})
+            except Exception as e:
+                yield "event: repo\ndata: %s\n\n" % json.dumps({'name': repo_name, 'images': [], 'error': str(e)})
+
+        total_ms = int((time.time() - t0) * 1000)
+        yield "event: done\ndata: %s\n\n" % json.dumps({"total_ms": total_ms})
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route('/api/tools/ecr-image-cleaner/delete', methods=['POST'])
