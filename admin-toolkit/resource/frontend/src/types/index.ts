@@ -731,7 +731,8 @@ export type PageId =
   | 'tracking'
   | 'report'
   | 'db-health'
-  | 'trends';
+  | 'trends'
+  | 'ecr-image-cleaner';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
 export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';

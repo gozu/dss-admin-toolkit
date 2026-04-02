@@ -9557,3 +9557,189 @@ def api_db_health_analyze():
         return jsonify(result)
     except Exception as exc:
         return jsonify({'error': _sanitize_pg_error(str(exc))}), 500
+
+
+# ── ECR Image Cleaner ──────────────────────────────────────────────────
+
+_ecr_boto3_client = None
+_ecr_boto3_lock = threading.Lock()
+
+
+def _ecr_client():
+    global _ecr_boto3_client
+    if _ecr_boto3_client is None:
+        with _ecr_boto3_lock:
+            if _ecr_boto3_client is None:
+                import boto3
+                _ecr_boto3_client = boto3.client('ecr')
+    return _ecr_boto3_client
+
+
+def _ecr_get_release_info():
+    """Get DSS version and its release date from downloads.dataiku.com."""
+    from datetime import timedelta
+    import urllib.request
+
+    dip_home = _dip_home()
+    version_info = _safe_read_json(os.path.join(dip_home, 'dss-version.json')) or {}
+    version = version_info.get('product_version') or version_info.get('version') or version_info.get('dssVersion')
+    if not version:
+        raise ValueError("Cannot determine DSS version from dss-version.json")
+
+    url = 'https://downloads.dataiku.com/public/dss/'
+    req = urllib.request.Request(url, headers={'User-Agent': 'AdminToolkit/1.0'})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        html = resp.read().decode('utf-8', errors='replace')
+
+    pattern = r'<a\s+href="%s/"[^>]*>%s/</a>.*?(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}' % (
+        re.escape(version), re.escape(version)
+    )
+    m = re.search(pattern, html, re.DOTALL)
+    if not m:
+        raise ValueError("DSS version %s not found on downloads.dataiku.com" % version)
+
+    release_date = datetime.strptime(m.group(1), '%Y-%m-%d').date()
+    max_cutoff = release_date - timedelta(days=2)
+
+    return {
+        'version': version,
+        'releaseDate': m.group(1),
+        'maxCutoffDate': max_cutoff.isoformat(),
+    }
+
+
+def _ecr_validate_cutoff(cutoff_str):
+    """Validate cutoff and enforce server-side max. Returns (cutoff_date, release_info)."""
+    try:
+        cutoff = datetime.strptime(cutoff_str, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        raise ValueError("Invalid cutoff date format, expected YYYY-MM-DD")
+    info = _ecr_get_release_info()
+    max_cutoff = datetime.strptime(info['maxCutoffDate'], '%Y-%m-%d').date()
+    if cutoff > max_cutoff:
+        raise ValueError("Cutoff %s exceeds maximum allowed %s" % (cutoff_str, info['maxCutoffDate']))
+    return cutoff, info
+
+
+@app.route('/api/tools/ecr-image-cleaner/release-date')
+def api_ecr_release_date():
+    try:
+        return jsonify(_ecr_get_release_info())
+    except Exception as e:
+        app.logger.error("[ecr-image-cleaner] release-date error: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tools/ecr-image-cleaner/scan')
+def api_ecr_scan():
+    cutoff_str = request.args.get('cutoff', '').strip()
+    if not cutoff_str:
+        return jsonify({'error': 'Missing cutoff parameter'}), 400
+    try:
+        cutoff, info = _ecr_validate_cutoff(cutoff_str)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    try:
+        ecr = _ecr_client()
+        repo_names = []
+        paginator = ecr.get_paginator('describe_repositories')
+        for page in paginator.paginate():
+            for repo in page.get('repositories', []):
+                name = repo['repositoryName']
+                if 'dataiku' in name.lower() or 'dku' in name.lower():
+                    repo_names.append(name)
+
+        result_repos = []
+        for repo_name in sorted(repo_names):
+            images = []
+            img_paginator = ecr.get_paginator('describe_images')
+            for page in img_paginator.paginate(repositoryName=repo_name):
+                for img in page.get('imageDetails', []):
+                    pushed = img.get('imagePushedAt')
+                    if pushed is None:
+                        continue
+                    pushed_date = pushed.date() if hasattr(pushed, 'date') else datetime.fromisoformat(str(pushed)).date()
+                    images.append({
+                        'digest': img.get('imageDigest', ''),
+                        'tags': img.get('imageTags', []),
+                        'pushedAt': pushed.isoformat() if hasattr(pushed, 'isoformat') else str(pushed),
+                        'deletable': pushed_date < cutoff,
+                    })
+            images.sort(key=lambda x: x['pushedAt'])
+            result_repos.append({'name': repo_name, 'images': images})
+
+        return jsonify({'cutoff': cutoff_str, 'maxCutoffDate': info['maxCutoffDate'], 'repos': result_repos})
+    except Exception as e:
+        app.logger.error("[ecr-image-cleaner] scan error: %s", e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tools/ecr-image-cleaner/delete', methods=['POST'])
+def api_ecr_delete():
+    body = request.get_json(force=True, silent=True) or {}
+    cutoff_str = body.get('cutoff', '').strip()
+    images = body.get('images', [])
+    if not cutoff_str:
+        return jsonify({'error': 'Missing cutoff'}), 400
+    if not images:
+        return jsonify({'error': 'No images specified'}), 400
+    try:
+        cutoff, _info = _ecr_validate_cutoff(cutoff_str)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    try:
+        ecr = _ecr_client()
+
+        # Preflight: verify ALL images before deleting any
+        preflight_errors = []
+        for img in images:
+            repo = img.get('repositoryName', '')
+            digest = img.get('imageDigest', '')
+            if not repo or not digest:
+                preflight_errors.append({'repo': repo, 'digest': digest, 'reason': 'missing repo or digest'})
+                continue
+            try:
+                resp = ecr.describe_images(repositoryName=repo, imageIds=[{'imageDigest': digest}])
+                details = resp.get('imageDetails', [])
+                if not details:
+                    preflight_errors.append({'repo': repo, 'digest': digest, 'reason': 'image not found'})
+                    continue
+                pushed = details[0].get('imagePushedAt')
+                if pushed is None:
+                    preflight_errors.append({'repo': repo, 'digest': digest, 'reason': 'no push date'})
+                    continue
+                pushed_date = pushed.date() if hasattr(pushed, 'date') else datetime.fromisoformat(str(pushed)).date()
+                if pushed_date >= cutoff:
+                    preflight_errors.append({
+                        'repo': repo, 'digest': digest,
+                        'reason': 'pushed %s is not before cutoff %s' % (pushed_date.isoformat(), cutoff_str),
+                    })
+            except Exception as e:
+                preflight_errors.append({'repo': repo, 'digest': digest, 'reason': str(e)})
+
+        if preflight_errors:
+            return jsonify({'error': 'Preflight failed — no images were deleted', 'preflight_errors': preflight_errors}), 400
+
+        # Group by repo and delete
+        by_repo: Dict[str, list] = {}
+        for img in images:
+            by_repo.setdefault(img['repositoryName'], []).append({'imageDigest': img['imageDigest']})
+
+        deleted = []
+        failed = []
+        for repo, image_ids in by_repo.items():
+            try:
+                resp = ecr.batch_delete_image(repositoryName=repo, imageIds=image_ids)
+                for d in resp.get('imageIds', []):
+                    deleted.append({'repo': repo, 'digest': d.get('imageDigest', '')})
+                for f in resp.get('failures', []):
+                    failed.append({'repo': repo, 'digest': f.get('imageId', {}).get('imageDigest', ''), 'reason': f.get('failureReason', '')})
+            except Exception as e:
+                for img_id in image_ids:
+                    failed.append({'repo': repo, 'digest': img_id['imageDigest'], 'reason': str(e)})
+
+        app.logger.info("[ecr-image-cleaner] deleted %d images, %d failed", len(deleted), len(failed))
+        return jsonify({'deleted': deleted, 'failed': failed})
+    except Exception as e:
+        app.logger.error("[ecr-image-cleaner] delete error: %s", e)
+        return jsonify({'error': str(e)}), 500
