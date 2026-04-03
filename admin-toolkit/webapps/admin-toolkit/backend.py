@@ -5856,6 +5856,40 @@ def api_project_footprint_progress_alias():
     return api_project_footprint_progress()
 
 
+def _collect_general_settings(client):
+    """Collect general settings for snapshot, redacted (no passwords). Returns dict or None."""
+    try:
+        raw = client.get_general_settings().get_raw()
+        if not isinstance(raw, dict):
+            return None
+        result = {}
+        # Extract only the subsets the frontend parsers use
+        for key in ('sparkSettings', 'maxRunningActivities', 'maxRunningActivitiesPerJob',
+                     'containerSettings', 'governIntegrationSettings', 'deployerClientSettings',
+                     'limits', 'cgroupSettings', 'ldapSettings', 'ssoSettings',
+                     'azureADSettings', 'customAuthSettings', 'impersonation'):
+            if key in raw:
+                result[key] = raw[key]
+        # Enabled settings: top-level booleans
+        for key, value in raw.items():
+            if isinstance(value, bool):
+                result[key] = value
+        # Proxy settings: strip password
+        proxy = raw.get('proxySettings')
+        if isinstance(proxy, dict):
+            proxy_safe = {k: v for k, v in proxy.items() if k != 'password'}
+            result['proxySettings'] = proxy_safe
+        # System limits from overview cache
+        overview = _CACHE.get('overview', {}).get('value') or {}
+        sys_limits = overview.get('systemLimits')
+        if sys_limits:
+            result['systemLimits'] = sys_limits
+        return result
+    except Exception as exc:
+        logging.getLogger(__name__).debug("[tracking:v8] general_settings collection failed: %s", exc)
+        return None
+
+
 def _do_tracking_ingest(db, data):
     """Run a tracking ingest from outreach data. Returns the new run_id."""
     import hashlib
@@ -6070,6 +6104,51 @@ def _do_tracking_ingest(db, data):
                     _time.time() - _t_v7, v7_projects_scanned, v7_projects_skipped,
                     len(v7_datasets), len(v7_recipes), len(v7_llms), len(v7_agents),
                     len(v7_agent_tools), len(v7_knowledge_banks), len(v7_git_commits))
+
+    # -- V8 extended snapshot: general settings, java memory, code envs, log errors, project footprint --
+    try:
+        snapshot_data['general_settings'] = _collect_general_settings(client)
+    except Exception:
+        snapshot_data['general_settings'] = None
+    try:
+        snapshot_data['java_memory_raw'] = _safe_read_text(os.path.join(_dip_home(), 'bin', 'env-default.sh'))
+    except Exception:
+        snapshot_data['java_memory_raw'] = None
+    # Code envs: pre-warm cache if cold
+    try:
+        ce_data = _CACHE.get('code_envs', {}).get('value') or {}
+        ce_sizes = {}
+        try:
+            ce_sizes = _get_code_env_size_map(client)
+        except Exception:
+            pass
+        snapshot_data['code_envs'] = {
+            'codeEnvs': ce_data.get('codeEnvs'),
+            'totalEnvCount': ce_data.get('totalEnvCount'),
+            'skippedEnvCount': ce_data.get('skippedEnvCount'),
+            'pythonVersionCounts': ce_data.get('pythonVersionCounts'),
+            'rVersionCounts': ce_data.get('rVersionCounts'),
+            'sizes': ce_sizes,
+        } if ce_data.get('codeEnvs') else None
+    except Exception:
+        snapshot_data['code_envs'] = None
+    # Log errors: pre-warm cache if cold
+    try:
+        log_data = _CACHE.get('log_errors', {}).get('value') or {}
+        snapshot_data['log_errors'] = {
+            'logStats': log_data.get('logStats'),
+            'formattedLogErrors': log_data.get('formattedLogErrors'),
+        } if log_data.get('logStats') else None
+    except Exception:
+        snapshot_data['log_errors'] = None
+    # Project footprint: from outreach data blob
+    snapshot_data['project_footprint'] = data.get('projectFootprintRows') or None
+    app.logger.info("[tracking:v8] extended snapshot: general_settings=%s java_memory=%s code_envs=%s log_errors=%s footprint=%s",
+                    snapshot_data.get('general_settings') is not None,
+                    snapshot_data.get('java_memory_raw') is not None,
+                    snapshot_data.get('code_envs') is not None,
+                    snapshot_data.get('log_errors') is not None,
+                    snapshot_data.get('project_footprint') is not None)
 
     _campaign_recipient_keys = {
         'project': 'projectRecipients', 'code_env': 'codeEnvRecipients',
@@ -7006,6 +7085,7 @@ def api_tools_outreach_data():
             'mailChannels': mail_channels,
             'configuredMailChannel': _get_configured_mail_channel(),
             'templates': {cid: _default_email_template(cid) for cid in all_campaign_ids},
+            'projectFootprintRows': project_rows,
             'unhealthyProjects': unhealthy_projects,
             'unhealthyCodeEnvs': unhealthy_code_envs,
             'unhealthyCodeStudioProjects': unhealthy_code_studio_projects,

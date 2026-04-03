@@ -346,6 +346,80 @@ _SCHEMA_V6 = [
     "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (6, datetime('now'))",
 ]
 
+_SCHEMA_V7 = [
+    """CREATE TABLE IF NOT EXISTS run_datasets (
+        run_id          INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id     TEXT NOT NULL,
+        project_key     TEXT NOT NULL,
+        dataset_name    TEXT NOT NULL,
+        dataset_type    TEXT,
+        connection_name TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, dataset_name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_datasets_type ON run_datasets(dataset_type)",
+    """CREATE TABLE IF NOT EXISTS run_recipes (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        recipe_name  TEXT NOT NULL,
+        recipe_type  TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, recipe_name)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_recipes_type ON run_recipes(recipe_type)",
+    """CREATE TABLE IF NOT EXISTS run_llms (
+        run_id        INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id   TEXT NOT NULL,
+        llm_id        TEXT NOT NULL,
+        llm_type      TEXT,
+        friendly_name TEXT,
+        PRIMARY KEY (run_id, instance_id, llm_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_agents (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        agent_id     TEXT NOT NULL,
+        agent_name   TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, agent_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_agent_tools (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        tool_id      TEXT NOT NULL,
+        tool_type    TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, tool_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_knowledge_banks (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        kb_id        TEXT NOT NULL,
+        kb_name      TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, kb_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS run_git_commits (
+        run_id       INTEGER NOT NULL REFERENCES runs(run_id),
+        instance_id  TEXT NOT NULL,
+        project_key  TEXT NOT NULL,
+        commit_hash  TEXT NOT NULL,
+        author       TEXT,
+        committed_at TEXT,
+        PRIMARY KEY (run_id, instance_id, project_key, commit_hash)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_run_git_commits_author ON run_git_commits(author)",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (7, datetime('now'))",
+]
+
+_SCHEMA_V8 = [
+    "ALTER TABLE run_health_metrics ADD COLUMN general_settings_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN java_memory_raw TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN code_envs_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN log_errors_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN project_footprint_json TEXT",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (8, datetime('now'))",
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -414,6 +488,24 @@ class TrackingDB:
                         self._conn.execute(stmt)
                     except Exception:
                         pass  # table/index may already exist
+                self._conn.commit()
+            # V7 migration: trends snapshot tables
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 7:
+                for stmt in _SCHEMA_V7:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # table/index may already exist
+                self._conn.commit()
+            # V8 migration: extended snapshot columns
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 8:
+                for stmt in _SCHEMA_V8:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # column may already exist
                 self._conn.commit()
         return self._conn
 
@@ -498,8 +590,11 @@ class TrackingDB:
                                license_expiry_date,
                                plugins_json, connections_json,
                                filesystem_mounts_json, user_profile_stats_json,
-                               os_info, spark_version)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               os_info, spark_version,
+                               general_settings_json, java_memory_raw,
+                               code_envs_json, log_errors_json,
+                               project_footprint_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             run_id,
                             health_metrics.get('cpu_cores'),
@@ -529,6 +624,11 @@ class TrackingDB:
                             json.dumps(snap['user_profile_stats']) if snap.get('user_profile_stats') is not None else None,
                             snap.get('os_info'),
                             snap.get('spark_version'),
+                            json.dumps(snap['general_settings']) if snap.get('general_settings') is not None else None,
+                            snap.get('java_memory_raw'),
+                            json.dumps(snap['code_envs']) if snap.get('code_envs') is not None else None,
+                            json.dumps(snap['log_errors']) if snap.get('log_errors') is not None else None,
+                            json.dumps(snap['project_footprint']) if snap.get('project_footprint') is not None else None,
                         ),
                     )
 
@@ -848,7 +948,9 @@ class TrackingDB:
             ).fetchone()
             if hm:
                 hm_dict = dict(hm)
-                for jcol in ('plugins_json', 'connections_json', 'filesystem_mounts_json', 'user_profile_stats_json'):
+                for jcol in ('plugins_json', 'connections_json', 'filesystem_mounts_json',
+                              'user_profile_stats_json', 'general_settings_json',
+                              'code_envs_json', 'log_errors_json', 'project_footprint_json'):
                     if hm_dict.get(jcol):
                         try:
                             hm_dict[jcol] = json.loads(hm_dict[jcol])

@@ -403,6 +403,15 @@ _SCHEMA_V7 = [
     # TODO: Add data retention/pruning for V7 tables (datasets, recipes, git_commits can grow large)
 ]
 
+_SCHEMA_V8 = [
+    "ALTER TABLE run_health_metrics ADD COLUMN general_settings_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN java_memory_raw TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN code_envs_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN log_errors_json TEXT",
+    "ALTER TABLE run_health_metrics ADD COLUMN project_footprint_json TEXT",
+    "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (8, datetime('now'))",
+]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -454,6 +463,20 @@ class TrackingDB:
                     except Exception:
                         pass  # table may already exist
                 self._conn.commit()
+            # V5 migration: snapshot data columns on run_health_metrics
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 5:
+                for col in [
+                    'plugins_json TEXT', 'connections_json TEXT',
+                    'filesystem_mounts_json TEXT', 'user_profile_stats_json TEXT',
+                    'os_info TEXT', 'spark_version TEXT',
+                ]:
+                    try:
+                        self._conn.execute(f'ALTER TABLE run_health_metrics ADD COLUMN {col}')
+                    except Exception:
+                        pass  # column may already exist
+                self._conn.execute("INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, datetime('now'))")
+                self._conn.commit()
             # V6 migration: over-time snapshot tables
             v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
             if v < 6:
@@ -471,6 +494,15 @@ class TrackingDB:
                         self._conn.execute(stmt)
                     except Exception:
                         pass  # table/index may already exist
+                self._conn.commit()
+            # V8 migration: extended snapshot columns
+            v = self._conn.execute('SELECT MAX(version) FROM schema_version').fetchone()[0] or 1
+            if v < 8:
+                for stmt in _SCHEMA_V8:
+                    try:
+                        self._conn.execute(stmt)
+                    except Exception:
+                        pass  # column may already exist
                 self._conn.commit()
         return self._conn
 
@@ -540,6 +572,7 @@ class TrackingDB:
 
                 # 3. INSERT run_health_metrics
                 if health_metrics:
+                    snap = snapshot_data or {}
                     conn.execute(
                         """INSERT INTO run_health_metrics (
                                run_id, cpu_cores, memory_total_mb, memory_used_mb,
@@ -551,8 +584,14 @@ class TrackingDB:
                                configuration_score, security_isolation_score,
                                license_named_users_pct, license_concurrent_users_pct,
                                license_projects_pct, license_connections_pct,
-                               license_expiry_date)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               license_expiry_date,
+                               plugins_json, connections_json,
+                               filesystem_mounts_json, user_profile_stats_json,
+                               os_info, spark_version,
+                               general_settings_json, java_memory_raw,
+                               code_envs_json, log_errors_json,
+                               project_footprint_json)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             run_id,
                             health_metrics.get('cpu_cores'),
@@ -576,6 +615,17 @@ class TrackingDB:
                             health_metrics.get('license_projects_pct'),
                             health_metrics.get('license_connections_pct'),
                             health_metrics.get('license_expiry_date'),
+                            json.dumps(snap['plugins']) if snap.get('plugins') is not None else None,
+                            json.dumps(snap['connections']) if snap.get('connections') is not None else None,
+                            json.dumps(snap['filesystem_mounts']) if snap.get('filesystem_mounts') is not None else None,
+                            json.dumps(snap['user_profile_stats']) if snap.get('user_profile_stats') is not None else None,
+                            snap.get('os_info'),
+                            snap.get('spark_version'),
+                            json.dumps(snap['general_settings']) if snap.get('general_settings') is not None else None,
+                            snap.get('java_memory_raw'),
+                            json.dumps(snap['code_envs']) if snap.get('code_envs') is not None else None,
+                            json.dumps(snap['log_errors']) if snap.get('log_errors') is not None else None,
+                            json.dumps(snap['project_footprint']) if snap.get('project_footprint') is not None else None,
                         ),
                     )
 
@@ -1026,7 +1076,19 @@ class TrackingDB:
             hm = conn.execute(
                 'SELECT * FROM run_health_metrics WHERE run_id = ?', (run_id,),
             ).fetchone()
-            result['health_metrics'] = dict(hm) if hm else None
+            if hm:
+                hm_dict = dict(hm)
+                for jcol in ('plugins_json', 'connections_json', 'filesystem_mounts_json',
+                              'user_profile_stats_json', 'general_settings_json',
+                              'code_envs_json', 'log_errors_json', 'project_footprint_json'):
+                    if hm_dict.get(jcol):
+                        try:
+                            hm_dict[jcol] = json.loads(hm_dict[jcol])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                result['health_metrics'] = hm_dict
+            else:
+                result['health_metrics'] = None
 
             # V6 snapshot tables
             result['users'] = [dict(r) for r in conn.execute(
@@ -1079,7 +1141,19 @@ class TrackingDB:
             hm = conn.execute(
                 'SELECT * FROM run_health_metrics WHERE run_id = ?', (run_id,),
             ).fetchone()
-            result['health_metrics'] = dict(hm) if hm else None
+            if hm:
+                hm_dict = dict(hm)
+                for jcol in ('plugins_json', 'connections_json', 'filesystem_mounts_json',
+                              'user_profile_stats_json', 'general_settings_json',
+                              'code_envs_json', 'log_errors_json', 'project_footprint_json'):
+                    if hm_dict.get(jcol):
+                        try:
+                            hm_dict[jcol] = json.loads(hm_dict[jcol])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                result['health_metrics'] = hm_dict
+            else:
+                result['health_metrics'] = None
 
             # Sections
             secs = conn.execute(

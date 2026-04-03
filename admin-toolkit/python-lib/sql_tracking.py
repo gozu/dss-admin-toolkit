@@ -91,7 +91,7 @@ class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
-    _TARGET_SCHEMA_VERSION = 7
+    _TARGET_SCHEMA_VERSION = 8
 
     def __init__(self, connection_name: str, table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._connection_name = connection_name
@@ -174,6 +174,8 @@ class SQLTrackingDB:
             self._migrate_v6(executor)
             # V7 migration: trends snapshot tables (datasets, recipes, GenAI, git)
             self._migrate_v7(executor)
+            # V8 migration: add extended snapshot columns to run_health_metrics
+            self._migrate_v8(executor)
             # Schema migration: move tables from default schema if schema is configured
             if self._schema:
                 self._migrate_from_default_schema(executor)
@@ -360,6 +362,22 @@ class SQLTrackingDB:
             except Exception:
                 pass  # table/index already exists
 
+    def _migrate_v8(self, executor) -> None:
+        """Add V8 extended snapshot columns to run_health_metrics if missing (idempotent)."""
+        t = self._t('run_health_metrics')
+        v8_columns = [
+            'general_settings_json TEXT',
+            'java_memory_raw TEXT',
+            'code_envs_json TEXT',
+            'log_errors_json TEXT',
+            'project_footprint_json TEXT',
+        ]
+        for col_def in v8_columns:
+            try:
+                executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN {col_def}")
+            except Exception:
+                pass  # column already exists
+
     def _get_ddl_statements(self) -> List[str]:
         """Return list of CREATE TABLE/INDEX statements."""
         return [
@@ -422,7 +440,12 @@ class SQLTrackingDB:
                 filesystem_mounts_json          TEXT,
                 user_profile_stats_json         TEXT,
                 os_info                         TEXT,
-                spark_version                   TEXT
+                spark_version                   TEXT,
+                general_settings_json           TEXT,
+                java_memory_raw                 TEXT,
+                code_envs_json                  TEXT,
+                log_errors_json                 TEXT,
+                project_footprint_json          TEXT
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('run_campaign_summaries')} (
                 run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
@@ -692,6 +715,11 @@ class SQLTrackingDB:
             connections_json = _L(json.dumps(snap['connections'])) if snap.get('connections') is not None else 'NULL'
             filesystem_mounts_json = _L(json.dumps(snap['filesystem_mounts'])) if snap.get('filesystem_mounts') is not None else 'NULL'
             user_profile_stats_json = _L(json.dumps(snap['user_profile_stats'])) if snap.get('user_profile_stats') is not None else 'NULL'
+            general_settings_json = _L(json.dumps(snap['general_settings'])) if snap.get('general_settings') is not None else 'NULL'
+            java_memory_raw = _L(snap.get('java_memory_raw')) if snap.get('java_memory_raw') is not None else 'NULL'
+            code_envs_json = _L(json.dumps(snap['code_envs'])) if snap.get('code_envs') is not None else 'NULL'
+            log_errors_json = _L(json.dumps(snap['log_errors'])) if snap.get('log_errors') is not None else 'NULL'
+            project_footprint_json = _L(json.dumps(snap['project_footprint'])) if snap.get('project_footprint') is not None else 'NULL'
             pre.append(
                 f"INSERT INTO {self._t('run_health_metrics')} "
                 f"(run_id, cpu_cores, memory_total_mb, memory_used_mb, "
@@ -706,7 +734,10 @@ class SQLTrackingDB:
                 f"license_expiry_date, "
                 f"plugins_json, connections_json, "
                 f"filesystem_mounts_json, user_profile_stats_json, "
-                f"os_info, spark_version) "
+                f"os_info, spark_version, "
+                f"general_settings_json, java_memory_raw, "
+                f"code_envs_json, log_errors_json, "
+                f"project_footprint_json) "
                 f"VALUES ({run_id}, {_int_val(hm.get('cpu_cores'))}, {_int_val(hm.get('memory_total_mb'))}, "
                 f"{_int_val(hm.get('memory_used_mb'))}, {_int_val(hm.get('memory_available_mb'))}, "
                 f"{_int_val(hm.get('swap_total_mb'))}, {_int_val(hm.get('swap_used_mb'))}, "
@@ -720,7 +751,10 @@ class SQLTrackingDB:
                 f"{_L(hm.get('license_expiry_date'))}, "
                 f"{plugins_json}, {connections_json}, "
                 f"{filesystem_mounts_json}, {user_profile_stats_json}, "
-                f"{_L(snap.get('os_info'))}, {_L(snap.get('spark_version'))})"
+                f"{_L(snap.get('os_info'))}, {_L(snap.get('spark_version'))}, "
+                f"{general_settings_json}, {java_memory_raw}, "
+                f"{code_envs_json}, {log_errors_json}, "
+                f"{project_footprint_json})"
             )
 
         # Campaign summaries
