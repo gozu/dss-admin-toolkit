@@ -204,7 +204,7 @@ export function EcrImageCleaner() {
   );
 
   const sortedRows = useMemo(() => {
-    if (!sortField) return visibleRows;
+    if (!sortField) return sortRows(visibleRows, 'pushedAt', 'asc');
     return sortRows(visibleRows, sortField, sortDir);
   }, [visibleRows, sortField, sortDir]);
 
