@@ -4429,8 +4429,11 @@ def api_connection_health():
             ok = resp.get('connectionOK', False) if isinstance(resp, dict) else False
             if ok:
                 return {'name': name, 'type': conn_type, 'status': 'ok'}
-            return {'name': name, 'type': conn_type, 'status': 'fail',
-                    'error': 'Connection test returned not OK'}
+            error_msg = ''
+            if isinstance(resp, dict):
+                error_msg = resp.get('connectionErrorMsg') or resp.get('message') or ''
+            sanitized = _SANITIZE_RE.sub('***', error_msg)[:200] if error_msg else 'Connection test failed'
+            return {'name': name, 'type': conn_type, 'status': 'fail', 'error': sanitized}
         except Exception as exc:
             msg = str(exc)
             if 'NotImplementedException' in msg or 'not implemented' in msg.lower():
