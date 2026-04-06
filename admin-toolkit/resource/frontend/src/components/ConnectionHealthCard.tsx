@@ -3,6 +3,32 @@ import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionHealthResult } from '../types';
 
+type ErrorCategory = 'missing_config' | 'missing_credentials' | 'invalid_credentials' | 'unreachable';
+
+const CATEGORY_LABELS: Record<ErrorCategory, string> = {
+  missing_config: 'Missing Configuration',
+  missing_credentials: 'Missing Credentials',
+  invalid_credentials: 'Invalid Credentials',
+  unreachable: 'Unreachable / Driver Error',
+};
+
+const CATEGORY_COLORS: Record<ErrorCategory, string> = {
+  missing_config: 'var(--neon-red)',
+  missing_credentials: 'amber-400',
+  invalid_credentials: 'var(--neon-red)',
+  unreachable: 'var(--text-muted)',
+};
+
+const CATEGORY_ORDER: ErrorCategory[] = ['missing_config', 'missing_credentials', 'invalid_credentials', 'unreachable'];
+
+function classifyError(error: string): ErrorCategory {
+  const lower = error.toLowerCase();
+  if (/does not have credentials|user .* does not have/.test(lower)) return 'missing_credentials';
+  if (/should not be left blank|missing .* parameter|no models selected|not defined/.test(lower)) return 'missing_config';
+  if (/password authentication failed|incorrect username or password|invalid.*credentials|security token.*invalid|expired|failed to get access token|unauthorized_client|trial has ended|cannot invoke.*null/.test(lower)) return 'invalid_credentials';
+  return 'unreachable';
+}
+
 export function ConnectionHealthCard() {
   const { state, setParsedData } = useDiag();
   const { parsedData } = state;
@@ -96,6 +122,21 @@ export function ConnectionHealthCard() {
   const hasResults = results.length > 0;
   const isLoading = scanning || (hasResults && total !== null && results.length < total);
 
+  // Group failures by category
+  const groupedFailures = useMemo(() => {
+    const groups: Record<ErrorCategory, ConnectionHealthResult[]> = {
+      missing_config: [],
+      missing_credentials: [],
+      invalid_credentials: [],
+      unreachable: [],
+    };
+    for (const c of failedConnections) {
+      const cat = classifyError(c.error || '');
+      groups[cat].push(c);
+    }
+    return groups;
+  }, [failedConnections]);
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -170,53 +211,61 @@ export function ConnectionHealthCard() {
         </section>
       )}
 
-      {/* Failed connections table */}
+      {/* Failed connections grouped by category */}
       {hasResults && (
         <section className="glass-card p-4">
           <div className="overflow-auto max-h-[60vh]">
-            <table className="table-dark w-full">
-              <thead>
-                <tr>
-                  <th>Connection</th>
-                  <th>Type</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {failedConnections.length === 0 && !isLoading ? (
-                  <tr>
-                    <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
-                      All testable connections are healthy.
-                    </td>
-                  </tr>
-                ) : failedConnections.length === 0 && isLoading ? (
-                  <tr>
-                    <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
-                      Scanning. Failed connections will appear here as they are found.
-                    </td>
-                  </tr>
-                ) : (
-                  failedConnections.map((c) => (
-                    <tr key={c.name} className="hover:bg-[var(--bg-glass)]">
-                      <td>
-                        <a
-                          href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(c.name)}/`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[var(--neon-cyan)] hover:underline"
-                        >
-                          {c.name}
-                        </a>
-                      </td>
-                      <td className="text-[var(--text-secondary)]">{c.type}</td>
-                      <td className="text-[var(--text-muted)] max-w-[400px] truncate" title={c.error || ''}>
-                        {c.error || ''}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+            {failedConnections.length === 0 && !isLoading ? (
+              <div className="py-6 text-center text-sm text-[var(--text-muted)]">
+                All testable connections are healthy.
+              </div>
+            ) : failedConnections.length === 0 && isLoading ? (
+              <div className="py-6 text-center text-sm text-[var(--text-muted)]">
+                Scanning. Failed connections will appear here as they are found.
+              </div>
+            ) : (
+              CATEGORY_ORDER.filter((cat) => groupedFailures[cat].length > 0).map((cat) => (
+                <div key={cat} className="mb-4 last:mb-0">
+                  <div className="flex items-center gap-2 mb-2">
+                    <h4 className="text-sm font-semibold" style={{ color: CATEGORY_COLORS[cat] }}>
+                      {CATEGORY_LABELS[cat]}
+                    </h4>
+                    <span className="text-xs font-mono text-[var(--text-muted)]">
+                      ({groupedFailures[cat].length})
+                    </span>
+                  </div>
+                  <table className="table-dark w-full">
+                    <thead>
+                      <tr>
+                        <th>Connection</th>
+                        <th>Type</th>
+                        <th>Error</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groupedFailures[cat].map((c) => (
+                        <tr key={c.name} className="hover:bg-[var(--bg-glass)] align-top">
+                          <td className="whitespace-nowrap">
+                            <a
+                              href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(c.name)}/`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[var(--neon-cyan)] hover:underline"
+                            >
+                              {c.name}
+                            </a>
+                          </td>
+                          <td className="text-[var(--text-secondary)] whitespace-nowrap">{c.type}</td>
+                          <td className="text-[var(--text-muted)] text-xs leading-relaxed max-w-[500px]">
+                            {c.error || ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))
+            )}
           </div>
         </section>
       )}
