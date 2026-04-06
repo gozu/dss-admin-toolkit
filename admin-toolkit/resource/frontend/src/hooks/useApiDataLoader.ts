@@ -1356,14 +1356,59 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           }
         };
 
+        // Connection health scan — runs in Phase 3 alongside heavy endpoints
+        const runConnectionHealth = async () => {
+          try {
+            const url = getBackendUrl('/api/connections/health');
+            const response = await fetch(url, { credentials: 'same-origin' });
+            if (!response.ok || !response.body) return;
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            const collected: ConnectionHealthResult[] = [];
+
+            while (true) {
+              if (cancelled) { reader.cancel(); return; }
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const parts = buffer.split('\n\n');
+              buffer = parts.pop() || '';
+
+              for (const part of parts) {
+                const eventMatch = part.match(/^event:\s*(\S+)/m);
+                const dataMatch = part.match(/^data:\s*(.*)/m);
+                if (!eventMatch || !dataMatch) continue;
+
+                const eventType = eventMatch[1];
+                let payload: Record<string, unknown>;
+                try { payload = JSON.parse(dataMatch[1]) as Record<string, unknown>; } catch { continue; }
+
+                if (eventType === 'init') {
+                  dispatch({ type: 'SET_PARSED_DATA', payload: { connectionHealthTotal: Number(payload.total) } });
+                } else if (eventType === 'conn') {
+                  collected.push(payload as unknown as ConnectionHealthResult);
+                  dispatch({ type: 'SET_PARSED_DATA', payload: { connectionHealth: [...collected] } });
+                }
+              }
+            }
+            log(`Connection health scan done (${collected.length} connections)`);
+          } catch (err) {
+            log(`Connection health scan failed: ${getErrorMessage(err)}`, 'warn');
+          }
+        };
+
         log(
-          'Phase 3 strategy: launch code-envs + project-footprint in parallel; defer dir-tree until Directory page is opened',
+          'Phase 3 strategy: launch code-envs + project-footprint + connection-health in parallel; defer dir-tree until Directory page is opened',
         );
         const phase3Start = nowMs();
         const heavyStart = nowMs();
         const lowStart = nowMs();
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
+        const connectionHealthGate = runConnectionHealth();
         log('Deferred /api/dir-tree until Directory page is opened');
         prefetchInactiveProjects(); // warm cache for Project Cleaner
         const lowGate = Promise.allSettled([runProjects(), runLogs()]);
@@ -1417,52 +1462,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           log(`TIMING_TABLE:${rows.join(';;')}`);
         }
         log('Live data load completed');
-
-        // Connection health scan — runs as deferred tail so it doesn't block main load
-        const runConnectionHealth = async () => {
-          try {
-            const url = getBackendUrl('/api/connections/health');
-            const response = await fetch(url, { credentials: 'same-origin' });
-            if (!response.ok || !response.body) return;
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            const collected: ConnectionHealthResult[] = [];
-
-            while (true) {
-              if (cancelled) { reader.cancel(); return; }
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              const parts = buffer.split('\n\n');
-              buffer = parts.pop() || '';
-
-              for (const part of parts) {
-                const eventMatch = part.match(/^event:\s*(\S+)/m);
-                const dataMatch = part.match(/^data:\s*(.*)/m);
-                if (!eventMatch || !dataMatch) continue;
-
-                const eventType = eventMatch[1];
-                let payload: Record<string, unknown>;
-                try { payload = JSON.parse(dataMatch[1]) as Record<string, unknown>; } catch { continue; }
-
-                if (eventType === 'init') {
-                  dispatch({ type: 'SET_PARSED_DATA', payload: { connectionHealthTotal: Number(payload.total) } });
-                } else if (eventType === 'conn') {
-                  collected.push(payload as unknown as ConnectionHealthResult);
-                  dispatch({ type: 'SET_PARSED_DATA', payload: { connectionHealth: [...collected] } });
-                }
-              }
-            }
-            log(`Connection health scan done (${collected.length} connections)`);
-          } catch (err) {
-            log(`Connection health scan failed: ${getErrorMessage(err)}`, 'warn');
-          }
-        };
-
-        deferredTails.push(runConnectionHealth());
+        deferredTails.push(connectionHealthGate);
         deferredTails.push(
           fetchJson<OutreachData>('/api/tools/outreach-data')
             .then((res) => {
