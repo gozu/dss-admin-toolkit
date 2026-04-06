@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionHealthResult } from '../types';
@@ -7,12 +7,10 @@ export function ConnectionHealthCard() {
   const { state, setParsedData } = useDiag();
   const { parsedData } = state;
 
-  const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [incomplete, setIncomplete] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Always read from context — results are dispatched incrementally during scan
   const results = parsedData.connectionHealth || [];
   const total = parsedData.connectionHealthTotal ?? null;
 
@@ -26,14 +24,13 @@ export function ConnectionHealthCard() {
     }
   }, []);
 
-  const runScan = useCallback(async () => {
+  const rescan = useCallback(async () => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setLoading(true);
+    setScanning(true);
     setError(null);
-    setIncomplete(false);
     setParsedData({ connectionHealth: [], connectionHealthTotal: null });
 
     try {
@@ -50,7 +47,6 @@ export function ConnectionHealthCard() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let gotDone = false;
       const collected: ConnectionHealthResult[] = [];
 
       while (true) {
@@ -75,45 +71,30 @@ export function ConnectionHealthCard() {
           } else if (eventType === 'init') {
             setParsedData({ connectionHealthTotal: Number(payload.total) });
           } else if (eventType === 'conn') {
-            const item = payload as unknown as ConnectionHealthResult;
-            collected.push(item);
+            collected.push(payload as unknown as ConnectionHealthResult);
             setParsedData({ connectionHealth: [...collected] });
-          } else if (eventType === 'done') {
-            gotDone = true;
           }
         }
       }
-
-      if (!gotDone) {
-        setIncomplete(true);
-      }
     } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        setIncomplete(true);
-        return;
-      }
+      if ((err as Error).name === 'AbortError') return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      setScanning(false);
       abortRef.current = null;
     }
   }, [setParsedData]);
 
   const abortScan = useCallback(() => {
     abortRef.current?.abort();
+    setScanning(false);
   }, []);
-
-  // Auto-scan on mount only if no persisted results
-  const hasPersistedResults = (parsedData.connectionHealth?.length ?? 0) > 0;
-  useEffect(() => {
-    if (!hasPersistedResults) runScan();
-    return () => { abortRef.current?.abort(); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const failedConnections = results.filter((r) => r.status === 'fail');
   const okCount = results.filter((r) => r.status === 'ok').length;
   const skippedCount = results.filter((r) => r.status === 'skipped').length;
   const hasResults = results.length > 0;
+  const isLoading = scanning || (hasResults && total !== null && results.length < total);
 
   return (
     <div className="space-y-4">
@@ -125,17 +106,17 @@ export function ConnectionHealthCard() {
         </p>
         <div className="mt-3 flex items-center gap-3">
           <button
-            onClick={runScan}
-            disabled={loading}
+            onClick={rescan}
+            disabled={scanning}
             className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Scanning...' : 'Rescan'}
+            {scanning ? 'Scanning...' : 'Rescan'}
           </button>
         </div>
       </section>
 
       {/* Progress */}
-      {loading && (
+      {isLoading && (
         <section className="glass-card p-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
@@ -163,22 +144,13 @@ export function ConnectionHealthCard() {
         </section>
       )}
 
-      {/* Incomplete warning */}
-      {incomplete && !loading && (
-        <section className="glass-card p-4">
-          <div className="text-sm text-amber-400">
-            Scan incomplete — results may not reflect full health status.
-          </div>
-        </section>
-      )}
-
       {/* Stats */}
       {hasResults && (
         <section className="glass-card p-4">
           <div className="grid grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-mono text-[var(--text-primary)]">
-                {total !== null && loading ? `${results.length} / ${total}` : results.length}
+                {total !== null && isLoading ? `${results.length} / ${total}` : results.length}
               </div>
               <div className="text-xs text-[var(--text-muted)]">Tested</div>
             </div>
@@ -211,13 +183,13 @@ export function ConnectionHealthCard() {
                 </tr>
               </thead>
               <tbody>
-                {failedConnections.length === 0 && !loading ? (
+                {failedConnections.length === 0 && !isLoading ? (
                   <tr>
                     <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
                       All testable connections are healthy.
                     </td>
                   </tr>
-                ) : failedConnections.length === 0 && loading ? (
+                ) : failedConnections.length === 0 && isLoading ? (
                   <tr>
                     <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
                       Scanning. Failed connections will appear here as they are found.
