@@ -7,17 +7,14 @@ export function ConnectionHealthCard() {
   const { state, setParsedData } = useDiag();
   const { parsedData } = state;
 
-  // Live streaming state (only while scan is active)
-  const [liveResults, setLiveResults] = useState<ConnectionHealthResult[]>([]);
-  const [liveTotal, setLiveTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [incomplete, setIncomplete] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Use persisted results from context, fall back to live results during scan
-  const results = loading ? liveResults : (parsedData.connectionHealth || []);
-  const total = loading ? liveTotal : (parsedData.connectionHealthTotal ?? null);
+  // Always read from context — results are dispatched incrementally during scan
+  const results = parsedData.connectionHealth || [];
+  const total = parsedData.connectionHealthTotal ?? null;
 
   const dssBaseUrl = useMemo(() => {
     const bUrl = getBackendUrl('/');
@@ -36,9 +33,8 @@ export function ConnectionHealthCard() {
 
     setLoading(true);
     setError(null);
-    setLiveResults([]);
-    setLiveTotal(null);
     setIncomplete(false);
+    setParsedData({ connectionHealth: [], connectionHealthTotal: null });
 
     try {
       const url = getBackendUrl('/api/connections/health');
@@ -77,11 +73,11 @@ export function ConnectionHealthCard() {
           if (eventType === 'error') {
             throw new Error(String(payload.error || 'Scan error'));
           } else if (eventType === 'init') {
-            setLiveTotal(Number(payload.total));
+            setParsedData({ connectionHealthTotal: Number(payload.total) });
           } else if (eventType === 'conn') {
             const item = payload as unknown as ConnectionHealthResult;
             collected.push(item);
-            setLiveResults([...collected]);
+            setParsedData({ connectionHealth: [...collected] });
           } else if (eventType === 'done') {
             gotDone = true;
           }
@@ -91,12 +87,6 @@ export function ConnectionHealthCard() {
       if (!gotDone) {
         setIncomplete(true);
       }
-
-      // Persist results to context so they survive navigation
-      setParsedData({
-        connectionHealth: collected,
-        connectionHealthTotal: collected.length,
-      });
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         setIncomplete(true);
