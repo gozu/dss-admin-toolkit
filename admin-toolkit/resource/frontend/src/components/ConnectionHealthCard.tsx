@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionHealthResult } from '../types';
 
@@ -11,22 +10,10 @@ interface HealthSummary {
   healthPct: number;
 }
 
-const STATUS_ICON: Record<string, string> = {
-  ok: '\u2713',
-  fail: '\u2717',
-  skipped: '\u2013',
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  ok: 'var(--status-success)',
-  fail: 'var(--status-critical)',
-  skipped: 'var(--text-muted)',
-};
-
 export function ConnectionHealthCard() {
   const [results, setResults] = useState<ConnectionHealthResult[]>([]);
   const [total, setTotal] = useState<number | null>(null);
-  const [summary, setSummary] = useState<HealthSummary | null>(null);
+  const [, setSummary] = useState<HealthSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [incomplete, setIncomplete] = useState(false);
@@ -117,44 +104,42 @@ export function ConnectionHealthCard() {
     abortRef.current?.abort();
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => () => { abortRef.current?.abort(); }, []);
 
+  const failedConnections = results.filter((r) => r.status === 'fail');
+  const okCount = results.filter((r) => r.status === 'ok').length;
   const skippedCount = results.filter((r) => r.status === 'skipped').length;
-  const scanned = results.length;
-  const hasScanRun = summary !== null || results.length > 0 || error !== null;
-
-  const badgeClass = !summary ? 'badge-info'
-    : summary.healthPct >= 80 ? 'badge-success'
-    : summary.healthPct >= 50 ? 'badge-warning'
-    : 'badge-critical';
+  const hasResults = results.length > 0;
 
   return (
-    <motion.div
-      className="chart-container"
-      id="connection-health"
-      initial={{ opacity: 0, y: 20 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '-50px' }}
-      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-    >
-      <div className="chart-header">
-        <div className="flex items-center gap-2">
-          <h4>Connection Health</h4>
-          {summary && (
-            <span className={`badge ${badgeClass} font-mono`}>
-              {summary.healthPct}%
-            </span>
-          )}
-          {loading && total !== null && (
-            <span className="text-xs text-[var(--text-muted)] font-mono">
-              {scanned} / {total}
-            </span>
-          )}
+    <div className="space-y-4">
+      {/* Header */}
+      <section className="glass-card p-4">
+        <h3 className="text-lg font-semibold text-[var(--text-primary)]">Connection Health</h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          Tests all DSS connections and reports those that are not returning OK.
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={runScan}
+            disabled={loading}
+            className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Scanning...' : hasResults ? 'Rescan' : 'Scan Connections'}
+          </button>
         </div>
-        {loading ? (
-          <div className="flex items-center gap-2">
-            <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+      </section>
+
+      {/* Progress */}
+      {loading && (
+        <section className="glass-card p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+              {total !== null
+                ? `Testing connections\u2026 ${results.length} / ${total}`
+                : 'Discovering connections\u2026'}
+            </div>
             <button
               onClick={abortScan}
               className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30 hover:bg-[var(--bg-glass-hover)] transition-colors"
@@ -162,75 +147,103 @@ export function ConnectionHealthCard() {
               Abort
             </button>
           </div>
-        ) : (
-          <button
-            onClick={runScan}
-            className="px-3 py-1 rounded-md text-xs font-medium text-[var(--accent)] border border-[var(--accent)]/30 hover:bg-[var(--accent)]/10 transition-colors"
-          >
-            {hasScanRun ? 'Rescan' : 'Scan'}
-          </button>
-        )}
-      </div>
+        </section>
+      )}
 
       {/* Error */}
       {error && (
-        <div className="px-4 py-3 text-sm text-[var(--status-critical)]">{error}</div>
+        <section className="glass-card p-4">
+          <div className="text-sm text-[var(--neon-red)]">
+            <span className="font-medium">Scan error:</span> {error}
+          </div>
+        </section>
       )}
 
       {/* Incomplete warning */}
       {incomplete && !loading && (
-        <div className="px-4 py-2 text-xs text-[var(--status-warning)]">
-          Scan incomplete — results may not reflect full health status.
-        </div>
+        <section className="glass-card p-4">
+          <div className="text-sm text-amber-400">
+            Scan incomplete — results may not reflect full health status.
+          </div>
+        </section>
       )}
 
-      {/* Live results table — populates in real time as events stream in */}
-      {hasScanRun && !error && (
-        <div className="chart-summary">
-          {results.length > 0 ? (
-            <table>
+      {/* Stats */}
+      {hasResults && (
+        <section className="glass-card p-4">
+          <div className="grid grid-cols-4 gap-4">
+            <div className="text-center">
+              <div className="text-2xl font-mono text-[var(--text-primary)]">
+                {total !== null ? `${results.length} / ${total}` : results.length}
+              </div>
+              <div className="text-xs text-[var(--text-muted)]">Tested</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-mono text-[var(--neon-green)]">{okCount}</div>
+              <div className="text-xs text-[var(--text-muted)]">Healthy</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-mono text-[var(--neon-red)]">{failedConnections.length}</div>
+              <div className="text-xs text-[var(--text-muted)]">Failed</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-mono text-[var(--text-muted)]">{skippedCount}</div>
+              <div className="text-xs text-[var(--text-muted)]">Skipped</div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Failed connections table */}
+      {hasResults && (
+        <section className="glass-card p-4">
+          <div className="overflow-auto max-h-[60vh]">
+            <table className="table-dark w-full">
               <thead>
                 <tr>
-                  <th className="text-center text-xs font-medium text-[var(--text-muted)] pb-1 w-8"></th>
-                  <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Connection</th>
-                  <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Type</th>
-                  <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Error</th>
+                  <th>Connection</th>
+                  <th>Type</th>
+                  <th>Error</th>
                 </tr>
               </thead>
               <tbody>
-                {results.map((c) => (
-                  <tr key={c.name}>
-                    <td className="text-center" style={{ color: STATUS_COLOR[c.status] }}>
-                      {STATUS_ICON[c.status]}
-                    </td>
-                    <td className="font-mono">
-                      <a
-                        href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(c.name)}/`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[var(--neon-cyan)] hover:underline"
-                      >
-                        {c.name}
-                      </a>
-                    </td>
-                    <td className="text-[var(--text-secondary)]">{c.type}</td>
-                    <td className="text-[var(--text-muted)] max-w-[300px] truncate" title={c.error || ''}>
-                      {c.error || ''}
+                {failedConnections.length === 0 && !loading ? (
+                  <tr>
+                    <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
+                      All testable connections are healthy.
                     </td>
                   </tr>
-                ))}
+                ) : failedConnections.length === 0 && loading ? (
+                  <tr>
+                    <td colSpan={3} className="py-6 text-center text-sm text-[var(--text-muted)]">
+                      Scanning. Failed connections will appear here as they are found.
+                    </td>
+                  </tr>
+                ) : (
+                  failedConnections.map((c) => (
+                    <tr key={c.name} className="hover:bg-[var(--bg-glass)]">
+                      <td>
+                        <a
+                          href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(c.name)}/`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--neon-cyan)] hover:underline"
+                        >
+                          {c.name}
+                        </a>
+                      </td>
+                      <td className="text-[var(--text-secondary)]">{c.type}</td>
+                      <td className="text-[var(--text-muted)] max-w-[400px] truncate" title={c.error || ''}>
+                        {c.error || ''}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
-          ) : !loading ? (
-            <div className="px-4 py-3 text-sm text-[var(--text-muted)]">No results.</div>
-          ) : null}
-          {!loading && skippedCount > 0 && (
-            <div className="px-4 py-2 text-xs text-[var(--text-muted)]">
-              {skippedCount} connection{skippedCount !== 1 ? 's' : ''} skipped (test not supported)
-            </div>
-          )}
-        </div>
+          </div>
+        </section>
       )}
-    </motion.div>
+    </div>
   );
 }
