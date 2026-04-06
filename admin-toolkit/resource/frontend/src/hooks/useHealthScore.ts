@@ -587,45 +587,61 @@ function scoreCodeEnvComplexity(
   const risks: number[] = [];
   const issues: HealthIssue[] = [];
 
+  const criticalProjects: string[] = [];
+  const warningProjects: string[] = [];
+  const infoProjects: string[] = [];
+
   for (const row of projectFootprint) {
     const count = row.codeEnvCount || 0;
     const risk = normalizeCodeEnvRisk(count);
     risks.push(risk);
 
     if (count >= 4) {
-      issues.push({
-        id: `project-codenv-angry-${row.projectKey}`,
-        category: 'code_envs',
-        severity: 'critical',
-        title: `${row.projectKey} uses ${count} code envs`,
-        description: 'Each extra code environment multiplies size, fragility, deployment time, and failure surface.',
-        recommendation: 'Consolidate toward a single code environment per project.',
-        value: count,
-        threshold: '<=1',
-      });
+      criticalProjects.push(`${row.projectKey} (${count})`);
     } else if (count === 3) {
-      issues.push({
-        id: `project-codenv-red-${row.projectKey}`,
-        category: 'code_envs',
-        severity: 'warning',
-        title: `${row.projectKey} uses 3 code envs`,
-        description: 'Multiple code environments increase maintenance overhead and drift risk.',
-        recommendation: 'Reduce project code environments to 1-2, ideally 1.',
-        value: count,
-        threshold: '<=1',
-      });
+      warningProjects.push(row.projectKey);
     } else if (count === 2) {
-      issues.push({
-        id: `project-codenv-orange-${row.projectKey}`,
-        category: 'code_envs',
-        severity: 'info',
-        title: `${row.projectKey} uses 2 code envs`,
-        description: 'Two code environments already increase rebuild and deployment complexity.',
-        recommendation: 'Consolidate to a single environment when possible.',
-        value: count,
-        threshold: '<=1',
-      });
+      infoProjects.push(row.projectKey);
     }
+  }
+
+  if (criticalProjects.length > 0) {
+    const preview = criticalProjects.slice(0, 5).join(', ');
+    const more = criticalProjects.length > 5 ? ` and ${criticalProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-codenv-critical-group',
+      category: 'code_envs',
+      severity: 'critical',
+      title: `${criticalProjects.length} project${criticalProjects.length > 1 ? 's' : ''} have 4+ code envs`,
+      description: `${preview}${more}. Each extra code environment multiplies size, fragility, deployment time, and failure surface.`,
+      recommendation: 'Consolidate toward a single code environment per project.',
+    });
+  }
+
+  if (warningProjects.length > 0) {
+    const preview = warningProjects.slice(0, 5).join(', ');
+    const more = warningProjects.length > 5 ? ` and ${warningProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-codenv-warning-group',
+      category: 'code_envs',
+      severity: 'warning',
+      title: `${warningProjects.length} project${warningProjects.length > 1 ? 's' : ''} have 3 code envs`,
+      description: `${preview}${more}. Multiple code environments increase maintenance overhead and drift risk.`,
+      recommendation: 'Reduce project code environments to 1-2, ideally 1.',
+    });
+  }
+
+  if (infoProjects.length > 0) {
+    const preview = infoProjects.slice(0, 5).join(', ');
+    const more = infoProjects.length > 5 ? ` and ${infoProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-codenv-info-group',
+      category: 'code_envs',
+      severity: 'info',
+      title: `${infoProjects.length} project${infoProjects.length > 1 ? 's' : ''} have 2 code envs`,
+      description: `${preview}${more}. Two code environments already increase rebuild and deployment complexity.`,
+      recommendation: 'Consolidate to a single environment when possible.',
+    });
   }
 
   const avgRisk = risks.length > 0 ? risks.reduce((sum, v) => sum + v, 0) / risks.length : 0;
@@ -648,6 +664,10 @@ function scoreProjectSizePressure(
   const risks: number[] = [];
   const issues: HealthIssue[] = [];
 
+  const hugeProjects: string[] = [];
+  const criticalSizeProjects: string[] = [];
+  const highSizeProjects: string[] = [];
+
   for (const row of projectFootprint) {
     const totalGb = row.totalGB ?? ((row.totalBytes || 0) / (1024 * 1024 * 1024));
     const sizeRisk = typeof row.projectSizeIndex === 'number'
@@ -656,39 +676,55 @@ function scoreProjectSizePressure(
     risks.push(sizeRisk);
 
     if (totalGb >= 40) {
-      issues.push({
-        id: `project-size-40gb-${row.projectKey}`,
-        category: 'project_footprint',
-        severity: 'critical',
-        title: `${row.projectKey} is ${totalGb.toFixed(2)}GB`,
-        description: 'Project size is above 40GB and is considered a severe storage and operational risk.',
-        recommendation: 'Prioritize cleanup or archival for this project.',
-        value: `${totalGb.toFixed(2)} GB`,
-        threshold: '< 40 GB',
-      });
+      hugeProjects.push(`${row.projectKey} (${totalGb.toFixed(1)}GB)`);
       continue;
     }
 
     const sizeHealth = row.projectSizeHealth;
     if (sizeHealth === 'angry-red') {
-      issues.push({
-        id: `project-size-angry-${row.projectKey}`,
-        category: 'project_footprint',
-        severity: 'critical',
-        title: `${row.projectKey} has critical relative project size`,
-        description: 'This project is significantly larger than peers on this instance.',
-        recommendation: 'Review managed data/folders and archive or purge stale assets.',
-      });
+      criticalSizeProjects.push(row.projectKey);
     } else if (sizeHealth === 'red') {
-      issues.push({
-        id: `project-size-red-${row.projectKey}`,
-        category: 'project_footprint',
-        severity: 'warning',
-        title: `${row.projectKey} has high project size`,
-        description: 'This project size is above instance norm and adds storage pressure.',
-        recommendation: 'Review large managed datasets/folders for cleanup.',
-      });
+      highSizeProjects.push(row.projectKey);
     }
+  }
+
+  if (hugeProjects.length > 0) {
+    const preview = hugeProjects.slice(0, 5).join(', ');
+    const more = hugeProjects.length > 5 ? ` and ${hugeProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-size-huge-group',
+      category: 'project_footprint',
+      severity: 'critical',
+      title: `${hugeProjects.length} project${hugeProjects.length > 1 ? 's' : ''} exceed 40GB`,
+      description: `${preview}${more}. Project size above 40GB is a severe storage and operational risk.`,
+      recommendation: 'Prioritize cleanup or archival for these projects.',
+    });
+  }
+
+  if (criticalSizeProjects.length > 0) {
+    const preview = criticalSizeProjects.slice(0, 5).join(', ');
+    const more = criticalSizeProjects.length > 5 ? ` and ${criticalSizeProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-size-critical-group',
+      category: 'project_footprint',
+      severity: 'critical',
+      title: `${criticalSizeProjects.length} project${criticalSizeProjects.length > 1 ? 's' : ''} have critical relative size`,
+      description: `${preview}${more}. These projects are significantly larger than peers on this instance.`,
+      recommendation: 'Review managed data/folders and archive or purge stale assets.',
+    });
+  }
+
+  if (highSizeProjects.length > 0) {
+    const preview = highSizeProjects.slice(0, 5).join(', ');
+    const more = highSizeProjects.length > 5 ? ` and ${highSizeProjects.length - 5} more` : '';
+    issues.push({
+      id: 'project-size-high-group',
+      category: 'project_footprint',
+      severity: 'warning',
+      title: `${highSizeProjects.length} project${highSizeProjects.length > 1 ? 's' : ''} have high project size`,
+      description: `${preview}${more}. These projects are above instance norm and add storage pressure.`,
+      recommendation: 'Review large managed datasets/folders for cleanup.',
+    });
   }
 
   const avgRisk = risks.length > 0 ? risks.reduce((sum, v) => sum + v, 0) / risks.length : 0;
