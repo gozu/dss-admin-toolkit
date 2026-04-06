@@ -104,7 +104,8 @@ export function ConnectionHealthCard() {
     abortRef.current?.abort();
   }, []);
 
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  // Auto-scan on mount, cleanup on unmount
+  useEffect(() => { runScan(); return () => { abortRef.current?.abort(); }; }, [runScan]);
 
   const failedConnections = results.filter((r) => r.status === 'fail');
   const okCount = results.filter((r) => r.status === 'ok').length;
@@ -125,7 +126,7 @@ export function ConnectionHealthCard() {
             disabled={loading}
             className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Scanning...' : hasResults ? 'Rescan' : 'Scan Connections'}
+            {loading ? 'Scanning...' : 'Rescan'}
           </button>
         </div>
       </section>
