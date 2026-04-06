@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionHealthResult } from '../types';
@@ -11,6 +11,18 @@ interface HealthSummary {
   healthPct: number;
 }
 
+const STATUS_ICON: Record<string, string> = {
+  ok: '\u2713',
+  fail: '\u2717',
+  skipped: '\u2013',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  ok: 'var(--status-success)',
+  fail: 'var(--status-critical)',
+  skipped: 'var(--text-muted)',
+};
+
 export function ConnectionHealthCard() {
   const [results, setResults] = useState<ConnectionHealthResult[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -19,6 +31,16 @@ export function ConnectionHealthCard() {
   const [error, setError] = useState<string | null>(null);
   const [incomplete, setIncomplete] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  const dssBaseUrl = useMemo(() => {
+    const bUrl = getBackendUrl('/');
+    try {
+      const u = new URL(bUrl, window.location.origin);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      return '';
+    }
+  }, []);
 
   const runScan = useCallback(async () => {
     abortRef.current?.abort();
@@ -98,7 +120,6 @@ export function ConnectionHealthCard() {
   // Cleanup on unmount
   useEffect(() => () => { abortRef.current?.abort(); }, []);
 
-  const failedConnections = results.filter((r) => r.status === 'fail');
   const skippedCount = results.filter((r) => r.status === 'skipped').length;
   const scanned = results.length;
   const hasScanRun = summary !== null || results.length > 0 || error !== null;
@@ -125,14 +146,22 @@ export function ConnectionHealthCard() {
               {summary.healthPct}%
             </span>
           )}
+          {loading && total !== null && (
+            <span className="text-xs text-[var(--text-muted)] font-mono">
+              {scanned} / {total}
+            </span>
+          )}
         </div>
         {loading ? (
-          <button
-            onClick={abortScan}
-            className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30 hover:bg-[var(--bg-glass-hover)] transition-colors"
-          >
-            Abort
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
+            <button
+              onClick={abortScan}
+              className="px-3 py-1 rounded-md text-xs font-medium text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30 hover:bg-[var(--bg-glass-hover)] transition-colors"
+            >
+              Abort
+            </button>
+          </div>
         ) : (
           <button
             onClick={runScan}
@@ -142,16 +171,6 @@ export function ConnectionHealthCard() {
           </button>
         )}
       </div>
-
-      {/* Progress */}
-      {loading && (
-        <div className="px-4 py-3 flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-          <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
-          {total !== null
-            ? `Testing connections\u2026 ${scanned} / ${total}`
-            : 'Discovering connections\u2026'}
-        </div>
-      )}
 
       {/* Error */}
       {error && (
@@ -165,36 +184,47 @@ export function ConnectionHealthCard() {
         </div>
       )}
 
-      {/* Results */}
-      {!loading && !error && hasScanRun && !incomplete && (
+      {/* Live results table — populates in real time as events stream in */}
+      {hasScanRun && !error && (
         <div className="chart-summary">
-          {failedConnections.length === 0 ? (
-            <div className="px-4 py-3 text-sm text-[var(--status-success)]">
-              All {summary ? `${summary.ok} testable` : ''} connections healthy.
-            </div>
-          ) : (
+          {results.length > 0 ? (
             <table>
               <thead>
                 <tr>
+                  <th className="text-center text-xs font-medium text-[var(--text-muted)] pb-1 w-8"></th>
                   <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Connection</th>
                   <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Type</th>
                   <th className="text-left text-xs font-medium text-[var(--text-muted)] pb-1">Error</th>
                 </tr>
               </thead>
               <tbody>
-                {failedConnections.map((c) => (
+                {results.map((c) => (
                   <tr key={c.name}>
-                    <td className="font-mono text-[var(--status-critical)]">{c.name}</td>
+                    <td className="text-center" style={{ color: STATUS_COLOR[c.status] }}>
+                      {STATUS_ICON[c.status]}
+                    </td>
+                    <td className="font-mono">
+                      <a
+                        href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(c.name)}/`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[var(--neon-cyan)] hover:underline"
+                      >
+                        {c.name}
+                      </a>
+                    </td>
                     <td className="text-[var(--text-secondary)]">{c.type}</td>
-                    <td className="text-[var(--text-muted)] max-w-[300px] truncate" title={c.error}>
-                      {c.error}
+                    <td className="text-[var(--text-muted)] max-w-[300px] truncate" title={c.error || ''}>
+                      {c.error || ''}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-          {skippedCount > 0 && (
+          ) : !loading ? (
+            <div className="px-4 py-3 text-sm text-[var(--text-muted)]">No results.</div>
+          ) : null}
+          {!loading && skippedCount > 0 && (
             <div className="px-4 py-2 text-xs text-[var(--text-muted)]">
               {skippedCount} connection{skippedCount !== 1 ? 's' : ''} skipped (test not supported)
             </div>
