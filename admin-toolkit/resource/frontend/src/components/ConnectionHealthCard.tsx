@@ -1,23 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionHealthResult } from '../types';
 
-interface HealthSummary {
-  total: number;
-  ok: number;
-  fail: number;
-  skipped: number;
-  healthPct: number;
-}
-
 export function ConnectionHealthCard() {
-  const [results, setResults] = useState<ConnectionHealthResult[]>([]);
-  const [total, setTotal] = useState<number | null>(null);
-  const [, setSummary] = useState<HealthSummary | null>(null);
+  const { state, setParsedData } = useDiag();
+  const { parsedData } = state;
+
+  // Live streaming state (only while scan is active)
+  const [liveResults, setLiveResults] = useState<ConnectionHealthResult[]>([]);
+  const [liveTotal, setLiveTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [incomplete, setIncomplete] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Use persisted results from context, fall back to live results during scan
+  const results = loading ? liveResults : (parsedData.connectionHealth || []);
+  const total = loading ? liveTotal : (parsedData.connectionHealthTotal ?? null);
 
   const dssBaseUrl = useMemo(() => {
     const bUrl = getBackendUrl('/');
@@ -36,9 +36,8 @@ export function ConnectionHealthCard() {
 
     setLoading(true);
     setError(null);
-    setResults([]);
-    setTotal(null);
-    setSummary(null);
+    setLiveResults([]);
+    setLiveTotal(null);
     setIncomplete(false);
 
     try {
@@ -56,6 +55,7 @@ export function ConnectionHealthCard() {
       const decoder = new TextDecoder();
       let buffer = '';
       let gotDone = false;
+      const collected: ConnectionHealthResult[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -77,17 +77,26 @@ export function ConnectionHealthCard() {
           if (eventType === 'error') {
             throw new Error(String(payload.error || 'Scan error'));
           } else if (eventType === 'init') {
-            setTotal(Number(payload.total));
+            setLiveTotal(Number(payload.total));
           } else if (eventType === 'conn') {
-            setResults((prev) => [...prev, payload as unknown as ConnectionHealthResult]);
+            const item = payload as unknown as ConnectionHealthResult;
+            collected.push(item);
+            setLiveResults([...collected]);
           } else if (eventType === 'done') {
-            setSummary((payload as { summary: HealthSummary }).summary);
             gotDone = true;
           }
         }
       }
 
-      if (!gotDone) setIncomplete(true);
+      if (!gotDone) {
+        setIncomplete(true);
+      }
+
+      // Persist results to context so they survive navigation
+      setParsedData({
+        connectionHealth: collected,
+        connectionHealthTotal: collected.length,
+      });
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         setIncomplete(true);
@@ -98,14 +107,18 @@ export function ConnectionHealthCard() {
       setLoading(false);
       abortRef.current = null;
     }
-  }, []);
+  }, [setParsedData]);
 
   const abortScan = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
-  // Auto-scan on mount, cleanup on unmount
-  useEffect(() => { runScan(); return () => { abortRef.current?.abort(); }; }, [runScan]);
+  // Auto-scan on mount only if no persisted results
+  const hasPersistedResults = (parsedData.connectionHealth?.length ?? 0) > 0;
+  useEffect(() => {
+    if (!hasPersistedResults) runScan();
+    return () => { abortRef.current?.abort(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const failedConnections = results.filter((r) => r.status === 'fail');
   const okCount = results.filter((r) => r.status === 'ok').length;
@@ -175,7 +188,7 @@ export function ConnectionHealthCard() {
           <div className="grid grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-mono text-[var(--text-primary)]">
-                {total !== null ? `${results.length} / ${total}` : results.length}
+                {total !== null && loading ? `${results.length} / ${total}` : results.length}
               </div>
               <div className="text-xs text-[var(--text-muted)]">Tested</div>
             </div>

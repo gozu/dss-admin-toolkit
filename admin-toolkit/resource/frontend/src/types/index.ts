@@ -477,6 +477,8 @@ export interface ParsedData {
   connections?: ConnectionCounts;
   connectionCounts?: ConnectionCounts;
   connectionDetails?: ConnectionDetail[];
+  connectionHealth?: ConnectionHealthResult[];
+  connectionHealthTotal?: number;
   userStats?: UserStats;
   usersByProjects?: Record<string, string>;
   users?: User[];
