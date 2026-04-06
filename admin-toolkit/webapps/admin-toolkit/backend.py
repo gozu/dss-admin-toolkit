@@ -9841,21 +9841,28 @@ def _ecr_get_release_info():
     from datetime import timedelta
     import urllib.request
 
+    t0 = time.time()
     dip_home = _dip_home()
     version_info = _safe_read_json(os.path.join(dip_home, 'dss-version.json')) or {}
     version = version_info.get('product_version') or version_info.get('version') or version_info.get('dssVersion')
     if not version:
         raise ValueError("Cannot determine DSS version from dss-version.json")
+    t1 = time.time()
+    app.logger.info("[perf:ecr] version_read=%.0fms version=%s", (t1 - t0) * 1000, version)
 
     url = 'https://downloads.dataiku.com/public/dss/'
     req = urllib.request.Request(url, headers={'User-Agent': 'AdminToolkit/1.0'})
     with urllib.request.urlopen(req, timeout=10) as resp:
         html = resp.read().decode('utf-8', errors='replace')
+    t2 = time.time()
+    app.logger.info("[perf:ecr] http_fetch=%.0fms url=%s bytes=%d", (t2 - t1) * 1000, url, len(html))
 
     pattern = r'<a\s+href="%s/"[^>]*>%s/</a>.*?(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}' % (
         re.escape(version), re.escape(version)
     )
     m = re.search(pattern, html, re.DOTALL)
+    t3 = time.time()
+    app.logger.info("[perf:ecr] regex_parse=%.0fms found=%s", (t3 - t2) * 1000, bool(m))
     if not m:
         raise ValueError("DSS version %s not found on downloads.dataiku.com" % version)
 
@@ -9884,16 +9891,25 @@ def _ecr_validate_cutoff(cutoff_str):
 
 @app.route('/api/tools/ecr-image-cleaner/release-date')
 def api_ecr_release_date():
+    t0 = time.time()
     try:
+        t1 = time.time()
         info = _ecr_get_release_info()
+        t2 = time.time()
+        app.logger.info("[perf:ecr] release_info=%.0fms (fetch downloads.dataiku.com + parse)", (t2 - t1) * 1000)
         # Pre-warm: install boto3 and detect region now so scan is fast
         try:
+            t3 = time.time()
             _ecr_client()
-        except Exception:
-            pass  # will fail again on scan with a proper error
+            t4 = time.time()
+            app.logger.info("[perf:ecr] ecr_client_prewarm=%.0fms (boto3 + region detect)", (t4 - t3) * 1000)
+        except Exception as e:
+            t4 = time.time()
+            app.logger.info("[perf:ecr] ecr_client_prewarm=%.0fms FAILED: %s", (t4 - t3) * 1000, e)
+        app.logger.info("[perf:ecr] release-date total=%.0fms", (time.time() - t0) * 1000)
         return jsonify(info)
     except Exception as e:
-        app.logger.error("[ecr-image-cleaner] release-date error: %s", e)
+        app.logger.error("[ecr-image-cleaner] release-date error (%.0fms): %s", (time.time() - t0) * 1000, e)
         return jsonify({'error': str(e)}), 500
 
 
