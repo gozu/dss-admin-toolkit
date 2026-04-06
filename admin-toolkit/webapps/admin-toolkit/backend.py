@@ -5351,7 +5351,8 @@ def api_code_envs_compare():
 
     def loader():
         client = dataiku.api_client()
-        env_listings = client.list_code_envs()
+        ttl = _BACKEND_SETTINGS['cache_ttl_code_envs']
+        env_listings = _sdk_fetch('list_code_envs', ttl, lambda: client.list_code_envs() or [])
         _SKIP = {'PLUGIN_MANAGED', 'DSS_INTERNAL'}
         envs: List[Tuple[str, str, Dict[str, str]]] = []
 
@@ -5362,8 +5363,10 @@ def api_code_envs_compare():
                 return None
             try:
                 c = _thread_client()
-                env_obj = c.get_code_env(lang, name)
-                raw = _safe_get_raw(env_obj.get_settings())
+                raw = _sdk_fetch(
+                    f'code_env_settings:{lang}:{name}', ttl,
+                    lambda: _safe_get_raw(_bench_call('get_code_env', c.get_code_env, lang, name).get_settings()),
+                )
                 if str(raw.get('deploymentMode') or '').upper() in _SKIP:
                     return None
                 packages = _parse_spec_packages(raw.get('specPackageList', ''))
