@@ -13,6 +13,7 @@ export { PluginsTable } from './PluginsTable';
 export { CodeEnvsTable } from './CodeEnvsTable';
 export { FilesystemChart } from './FilesystemChart';
 export { ConnectionsChart } from './ConnectionsChart';
+export { ConnectionHealthCard } from './ConnectionHealthCard';
 export { MemoryChart } from './MemoryChart';
 export { MemoryAnalysisCard } from './MemoryAnalysisCard';
 export { Modal } from './Modal';

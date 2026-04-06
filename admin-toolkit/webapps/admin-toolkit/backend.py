@@ -4416,6 +4416,98 @@ def api_connections():
     return jsonify(data)
 
 
+@app.route('/api/connections/health')
+def api_connection_health():
+    """Stream connection health-test results via SSE."""
+    import re
+    _SANITIZE_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|/[\w/.-]{4,}')
+
+    def _test_one(name, conn_type):
+        try:
+            client = _thread_client()
+            resp = client.get_connection(name).test()
+            ok = resp.get('connectionOK', False) if isinstance(resp, dict) else False
+            if ok:
+                return {'name': name, 'type': conn_type, 'status': 'ok'}
+            return {'name': name, 'type': conn_type, 'status': 'fail',
+                    'error': 'Connection test returned not OK'}
+        except Exception as exc:
+            msg = str(exc)
+            if 'NotImplementedException' in msg or 'not implemented' in msg.lower():
+                return {'name': name, 'type': conn_type, 'status': 'skipped'}
+            sanitized = _SANITIZE_RE.sub('***', msg)[:200]
+            return {'name': name, 'type': conn_type, 'status': 'fail', 'error': sanitized}
+
+    def generate():
+        t0 = time.time()
+        try:
+            connections = _sdk_fetch(
+                'list_connections',
+                _BACKEND_SETTINGS['cache_ttl_connections'],
+                lambda: dataiku.api_client().list_connections(),
+            )
+            if isinstance(connections, dict):
+                items = list(connections.items())
+            else:
+                items = [(c.get('name'), c) for c in connections]
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({'error': str(e)[:200]})
+            return
+
+        yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(items)})
+
+        ok_count = 0
+        fail_count = 0
+        skipped_count = 0
+        workers = min(8, max(1, len(items)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {
+                pool.submit(_test_one, name, (config.get('type', 'unknown') if isinstance(config, dict) else 'unknown')): name
+                for name, config in items if name
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {'name': futures[future], 'type': 'unknown', 'status': 'fail',
+                              'error': str(exc)[:200]}
+                st = result.get('status')
+                if st == 'ok':
+                    ok_count += 1
+                elif st == 'fail':
+                    fail_count += 1
+                else:
+                    skipped_count += 1
+                yield "event: conn\ndata: %s\n\n" % json.dumps(result)
+        except GeneratorExit:
+            pool.shutdown(wait=False, cancel_futures=True)
+            return
+        finally:
+            pool.shutdown(wait=False)
+
+        testable = ok_count + fail_count
+        pct = round((ok_count / testable) * 100) if testable > 0 else 100
+
+        total_ms = int((time.time() - t0) * 1000)
+        yield "event: done\ndata: %s\n\n" % json.dumps({
+            'total_ms': total_ms,
+            'summary': {
+                'total': len(items),
+                'ok': ok_count,
+                'fail': fail_count,
+                'skipped': skipped_count,
+                'healthPct': pct,
+            },
+        })
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @app.route('/api/users')
 def api_users():
     client = dataiku.api_client()

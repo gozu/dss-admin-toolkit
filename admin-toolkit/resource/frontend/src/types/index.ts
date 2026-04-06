@@ -396,6 +396,14 @@ export interface ConnectionDetail {
   driverClassName?: string;
 }
 
+// Connection health-test result (streamed via SSE)
+export interface ConnectionHealthResult {
+  name: string;
+  type: string;
+  status: 'ok' | 'fail' | 'skipped';
+  error?: string;
+}
+
 // User stats
 export type UserStats = Record<string, string | number>;
 
