@@ -285,55 +285,6 @@ DATASET_REGISTRY: List[Dict[str, Any]] = [
         ],
     },
 
-    # ── Step 12: Issues (lifecycle) ──
-
-    {
-        'dataset_id': 'issues',
-        'label': 'Issues',
-        'category': CAT_LIFECYCLE,
-        'kind': KIND_INTERVAL_EVENTS,
-        'support': SUPPORT_LIFECYCLE,
-        'table': 'issues',
-        'key_fields': ['campaign_id', 'entity_type', 'entity_key'],
-        'min_schema_version': 1,
-        'columns': [
-            'issue_id', 'campaign_id', 'entity_type', 'entity_key', 'entity_name',
-            'owner_login', 'owner_email', 'status',
-            'first_detected_run', 'first_detected_at',
-            'last_detected_run', 'last_detected_at',
-            'resolved_run', 'resolved_at', 'resolution_reason',
-            'times_regressed', 'times_emailed', 'last_emailed_at',
-        ],
-    },
-
-    # ── Step 13: Outreach (lifecycle) ──
-
-    {
-        'dataset_id': 'outreach_emails',
-        'label': 'Outreach Emails',
-        'category': CAT_LIFECYCLE,
-        'kind': KIND_INTERVAL_EVENTS,
-        'support': SUPPORT_LIFECYCLE,
-        'table': 'outreach_emails',
-        'key_fields': ['campaign_id', 'recipient_login', 'sent_at'],
-        'min_schema_version': 1,
-        'columns': [
-            'email_id', 'run_id', 'campaign_id', 'recipient_login', 'recipient_email',
-            'sent_at', 'status', 'error_message', 'subject', 'channel_id', 'sent_by',
-        ],
-    },
-    {
-        'dataset_id': 'outreach_email_issues',
-        'label': 'Email-Issue Links',
-        'category': CAT_LIFECYCLE,
-        'kind': KIND_INTERVAL_EVENTS,
-        'support': SUPPORT_LIFECYCLE,
-        'table': 'outreach_email_issues',
-        'key_fields': ['email_id', 'issue_id'],
-        'min_schema_version': 1,
-        'columns': ['email_id', 'issue_id'],
-    },
-
     # ── Step 14: Known entities (lifecycle, as-of) ──
 
     {
@@ -363,20 +314,6 @@ DATASET_REGISTRY: List[Dict[str, Any]] = [
             'project_key', 'name', 'owner_login',
             'first_seen_run', 'last_seen_run',
         ],
-    },
-
-    # ── Step 15: Issue notes (lifecycle) ──
-
-    {
-        'dataset_id': 'issue_notes',
-        'label': 'Issue Notes',
-        'category': CAT_LIFECYCLE,
-        'kind': KIND_INTERVAL_EVENTS,
-        'support': SUPPORT_LIFECYCLE,
-        'table': 'issue_notes',
-        'key_fields': ['note_id'],
-        'min_schema_version': 1,
-        'columns': ['note_id', 'issue_id', 'created_at', 'created_by', 'note'],
     },
 
     # ── Step 16: Current-only metadata ──
@@ -438,30 +375,6 @@ REGISTRY_BY_ID: Dict[str, Dict[str, Any]] = {d['dataset_id']: d for d in DATASET
 
 # Lifecycle filter mapping: generic filter → actual _lifecycle values
 LIFECYCLE_FILTER_MAP: Dict[str, Dict[str, list]] = {
-    'issues': {
-        'added': ['opened_between_runs'],
-        'removed': ['resolved_between_runs'],
-        'changed': ['regressed_between_runs', 'visible_only_in_run1', 'visible_only_in_run2'],
-        'unchanged': ['existed_in_both'],
-    },
-    'outreach_emails': {
-        'added': ['event_between_runs'],
-        'removed': [],
-        'changed': ['after_run1'],
-        'unchanged': ['before_run2'],
-    },
-    'outreach_email_issues': {
-        'added': ['event_between_runs'],
-        'removed': [],
-        'changed': ['after_run1'],
-        'unchanged': ['before_run2'],
-    },
-    'issue_notes': {
-        'added': ['created_between_runs'],
-        'removed': [],
-        'changed': [],
-        'unchanged': ['visible_at_run2'],
-    },
 }
 
 
