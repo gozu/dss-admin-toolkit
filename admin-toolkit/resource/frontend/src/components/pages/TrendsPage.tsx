@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import { fetchJson } from '../../utils/api';
@@ -149,6 +149,10 @@ function useTrendsCompare() {
     fetchJson<CompareManifest>(`/api/tracking/compare/full?run1=${run1Id}&run2=${run2Id}`)
       .then((data) => {
         if (c) return;
+        if (data.swapped) {
+          setRun1Id(data.run1.run_id);
+          setRun2Id(data.run2.run_id);
+        }
         setManifest(data);
         addDebugLog(`[trends] Manifest loaded in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
       })
@@ -270,7 +274,7 @@ function CategorySection({ category, datasets, onExpand, expandedSet, detailCach
   expandedSet: Set<string>;
   detailCache: Record<string, CompareDatasetDetail>;
   detailLoading: Set<string>;
-  onReload: (datasetId: string, changeType: string) => void;
+  onReload: (datasetId: string, changeType: string, page?: number, search?: string) => void;
 }) {
   if (datasets.length === 0) return null;
 
@@ -296,7 +300,7 @@ function CategorySection({ category, datasets, onExpand, expandedSet, detailCach
             onToggle={() => onExpand(ds.datasetId)}
             detail={detailCache[ds.datasetId]}
             isLoading={detailLoading.has(ds.datasetId)}
-            onReload={(ct) => onReload(ds.datasetId, ct)}
+            onReload={(ct, pg, s) => onReload(ds.datasetId, ct, pg, s)}
           />
         ))}
       </div>
@@ -311,10 +315,15 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
   onToggle: () => void;
   detail?: CompareDatasetDetail;
   isLoading: boolean;
-  onReload?: (changeType: string) => void;
+  onReload?: (changeType: string, page?: number, search?: string) => void;
 }) {
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const unavailable = !ds.availableInRun1 || !ds.availableInRun2;
+  const showPagination = (ds.kind === 'keyed_table' || ds.kind === 'interval_events' || ds.kind === 'metadata')
+    && detail && detail.totalRows !== undefined && detail.totalRows > (detail.pageSize ?? 100);
+  const showSearch = ds.kind === 'keyed_table' || ds.kind === 'interval_events';
   const totalChanges = ds.added + ds.removed + ds.changed;
   const supportColor = SUPPORT_COLORS[ds.support] || 'var(--text-muted)';
 
@@ -383,18 +392,40 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
             </div>
           )}
 
+          {/* Search input */}
+          {!unavailable && ds.support !== 'current_only' && showSearch && (
+            <SearchInput
+              value={searchTerm}
+              onChange={(v) => {
+                setSearchTerm(v);
+                clearTimeout(searchTimerRef.current);
+                searchTimerRef.current = setTimeout(() => onReload?.(activeFilter, 1, v), 400);
+              }}
+            />
+          )}
+
           {/* Step 42: Filter chips for diffable datasets */}
           {!unavailable && ds.support !== 'current_only' && (ds.kind === 'keyed_table' || ds.kind === 'interval_events') && (
             <FilterChips
               active={activeFilter}
               counts={{ added: ds.added, removed: ds.removed, changed: ds.changed, unchanged: ds.unchanged }}
-              onChange={(f) => { setActiveFilter(f); onReload?.(f); }}
+              onChange={(f) => { setActiveFilter(f); onReload?.(f, 1, searchTerm); }}
             />
           )}
 
           {/* Full / lifecycle content */}
           {!unavailable && ds.support !== 'current_only' && !isLoading && detail && (
             <DatasetContent ds={ds} detail={detail} />
+          )}
+
+          {/* Pagination */}
+          {!unavailable && !isLoading && showPagination && detail && (
+            <PaginationBar
+              page={detail.page ?? 1}
+              pageSize={detail.pageSize ?? 100}
+              totalRows={detail.totalRows ?? 0}
+              onPageChange={(p) => onReload?.(activeFilter, p, searchTerm)}
+            />
           )}
 
           {/* Step 53: Zero-row empty state */}
@@ -448,6 +479,48 @@ function FilterChips({ active, counts, onChange }: {
         );
       })}
     </div>
+  );
+}
+
+/* Pagination bar */
+function PaginationBar({ page, pageSize, totalRows, onPageChange }: {
+  page: number; pageSize: number; totalRows: number; onPageChange: (p: number) => void;
+}) {
+  const totalPages = Math.ceil(totalRows / pageSize);
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-3 mt-3 text-xs font-mono">
+      <button
+        className="px-2 py-1 rounded border border-[var(--border-glass)] text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] disabled:opacity-30"
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+      >
+        ← Prev
+      </button>
+      <span className="text-[var(--text-muted)]">
+        Page {page} of {totalPages} ({totalRows} rows)
+      </span>
+      <button
+        className="px-2 py-1 rounded border border-[var(--border-glass)] text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] disabled:opacity-30"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
+
+/* Search input */
+function SearchInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+      placeholder="Search rows..."
+      className="w-full max-w-xs text-xs font-mono px-2.5 py-1.5 mb-2 rounded border border-[var(--border-glass)] bg-[var(--bg-glass)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-glow)]"
+    />
   );
 }
 
@@ -598,11 +671,6 @@ function KeyedTable({ detail }: { detail: CompareDatasetDetail }) {
           ))}
         </tbody>
       </table>
-      {detail.totalRows !== undefined && detail.totalRows > (detail.pageSize ?? 100) && (
-        <div className="text-xs text-[var(--text-muted)] mt-2 text-center">
-          Showing {rows.length} of {detail.totalRows} rows (page {detail.page})
-        </div>
-      )}
     </div>
   );
 }
@@ -716,11 +784,6 @@ function LifecycleTable({ detail }: { detail: CompareDatasetDetail }) {
           })}
         </tbody>
       </table>
-      {detail.totalRows !== undefined && detail.totalRows > (detail.pageSize ?? 100) && (
-        <div className="text-xs text-[var(--text-muted)] mt-2 text-center">
-          Showing {rows.length} of {detail.totalRows} rows (page {detail.page})
-        </div>
-      )}
     </div>
   );
 }
@@ -808,8 +871,8 @@ export function TrendsPage() {
     });
   }, [detailCache, loadDetail]);
 
-  const handleReload = useCallback((datasetId: string, changeType: string) => {
-    loadDetail(datasetId, changeType);
+  const handleReload = useCallback((datasetId: string, changeType: string, page?: number, search?: string) => {
+    loadDetail(datasetId, changeType, page, search);
   }, [loadDetail]);
 
   // Group datasets by category

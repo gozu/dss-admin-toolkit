@@ -436,6 +436,42 @@ DATASET_REGISTRY: List[Dict[str, Any]] = [
 # Quick lookup by dataset_id
 REGISTRY_BY_ID: Dict[str, Dict[str, Any]] = {d['dataset_id']: d for d in DATASET_REGISTRY}
 
+# Lifecycle filter mapping: generic filter → actual _lifecycle values
+LIFECYCLE_FILTER_MAP: Dict[str, Dict[str, list]] = {
+    'issues': {
+        'added': ['opened_between_runs'],
+        'removed': ['resolved_between_runs'],
+        'changed': ['regressed_between_runs', 'visible_only_in_run1', 'visible_only_in_run2'],
+        'unchanged': ['existed_in_both'],
+    },
+    'outreach_emails': {
+        'added': ['event_between_runs'],
+        'removed': [],
+        'changed': ['after_run1'],
+        'unchanged': ['before_run2'],
+    },
+    'outreach_email_issues': {
+        'added': ['event_between_runs'],
+        'removed': [],
+        'changed': ['after_run1'],
+        'unchanged': ['before_run2'],
+    },
+    'issue_notes': {
+        'added': ['created_between_runs'],
+        'removed': [],
+        'changed': [],
+        'unchanged': ['visible_at_run2'],
+    },
+}
+
+
+def map_filter_to_lifecycle(dataset_id: str, change_type: str):
+    """Map generic filter to lifecycle _lifecycle values. Returns None if no mapping (use generic)."""
+    ds_map = LIFECYCLE_FILTER_MAP.get(dataset_id)
+    if ds_map is None:
+        return None
+    return ds_map.get(change_type, [])
+
 
 # =============================================================================
 # AVAILABILITY — Step 33
@@ -464,6 +500,8 @@ def dataset_available_for_run(
     run_row_counts: Dict[str, int],
     has_v6: bool,
     has_v7: bool,
+    first_v6_run_id: int = None,
+    first_v7_run_id: int = None,
 ) -> bool:
     """Determine whether a dataset is available for a given run."""
     sv = entry['min_schema_version']
@@ -481,22 +519,21 @@ def dataset_available_for_run(
     if sv <= 4:
         return True
 
-    # V6 snapshot tables: available if run has V6 data, OR if run counts are zero
-    # (could be a legitimate empty instance)
+    # V6 snapshot tables
     if sv == 6:
         if has_v6:
             return True
-        # Heuristic: if run has user_count > 0 but no V6 data, run predates V6
-        agg = run.get('user_count') or 0
-        agg += run.get('plugin_count') or 0
-        return agg == 0
+        if first_v6_run_id is not None:
+            return run.get('run_id', 0) >= first_v6_run_id
+        return True
 
-    # V7 snapshot tables: similar logic
+    # V7 snapshot tables
     if sv == 7:
         if has_v7:
             return True
-        # If no V7 tables have data but V6 tables do, run predates V7
-        return not has_v6
+        if first_v7_run_id is not None:
+            return run.get('run_id', 0) >= first_v7_run_id
+        return True
 
     # V8 columns on run_health_metrics: always available (just may be NULL)
     if sv == 8:

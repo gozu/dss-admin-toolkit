@@ -1499,6 +1499,19 @@ class SQLTrackingDB:
         try:
             if table in ('issues', 'known_users', 'known_projects'):
                 return self._read(executor, f"SELECT * FROM {self._t(table)} WHERE instance_id = {_L(instance_id)}")
+            elif table == 'outreach_emails':
+                return self._read(executor,
+                    f"SELECT * FROM {self._t(table)} WHERE run_id IN "
+                    f"(SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)})")
+            elif table == 'outreach_email_issues':
+                return self._read(executor,
+                    f"SELECT * FROM {self._t(table)} WHERE email_id IN "
+                    f"(SELECT email_id FROM {self._t('outreach_emails')} WHERE run_id IN "
+                    f"(SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)}))")
+            elif table == 'issue_notes':
+                return self._read(executor,
+                    f"SELECT * FROM {self._t(table)} WHERE issue_id IN "
+                    f"(SELECT issue_id FROM {self._t('issues')} WHERE instance_id = {_L(instance_id)})")
             return self._read(executor, f"SELECT * FROM {self._t(table)}")
         except Exception:
             return []
@@ -1522,6 +1535,11 @@ class SQLTrackingDB:
         if not r1 or not r2:
             return {'error': 'One or both runs not found'}
 
+        swapped = False
+        if run_id_1 < run_id_2:
+            run_id_1, run_id_2 = run_id_2, run_id_1
+            r1, r2 = r2, r1
+            swapped = True
         instance_id = r1.get('instance_id')
 
         rc1: Dict[str, int] = {}
@@ -1538,10 +1556,23 @@ class SQLTrackingDB:
         h7_1 = check_run_has_v7_data(rc1)
         h7_2 = check_run_has_v7_data(rc2)
 
+        first_v6_run_id = None
+        first_v7_run_id = None
+        if h6_1 or h6_2:
+            row = self._read_one(executor,
+                f"SELECT MIN(run_id) AS min_id FROM {self._t('user_snapshots')} WHERE run_id IN "
+                f"(SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)})")
+            first_v6_run_id = row['min_id'] if row and row.get('min_id') else None
+        if h7_1 or h7_2:
+            row = self._read_one(executor,
+                f"SELECT MIN(run_id) AS min_id FROM {self._t('run_datasets')} WHERE run_id IN "
+                f"(SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)})")
+            first_v7_run_id = row['min_id'] if row and row.get('min_id') else None
+
         datasets = []
         for e in DATASET_REGISTRY:
-            a1 = dataset_available_for_run(e, r1, rc1, h6_1, h7_1)
-            a2 = dataset_available_for_run(e, r2, rc2, h6_2, h7_2)
+            a1 = dataset_available_for_run(e, r1, rc1, h6_1, h7_1, first_v6_run_id, first_v7_run_id)
+            a2 = dataset_available_for_run(e, r2, rc2, h6_2, h7_2, first_v6_run_id, first_v7_run_id)
             ds: Dict[str, Any] = {
                 'datasetId': e['dataset_id'], 'label': e['label'],
                 'category': e['category'], 'kind': e['kind'],
@@ -1611,10 +1642,21 @@ class SQLTrackingDB:
                     ds['run2Count'] = ec.get('before_run2', 0)
                     ds['added'] = ec.get('event_between_runs', 0)
                 elif did == 'outreach_email_issues':
-                    all_rows = self._query_lifecycle(executor, 'outreach_email_issues', instance_id)
-                    ds['run1Count'] = len(all_rows)
-                    ds['run2Count'] = len(all_rows)
-                    ds['notes'] = 'Shown with joined event semantics'
+                    joined_sql = (
+                        f"SELECT oei.email_id, oei.issue_id, oe.run_id, "
+                        f"oe.campaign_id, oe.recipient_login, oe.sent_at, oe.status AS email_status, "
+                        f"i.entity_type, i.entity_key, i.status AS issue_status "
+                        f"FROM {self._t('outreach_email_issues')} oei "
+                        f"JOIN {self._t('outreach_emails')} oe ON oei.email_id = oe.email_id "
+                        f"JOIN {self._t('issues')} i ON oei.issue_id = i.issue_id "
+                        f"WHERE oe.run_id IN (SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)})"
+                    )
+                    joined_rows = self._read(executor, joined_sql)
+                    _, ec = classify_interval_events(joined_rows, run_id_1, run_id_2, 'run_id')
+                    ds['run1Count'] = ec.get('before_run2', 0) + ec.get('event_between_runs', 0)
+                    ds['run2Count'] = ec.get('before_run2', 0)
+                    ds['added'] = ec.get('event_between_runs', 0)
+                    ds['notes'] = 'Joined: email + issue details'
                 elif did in ('known_users', 'known_projects'):
                     all_rows = self._query_lifecycle(executor, e['table'], instance_id)
                     kc = classify_known_entities(all_rows, run_id_1, run_id_2, e['key_fields'])
@@ -1638,6 +1680,7 @@ class SQLTrackingDB:
         return {
             'run1': r1,
             'run2': r2,
+            'swapped': swapped,
             'summary': build_summary_stats(r1, r2),
             'datasets': datasets,
             'coverageWarnings': build_coverage_warnings(r1, r2, sections1, sections2),
@@ -1655,7 +1698,7 @@ class SQLTrackingDB:
             KIND_INTERVAL_EVENTS, KIND_METADATA,
             compare_scalar, diff_keyed_table_detail,
             classify_issues, classify_interval_events, classify_issue_notes,
-            reconstruct_as_of,
+            reconstruct_as_of, map_filter_to_lifecycle,
         )
         entry = REGISTRY_BY_ID.get(dataset_id)
         if not entry:
@@ -1668,6 +1711,9 @@ class SQLTrackingDB:
         r2 = self._read_one(executor, f"SELECT * FROM {self._t('runs')} WHERE run_id = {_L(run_id_2)}")
         if not r1 or not r2:
             return {'error': 'One or both runs not found'}
+        if run_id_1 < run_id_2:
+            run_id_1, run_id_2 = run_id_2, run_id_1
+            r1, r2 = r2, r1
         instance_id = r1.get('instance_id')
 
         result: Dict[str, Any] = {
@@ -1712,8 +1758,22 @@ class SQLTrackingDB:
                 all_rows = self._query_lifecycle(executor, 'outreach_emails', instance_id)
                 rows, _ = classify_interval_events(all_rows, run_id_1, run_id_2, 'run_id')
             elif did == 'outreach_email_issues':
-                rows = self._query_lifecycle(executor, 'outreach_email_issues', instance_id)
-                result['notes'] = 'Shown with joined event semantics'
+                joined_sql = (
+                    f"SELECT oei.email_id, oei.issue_id, oe.run_id, "
+                    f"oe.campaign_id, oe.recipient_login, oe.sent_at, oe.status AS email_status, "
+                    f"i.entity_type, i.entity_key, i.status AS issue_status "
+                    f"FROM {self._t('outreach_email_issues')} oei "
+                    f"JOIN {self._t('outreach_emails')} oe ON oei.email_id = oe.email_id "
+                    f"JOIN {self._t('issues')} i ON oei.issue_id = i.issue_id "
+                    f"WHERE oe.run_id IN (SELECT run_id FROM {self._t('runs')} WHERE instance_id = {_L(instance_id)})"
+                )
+                joined_rows = self._read(executor, joined_sql)
+                rows, _ = classify_interval_events(joined_rows, run_id_1, run_id_2, 'run_id')
+                result['columns'] = [
+                    'email_id', 'issue_id', 'campaign_id', 'recipient_login',
+                    'sent_at', 'email_status', 'entity_type', 'entity_key', 'issue_status',
+                ]
+                result['notes'] = 'Joined: email + issue details'
             elif did in ('known_users', 'known_projects'):
                 all_rows = self._query_lifecycle(executor, entry['table'], instance_id)
                 as1 = reconstruct_as_of(all_rows, run_id_1)
@@ -1733,7 +1793,11 @@ class SQLTrackingDB:
                 rows, _ = classify_issue_notes(all_rows, r1.get('run_at', ''), r2.get('run_at', ''))
 
             if change_type and change_type != 'all':
-                rows = [r for r in rows if r.get('_lifecycle') == change_type]
+                lc_values = map_filter_to_lifecycle(entry['dataset_id'], change_type)
+                if lc_values is not None:
+                    rows = [r for r in rows if r.get('_lifecycle') in lc_values]
+                else:
+                    rows = [r for r in rows if r.get('_lifecycle') == change_type]
             if search:
                 sl = search.lower()
                 rows = [r for r in rows if any(sl in str(v).lower() for v in r.values())]

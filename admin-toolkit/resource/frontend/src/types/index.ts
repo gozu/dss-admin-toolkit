@@ -989,6 +989,7 @@ export interface CompareRunHeader {
 export interface CompareManifest {
   run1: CompareRunHeader;
   run2: CompareRunHeader;
+  swapped?: boolean;
   summary: CompareSummaryStats;
   datasets: CompareDatasetSummary[];
   coverageWarnings: CompareCoverageWarning[];
