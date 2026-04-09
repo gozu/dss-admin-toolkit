@@ -843,12 +843,14 @@ export function TrendsPage() {
   useEffect(() => {
     if (manifest && manifest !== manifetRef.current) {
       manifetRef.current = manifest;
-      // Auto-expand scalar datasets
+      // Auto-expand scalar datasets and any dataset with changes
       const toExpand = manifest.datasets
-        .filter((d) => d.kind === 'scalar' && d.availableInRun1 && d.availableInRun2)
+        .filter((d) => d.availableInRun1 && d.availableInRun2 && (
+          d.kind === 'scalar' || d.added > 0 || d.removed > 0 || d.changed > 0
+        ))
         .map((d) => d.datasetId);
       setExpandedSet(new Set(toExpand));
-      // Preload scalar details
+      // Preload details for expanded datasets
       for (const id of toExpand) {
         loadDetail(id);
       }
