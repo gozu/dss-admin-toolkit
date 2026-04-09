@@ -1343,6 +1343,302 @@ class TrackingDB:
                 'issues_regressed': [dict(r) for r in regressed],
             }
 
+    # ── Exhaustive compare helpers ──
+
+    def _query_ds_rows(self, conn, table: str, run_id: int) -> List[Dict[str, Any]]:
+        """Query all rows for a run from a per-run dataset table."""
+        try:
+            return [dict(r) for r in conn.execute(
+                f'SELECT * FROM {table} WHERE run_id = ?', (run_id,)
+            ).fetchall()]
+        except Exception:
+            return []
+
+    def _query_ds_count(self, conn, table: str, run_id: int) -> int:
+        try:
+            return conn.execute(f'SELECT COUNT(*) FROM {table} WHERE run_id = ?', (run_id,)).fetchone()[0]
+        except Exception:
+            return 0
+
+    def _query_lifecycle(self, conn, table: str, instance_id: str) -> List[Dict[str, Any]]:
+        try:
+            if table in ('issues', 'known_users', 'known_projects'):
+                return [dict(r) for r in conn.execute(
+                    f'SELECT * FROM {table} WHERE instance_id = ?', (instance_id,)
+                ).fetchall()]
+            return [dict(r) for r in conn.execute(f'SELECT * FROM {table}').fetchall()]
+        except Exception:
+            return []
+
+    # ── Step 23: compare_runs_full ──
+
+    def compare_runs_full(self, run_id_1: int, run_id_2: int) -> Dict[str, Any]:
+        from compare_registry import (
+            DATASET_REGISTRY, SUPPORT_CURRENT_ONLY, SUPPORT_LIFECYCLE,
+            KIND_SCALAR, KIND_KEYED_TABLE, KIND_INTERVAL_EVENTS, KIND_METADATA,
+            check_run_has_v6_data, check_run_has_v7_data, dataset_available_for_run,
+            compare_scalar, diff_keyed_tables,
+            classify_issues, classify_interval_events, classify_issue_notes,
+            classify_known_entities, build_summary_stats, build_coverage_warnings,
+        )
+        with self._lock:
+            conn = self._get_conn()
+            r1 = conn.execute('SELECT * FROM runs WHERE run_id = ?', (run_id_1,)).fetchone()
+            r2 = conn.execute('SELECT * FROM runs WHERE run_id = ?', (run_id_2,)).fetchone()
+            if not r1 or not r2:
+                return {'error': 'One or both runs not found'}
+            r1, r2 = dict(r1), dict(r2)
+            instance_id = r1.get('instance_id')
+
+            # Row counts for availability heuristics
+            rc1: Dict[str, int] = {}
+            rc2: Dict[str, int] = {}
+            for e in DATASET_REGISTRY:
+                if e['support'] in (SUPPORT_CURRENT_ONLY, SUPPORT_LIFECYCLE):
+                    continue
+                t = e['table']
+                rc1[t] = self._query_ds_count(conn, t, run_id_1)
+                rc2[t] = self._query_ds_count(conn, t, run_id_2)
+
+            h6_1 = check_run_has_v6_data(rc1)
+            h6_2 = check_run_has_v6_data(rc2)
+            h7_1 = check_run_has_v7_data(rc1)
+            h7_2 = check_run_has_v7_data(rc2)
+
+            datasets = []
+            for e in DATASET_REGISTRY:
+                a1 = dataset_available_for_run(e, r1, rc1, h6_1, h7_1)
+                a2 = dataset_available_for_run(e, r2, rc2, h6_2, h7_2)
+                ds: Dict[str, Any] = {
+                    'datasetId': e['dataset_id'], 'label': e['label'],
+                    'category': e['category'], 'kind': e['kind'],
+                    'support': e['support'],
+                    'availableInRun1': a1, 'availableInRun2': a2,
+                    'run1Count': 0, 'run2Count': 0,
+                    'added': 0, 'removed': 0, 'changed': 0, 'unchanged': 0,
+                    'notes': None,
+                }
+
+                if e['support'] == SUPPORT_CURRENT_ONLY:
+                    try:
+                        total = conn.execute(f"SELECT COUNT(*) FROM {e['table']}").fetchone()[0]
+                    except Exception:
+                        total = 0
+                    ds['run1Count'] = total
+                    ds['run2Count'] = total
+                    ds['notes'] = 'Current-only: not historically versioned'
+
+                elif e['kind'] == KIND_SCALAR:
+                    if a1 and a2:
+                        row1 = conn.execute(f"SELECT * FROM {e['table']} WHERE run_id = ?", (run_id_1,)).fetchone()
+                        row2 = conn.execute(f"SELECT * FROM {e['table']} WHERE run_id = ?", (run_id_2,)).fetchone()
+                        row1 = dict(row1) if row1 else None
+                        row2 = dict(row2) if row2 else None
+                        ds['run1Count'] = 1 if row1 else 0
+                        ds['run2Count'] = 1 if row2 else 0
+                        if row1 and row2:
+                            _, ch, unch = compare_scalar(row1, row2, e['columns'])
+                            ds['changed'] = ch
+                            ds['unchanged'] = unch
+                    else:
+                        ds['run1Count'] = 1 if a1 else 0
+                        ds['run2Count'] = 1 if a2 else 0
+                        ds['notes'] = 'Not available for %s' % ('run 2' if a1 else 'run 1')
+
+                elif e['kind'] == KIND_KEYED_TABLE:
+                    if a1 and a2:
+                        rows1 = self._query_ds_rows(conn, e['table'], run_id_1)
+                        rows2 = self._query_ds_rows(conn, e['table'], run_id_2)
+                        ds.update(diff_keyed_tables(rows1, rows2, e['key_fields'], e['columns']))
+                    elif a1:
+                        ds['run1Count'] = rc1.get(e['table'], 0)
+                        ds['added'] = ds['run1Count']
+                        ds['notes'] = 'Not available for run 2'
+                    elif a2:
+                        ds['run2Count'] = rc2.get(e['table'], 0)
+                        ds['removed'] = ds['run2Count']
+                        ds['notes'] = 'Not available for run 1'
+                    else:
+                        ds['notes'] = 'Not available for either run'
+
+                elif e['kind'] == KIND_INTERVAL_EVENTS:
+                    did = e['dataset_id']
+                    if did == 'issues':
+                        all_rows = self._query_lifecycle(conn, 'issues', instance_id)
+                        _, ic = classify_issues(all_rows, run_id_1, run_id_2)
+                        ds['run1Count'] = ic.get('existed_in_both', 0) + ic.get('opened_between_runs', 0) + ic.get('visible_only_in_run1', 0)
+                        ds['run2Count'] = ic.get('existed_in_both', 0) + ic.get('visible_only_in_run2', 0) + ic.get('resolved_between_runs', 0)
+                        ds['added'] = ic.get('opened_between_runs', 0)
+                        ds['removed'] = ic.get('resolved_between_runs', 0)
+                        ds['changed'] = ic.get('regressed_between_runs', 0)
+                        ds['unchanged'] = ic.get('existed_in_both', 0)
+                    elif did == 'outreach_emails':
+                        all_rows = self._query_lifecycle(conn, 'outreach_emails', instance_id)
+                        _, ec = classify_interval_events(all_rows, run_id_1, run_id_2, 'run_id')
+                        ds['run1Count'] = ec.get('before_run2', 0) + ec.get('event_between_runs', 0)
+                        ds['run2Count'] = ec.get('before_run2', 0)
+                        ds['added'] = ec.get('event_between_runs', 0)
+                    elif did == 'outreach_email_issues':
+                        all_rows = self._query_lifecycle(conn, 'outreach_email_issues', instance_id)
+                        ds['run1Count'] = len(all_rows)
+                        ds['run2Count'] = len(all_rows)
+                        ds['notes'] = 'Shown with joined event semantics'
+                    elif did in ('known_users', 'known_projects'):
+                        all_rows = self._query_lifecycle(conn, e['table'], instance_id)
+                        kc = classify_known_entities(all_rows, run_id_1, run_id_2, e['key_fields'])
+                        ds['run1Count'] = kc.get('run1Count', 0)
+                        ds['run2Count'] = kc.get('run2Count', 0)
+                        ds['added'] = kc.get('added', 0)
+                        ds['removed'] = kc.get('removed', 0)
+                        ds['unchanged'] = kc.get('existed_in_both', 0)
+                    elif did == 'issue_notes':
+                        all_rows = self._query_lifecycle(conn, 'issue_notes', instance_id)
+                        _, nc = classify_issue_notes(all_rows, r1.get('run_at', ''), r2.get('run_at', ''))
+                        ds['run1Count'] = nc.get('visible_at_run1', 0)
+                        ds['run2Count'] = nc.get('visible_at_run2', 0)
+                        ds['added'] = nc.get('created_between_runs', 0)
+
+                datasets.append(ds)
+
+            sections1 = self._query_ds_rows(conn, 'run_sections', run_id_1)
+            sections2 = self._query_ds_rows(conn, 'run_sections', run_id_2)
+
+            return {
+                'run1': r1,
+                'run2': r2,
+                'summary': build_summary_stats(r1, r2),
+                'datasets': datasets,
+                'coverageWarnings': build_coverage_warnings(r1, r2, sections1, sections2),
+            }
+
+    # ── Step 24: get_compare_dataset_detail ──
+
+    def get_compare_dataset_detail(
+        self, run_id_1: int, run_id_2: int, dataset_id: str,
+        change_type: str = 'all', page: int = 1, page_size: int = 100,
+        search: Optional[str] = None, sort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from compare_registry import (
+            REGISTRY_BY_ID, KIND_SCALAR, KIND_KEYED_TABLE,
+            KIND_INTERVAL_EVENTS, KIND_METADATA,
+            compare_scalar, diff_keyed_table_detail,
+            classify_issues, classify_interval_events, classify_issue_notes,
+            reconstruct_as_of,
+        )
+        entry = REGISTRY_BY_ID.get(dataset_id)
+        if not entry:
+            return {'error': f'Unknown dataset: {dataset_id}'}
+
+        with self._lock:
+            conn = self._get_conn()
+            r1 = conn.execute('SELECT * FROM runs WHERE run_id = ?', (run_id_1,)).fetchone()
+            r2 = conn.execute('SELECT * FROM runs WHERE run_id = ?', (run_id_2,)).fetchone()
+            if not r1 or not r2:
+                return {'error': 'One or both runs not found'}
+            r1, r2 = dict(r1), dict(r2)
+            instance_id = r1.get('instance_id')
+
+            result: Dict[str, Any] = {
+                'datasetId': dataset_id,
+                'columns': entry['columns'],
+                'keyFields': entry['key_fields'],
+                'support': entry['support'],
+                'kind': entry['kind'],
+                'notes': None,
+            }
+
+            if entry['kind'] == KIND_SCALAR:
+                row1 = conn.execute(f"SELECT * FROM {entry['table']} WHERE run_id = ?", (run_id_1,)).fetchone()
+                row2 = conn.execute(f"SELECT * FROM {entry['table']} WHERE run_id = ?", (run_id_2,)).fetchone()
+                fields, ch, unch = compare_scalar(
+                    dict(row1) if row1 else None,
+                    dict(row2) if row2 else None,
+                    entry['columns'],
+                )
+                result['fields'] = fields
+                result['changed'] = ch
+                result['unchanged'] = unch
+                result['page'] = 1
+                result['pageSize'] = len(fields)
+                result['totalRows'] = len(fields)
+
+            elif entry['kind'] == KIND_KEYED_TABLE:
+                rows1 = self._query_ds_rows(conn, entry['table'], run_id_1)
+                rows2 = self._query_ds_rows(conn, entry['table'], run_id_2)
+                detail = diff_keyed_table_detail(
+                    rows1, rows2, entry['key_fields'], entry['columns'],
+                    change_type=change_type, search=search, sort=sort,
+                    page=page, page_size=page_size,
+                )
+                result.update(detail)
+                result['changeType'] = change_type
+
+            elif entry['kind'] == KIND_INTERVAL_EVENTS:
+                did = entry['dataset_id']
+                rows: List[Dict[str, Any]] = []
+
+                if did == 'issues':
+                    all_rows = self._query_lifecycle(conn, 'issues', instance_id)
+                    rows, _ = classify_issues(all_rows, run_id_1, run_id_2)
+                elif did == 'outreach_emails':
+                    all_rows = self._query_lifecycle(conn, 'outreach_emails', instance_id)
+                    rows, _ = classify_interval_events(all_rows, run_id_1, run_id_2, 'run_id')
+                elif did == 'outreach_email_issues':
+                    rows = self._query_lifecycle(conn, 'outreach_email_issues', instance_id)
+                    result['notes'] = 'Shown with joined event semantics'
+                elif did in ('known_users', 'known_projects'):
+                    all_rows = self._query_lifecycle(conn, entry['table'], instance_id)
+                    as1 = reconstruct_as_of(all_rows, run_id_1)
+                    as2 = reconstruct_as_of(all_rows, run_id_2)
+                    cols = [c for c in entry['columns'] if c not in ('first_seen_run', 'last_seen_run')]
+                    detail = diff_keyed_table_detail(
+                        as1, as2, entry['key_fields'], cols,
+                        change_type=change_type, search=search, sort=sort,
+                        page=page, page_size=page_size,
+                    )
+                    result.update(detail)
+                    result['changeType'] = change_type
+                    result['notes'] = 'Reconstructed as-of each run'
+                    return result
+                elif did == 'issue_notes':
+                    all_rows = self._query_lifecycle(conn, 'issue_notes', instance_id)
+                    rows, _ = classify_issue_notes(all_rows, r1.get('run_at', ''), r2.get('run_at', ''))
+
+                # Common pagination for lifecycle rows
+                if change_type and change_type != 'all':
+                    rows = [r for r in rows if r.get('_lifecycle') == change_type]
+                if search:
+                    sl = search.lower()
+                    rows = [r for r in rows if any(sl in str(v).lower() for v in r.values())]
+                total = len(rows)
+                start = (page - 1) * page_size
+                result['rows'] = rows[start:start + page_size]
+                result['page'] = page
+                result['pageSize'] = page_size
+                result['totalRows'] = total
+                result['changeType'] = change_type
+
+            elif entry['kind'] == KIND_METADATA:
+                try:
+                    all_rows = [dict(r) for r in conn.execute(
+                        f"SELECT * FROM {entry['table']}"
+                    ).fetchall()]
+                except Exception:
+                    all_rows = []
+                if search:
+                    sl = search.lower()
+                    all_rows = [r for r in all_rows if any(sl in str(v).lower() for v in r.values())]
+                total = len(all_rows)
+                start = (page - 1) * page_size
+                result['rows'] = all_rows[start:start + page_size]
+                result['page'] = page
+                result['pageSize'] = page_size
+                result['totalRows'] = total
+                result['changeType'] = change_type
+                result['notes'] = 'Current-only: not historically versioned'
+
+            return result
+
     def get_dashboard(self, instance_id: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
             conn = self._get_conn()
