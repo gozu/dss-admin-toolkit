@@ -1,6 +1,7 @@
 import { useDiag } from '../../context/DiagContext';
 import { ConnectionsChart } from '../index';
 import { ConnectionHealthCard } from '../ConnectionHealthCard';
+import { ConnectionUsageCard } from '../ConnectionUsageCard';
 
 export function ConnectionsPage() {
   const { state } = useDiag();
@@ -16,6 +17,7 @@ export function ConnectionsPage() {
         <>
           <ConnectionsChart />
           <ConnectionHealthCard />
+          <ConnectionUsageCard />
         </>
       ) : (
         <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center">

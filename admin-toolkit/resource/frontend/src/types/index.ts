@@ -404,6 +404,31 @@ export interface ConnectionHealthResult {
   error?: string;
 }
 
+// Connection usage mapping (from /api/connections/usages SSE)
+export interface ConnectionDatasetUsage {
+  projectKey: string;
+  projectName: string;
+  datasetName: string;
+  datasetType: string;
+}
+
+export interface ConnectionLlmUsage {
+  projectKey: string;
+  projectName: string;
+  recipeName: string;
+  recipeType: string;
+  llmId: string;
+}
+
+export interface ConnectionUsageItem {
+  name: string;
+  type: string;
+  projects: ConnectionDatasetUsage[] | ConnectionLlmUsage[];
+  projectCount: number;
+  datasetCount?: number;
+  recipeCount?: number;
+}
+
 // User stats
 export type UserStats = Record<string, string | number>;
 
@@ -479,6 +504,10 @@ export interface ParsedData {
   connectionDetails?: ConnectionDetail[];
   connectionHealth?: ConnectionHealthResult[];
   connectionHealthTotal?: number | null;
+  connectionDatasetUsages?: ConnectionUsageItem[];
+  connectionLlmUsages?: ConnectionUsageItem[];
+  connectionUsageTotal?: number | null;
+  connectionUsageScanned?: number | null;
   userStats?: UserStats;
   usersByProjects?: Record<string, string>;
   users?: User[];

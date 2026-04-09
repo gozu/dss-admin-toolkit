@@ -4511,6 +4511,199 @@ def api_connection_health():
     )
 
 
+@app.route('/api/connections/usages')
+def api_connection_usages():
+    """Stream connection-project usage mapping via SSE.
+
+    Scans all projects to find:
+    - Dataset connections (params.connection)
+    - LLM recipe connections (llmId field in recipe payload)
+    """
+
+    _LLM_RECIPE_PREFIXES = ('prompt', 'nlp_llm_')
+
+    def _find_llm_ids(d):
+        """Recursively find all llmId values in a dict/list."""
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k == 'llmId' and isinstance(v, str) and v:
+                    yield v
+                else:
+                    yield from _find_llm_ids(v)
+        elif isinstance(d, list):
+            for item in d:
+                yield from _find_llm_ids(item)
+
+    def _scan_project(project_key):
+        """Scan one project for dataset connections and LLM connections."""
+        client = _thread_client()
+        proj = client.get_project(project_key)
+        dataset_conns = []
+        llm_conns = []
+
+        # 1. Dataset connections
+        try:
+            for ds in proj.list_datasets():
+                params = ds.get('params', {})
+                if isinstance(params, str):
+                    try:
+                        import ast
+                        params = ast.literal_eval(params)
+                    except Exception:
+                        params = {}
+                conn_name = params.get('connection') if isinstance(params, dict) else None
+                if conn_name:
+                    dataset_conns.append({
+                        'datasetName': ds.get('name', ''),
+                        'datasetType': ds.get('type', ''),
+                        'connection': conn_name,
+                    })
+        except Exception as e:
+            app.logger.debug("[conn_usage] list_datasets failed for %s: %s", project_key, e)
+
+        # 2. LLM recipe connections
+        try:
+            recipes = proj.list_recipes()
+            llm_recipes = [r for r in recipes
+                           if r.get('type', '').startswith(_LLM_RECIPE_PREFIXES)
+                           or 'llm' in r.get('type', '').lower()]
+            for r in llm_recipes:
+                try:
+                    recipe = proj.get_recipe(r['name'])
+                    settings = recipe.get_settings()
+                    payload = settings.get_json_payload() if hasattr(settings, 'get_json_payload') else None
+                    if not payload:
+                        raw_str = settings.get_payload() if hasattr(settings, 'get_payload') else ''
+                        try:
+                            payload = json.loads(raw_str) if raw_str else {}
+                        except Exception:
+                            payload = {}
+                    if not payload:
+                        continue
+                    for llm_id in _find_llm_ids(payload):
+                        parts = llm_id.split(':')
+                        if len(parts) >= 3:
+                            conn_name = parts[1]
+                            llm_conns.append({
+                                'recipeName': r.get('name', ''),
+                                'recipeType': r.get('type', ''),
+                                'llmId': llm_id,
+                                'connection': conn_name,
+                            })
+                except Exception as e:
+                    app.logger.debug("[conn_usage] recipe %s/%s failed: %s", project_key, r.get('name'), e)
+        except Exception as e:
+            app.logger.debug("[conn_usage] list_recipes failed for %s: %s", project_key, e)
+
+        return {'projectKey': project_key, 'datasetConns': dataset_conns, 'llmConns': llm_conns}
+
+    def generate():
+        t0 = time.time()
+        try:
+            client = dataiku.api_client()
+            projects = _list_projects_catalog(client)
+            project_names = {p['key']: p.get('name', p['key']) for p in projects}
+            project_keys = list(project_names.keys())
+
+            connections = _sdk_fetch(
+                'list_connections',
+                _BACKEND_SETTINGS['cache_ttl_connections'],
+                lambda: client.list_connections(),
+            )
+            conn_types: Dict[str, str] = {}
+            if isinstance(connections, dict):
+                for name, config in connections.items():
+                    if isinstance(config, dict):
+                        conn_types[name] = config.get('type', 'unknown')
+            else:
+                for c in connections:
+                    conn_types[c.get('name', '')] = c.get('type', 'unknown')
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({'error': str(e)[:200]})
+            return
+
+        yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(project_keys)})
+
+        dataset_map: Dict[str, List[Dict]] = {}   # conn -> [{projectKey, projectName, datasetName, datasetType}]
+        llm_map: Dict[str, List[Dict]] = {}       # conn -> [{projectKey, projectName, recipeName, recipeType, llmId}]
+        scanned = 0
+
+        workers = min(8, max(1, len(project_keys)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {pool.submit(_scan_project, pk): pk for pk in project_keys}
+            for future in as_completed(futures):
+                pk = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = {'projectKey': pk, 'datasetConns': [], 'llmConns': []}
+
+                pname = project_names.get(pk, pk)
+                for u in result.get('datasetConns', []):
+                    conn = u['connection']
+                    dataset_map.setdefault(conn, []).append({
+                        'projectKey': pk,
+                        'projectName': pname,
+                        'datasetName': u['datasetName'],
+                        'datasetType': u['datasetType'],
+                    })
+                for u in result.get('llmConns', []):
+                    conn = u['connection']
+                    llm_map.setdefault(conn, []).append({
+                        'projectKey': pk,
+                        'projectName': pname,
+                        'recipeName': u['recipeName'],
+                        'recipeType': u['recipeType'],
+                        'llmId': u['llmId'],
+                    })
+
+                scanned += 1
+                if scanned % 20 == 0 or scanned == len(project_keys):
+                    yield "event: progress\ndata: %s\n\n" % json.dumps({'scanned': scanned})
+        except GeneratorExit:
+            pool.shutdown(wait=False, cancel_futures=True)
+            return
+        finally:
+            pool.shutdown(wait=False)
+
+        # Build final payloads
+        dataset_usages = []
+        for conn_name in sorted(dataset_map.keys()):
+            usages = dataset_map[conn_name]
+            dataset_usages.append({
+                'name': conn_name,
+                'type': conn_types.get(conn_name, 'unknown'),
+                'projects': usages,
+                'projectCount': len(set(u['projectKey'] for u in usages)),
+                'datasetCount': len(usages),
+            })
+
+        llm_usages = []
+        for conn_name in sorted(llm_map.keys()):
+            usages = llm_map[conn_name]
+            llm_usages.append({
+                'name': conn_name,
+                'type': conn_types.get(conn_name, 'unknown'),
+                'projects': usages,
+                'projectCount': len(set(u['projectKey'] for u in usages)),
+                'recipeCount': len(usages),
+            })
+
+        total_ms = int((time.time() - t0) * 1000)
+        yield "event: done\ndata: %s\n\n" % json.dumps({
+            'total_ms': total_ms,
+            'datasetUsages': dataset_usages,
+            'llmUsages': llm_usages,
+        })
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @app.route('/api/users')
 def api_users():
     client = dataiku.api_client()
