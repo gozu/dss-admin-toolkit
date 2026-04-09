@@ -8447,6 +8447,57 @@ def api_tracking_trends_snapshot():
     return jsonify(snapshot)
 
 
+# ── Full comparison explorer endpoints ──
+
+@app.route('/api/tracking/compare/full')
+def api_tracking_compare_full():
+    """Return manifest with diff stats for every dataset between two runs."""
+    import time as _time
+    _t0 = _time.time()
+    db = _get_tracking_db()
+    if db is None:
+        return jsonify({'error': 'Tracking not available'}), 501
+    run1 = request.args.get('run1', type=int)
+    run2 = request.args.get('run2', type=int)
+    if not run1 or not run2:
+        return jsonify({'error': 'Both run1 and run2 are required'}), 400
+    result = db.compare_runs_full(run1, run2)
+    if 'error' in result:
+        return jsonify(result), 404
+    app.logger.info("[tracking:compare_full] manifest for run %d vs %d in %.1fms",
+                    run1, run2, (_time.time() - _t0) * 1000)
+    return jsonify(result)
+
+
+@app.route('/api/tracking/compare/full/dataset')
+def api_tracking_compare_full_dataset():
+    """Return paginated detail for a specific dataset comparison."""
+    import time as _time
+    _t0 = _time.time()
+    db = _get_tracking_db()
+    if db is None:
+        return jsonify({'error': 'Tracking not available'}), 501
+    run1 = request.args.get('run1', type=int)
+    run2 = request.args.get('run2', type=int)
+    dataset = request.args.get('dataset')
+    if not run1 or not run2 or not dataset:
+        return jsonify({'error': 'run1, run2, and dataset are required'}), 400
+    change_type = request.args.get('change_type', 'all')
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 100, type=int)
+    search = request.args.get('search')
+    sort = request.args.get('sort')
+    result = db.get_compare_dataset_detail(
+        run1, run2, dataset,
+        change_type=change_type, page=page, page_size=page_size,
+        search=search, sort=sort)
+    if 'error' in result:
+        return jsonify(result), 400
+    app.logger.info("[tracking:compare_full_dataset] detail for '%s' run %d vs %d page=%d in %.1fms",
+                    dataset, run1, run2, page, (_time.time() - _t0) * 1000)
+    return jsonify(result)
+
+
 # ── Code Env Cleaner helpers ──
 
 def _cec_filter_envs(envs):

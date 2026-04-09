@@ -86,6 +86,100 @@ _ALL_TABLES = [
     'run_agent_tools', 'run_knowledge_banks', 'run_git_commits',
 ]
 
+# Registry of all comparable datasets for the full comparison explorer.
+# kind: scalar (single-row diff), keyed_table (set diff on natural keys),
+#       interval_events (lifecycle/interval), metadata (non-versioned).
+# support: full (run-scoped), lifecycle (interval-aware), current_only (no diff).
+_COMPARE_DATASETS = [
+    # Scalar datasets (single-row, field-by-field diff)
+    {'id': 'runs', 'label': 'Run Summary', 'category': 'run_summary',
+     'kind': 'scalar', 'support': 'full', 'table': 'runs',
+     'key_fields': ['run_id']},
+    {'id': 'health_metrics', 'label': 'Health Metrics', 'category': 'run_summary',
+     'kind': 'scalar', 'support': 'full', 'table': 'run_health_metrics',
+     'key_fields': ['run_id']},
+    # Keyed snapshot datasets (added/removed/changed/unchanged)
+    {'id': 'sections', 'label': 'Run Sections', 'category': 'run_summary',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_sections',
+     'key_fields': ['section_key']},
+    {'id': 'campaign_summaries', 'label': 'Campaign Summaries', 'category': 'run_summary',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_campaign_summaries',
+     'key_fields': ['campaign_id']},
+    {'id': 'users', 'label': 'Users', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'user_snapshots',
+     'key_fields': ['login']},
+    {'id': 'projects', 'label': 'Projects', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'project_snapshots',
+     'key_fields': ['project_key']},
+    {'id': 'plugins', 'label': 'Plugins', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_plugins',
+     'key_fields': ['plugin_id']},
+    {'id': 'connections', 'label': 'Connections', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_connections',
+     'key_fields': ['connection_name']},
+    {'id': 'datasets', 'label': 'Datasets', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_datasets',
+     'key_fields': ['project_key', 'dataset_name']},
+    {'id': 'recipes', 'label': 'Recipes', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_recipes',
+     'key_fields': ['project_key', 'recipe_name']},
+    {'id': 'llms', 'label': 'LLMs', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_llms',
+     'key_fields': ['llm_id']},
+    {'id': 'agents', 'label': 'Agents', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_agents',
+     'key_fields': ['project_key', 'agent_id']},
+    {'id': 'agent_tools', 'label': 'Agent Tools', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_agent_tools',
+     'key_fields': ['project_key', 'tool_id']},
+    {'id': 'knowledge_banks', 'label': 'Knowledge Banks', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_knowledge_banks',
+     'key_fields': ['project_key', 'kb_id']},
+    {'id': 'git_commits', 'label': 'Git Commits', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'run_git_commits',
+     'key_fields': ['project_key', 'commit_hash']},
+    {'id': 'findings', 'label': 'Findings', 'category': 'snapshot_entities',
+     'kind': 'keyed_table', 'support': 'full', 'table': 'findings',
+     'key_fields': ['campaign_id', 'entity_type', 'entity_key']},
+    # Lifecycle / interval datasets
+    {'id': 'issues', 'label': 'Issues', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'issues',
+     'key_fields': ['campaign_id', 'entity_type', 'entity_key']},
+    {'id': 'outreach_emails', 'label': 'Outreach Emails', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'outreach_emails',
+     'key_fields': ['email_id']},
+    {'id': 'known_users', 'label': 'Known Users', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'known_users',
+     'key_fields': ['login']},
+    {'id': 'known_projects', 'label': 'Known Projects', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'known_projects',
+     'key_fields': ['project_key']},
+    {'id': 'issue_notes', 'label': 'Issue Notes', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'issue_notes',
+     'key_fields': ['note_id']},
+    {'id': 'outreach_email_issues', 'label': 'Email-Issue Links', 'category': 'lifecycle',
+     'kind': 'interval_events', 'support': 'lifecycle', 'table': 'outreach_email_issues',
+     'key_fields': ['email_id', 'issue_id']},
+    # Non-versioned metadata
+    {'id': 'instances', 'label': 'Instances', 'category': 'metadata',
+     'kind': 'metadata', 'support': 'current_only', 'table': 'instances',
+     'key_fields': ['instance_id']},
+    {'id': 'schema_version', 'label': 'Schema Version', 'category': 'metadata',
+     'kind': 'metadata', 'support': 'current_only', 'table': 'schema_version',
+     'key_fields': ['version']},
+    {'id': 'campaign_settings', 'label': 'Campaign Settings', 'category': 'metadata',
+     'kind': 'metadata', 'support': 'current_only', 'table': 'campaign_settings',
+     'key_fields': ['campaign_id']},
+    {'id': 'campaign_exemptions', 'label': 'Campaign Exemptions', 'category': 'metadata',
+     'kind': 'metadata', 'support': 'current_only', 'table': 'campaign_exemptions',
+     'key_fields': ['exemption_id']},
+]
+
+
+def _vs(v):
+    """Stringify a value for comparison, treating None as empty."""
+    return '' if v is None else str(v)
+
 
 class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
@@ -1479,6 +1573,397 @@ class SQLTrackingDB:
             'issues_opened': opened,
             'issues_regressed': regressed,
         }
+
+    # ------------------------------------------------------------------
+    # Full comparison explorer
+    # ------------------------------------------------------------------
+
+    def compare_runs_full(self, run_id_1: int, run_id_2: int) -> Dict[str, Any]:
+        """Return manifest with counts and diff stats for every comparable dataset."""
+        self._init_tables()
+        executor = self._get_executor()
+
+        r1 = self._read_one(executor, f"SELECT * FROM {self._t('runs')} WHERE run_id = {_L(run_id_1)}")
+        r2 = self._read_one(executor, f"SELECT * FROM {self._t('runs')} WHERE run_id = {_L(run_id_2)}")
+        if not r1 or not r2:
+            return {'error': 'One or both runs not found'}
+
+        exclude_cols = {'run_id', 'instance_id'}
+        datasets = []
+
+        for ds in _COMPARE_DATASETS:
+            entry = {
+                'datasetId': ds['id'], 'label': ds['label'],
+                'category': ds['category'], 'kind': ds['kind'],
+                'support': ds['support'],
+                'run1Count': 0, 'run2Count': 0,
+                'added': 0, 'removed': 0, 'changed': 0, 'unchanged': 0,
+                'availableInRun1': True, 'availableInRun2': True,
+                'notes': None,
+            }
+            table = self._t(ds['table'])
+            try:
+                if ds['kind'] == 'scalar':
+                    row1 = self._read_one(executor, f"SELECT * FROM {table} WHERE run_id = {_L(run_id_1)}")
+                    row2 = self._read_one(executor, f"SELECT * FROM {table} WHERE run_id = {_L(run_id_2)}")
+                    entry['availableInRun1'] = row1 is not None
+                    entry['availableInRun2'] = row2 is not None
+                    entry['run1Count'] = 1 if row1 else 0
+                    entry['run2Count'] = 1 if row2 else 0
+                    if row1 and row2:
+                        compare_cols = [k for k in set(row1) | set(row2) if k not in exclude_cols]
+                        changed = sum(1 for c in compare_cols if _vs(row1.get(c)) != _vs(row2.get(c)))
+                        entry['changed'] = changed
+                        entry['unchanged'] = len(compare_cols) - changed
+
+                elif ds['kind'] == 'keyed_table':
+                    kf = ds['key_fields']
+                    rows1 = self._read(executor, f"SELECT * FROM {table} WHERE run_id = {_L(run_id_1)}")
+                    rows2 = self._read(executor, f"SELECT * FROM {table} WHERE run_id = {_L(run_id_2)}")
+                    entry['run1Count'] = len(rows1)
+                    entry['run2Count'] = len(rows2)
+                    m1 = {tuple(_vs(r.get(k)) for k in kf): r for r in rows1}
+                    m2 = {tuple(_vs(r.get(k)) for k in kf): r for r in rows2}
+                    k1, k2 = set(m1), set(m2)
+                    entry['added'] = len(k2 - k1)
+                    entry['removed'] = len(k1 - k2)
+                    changed = 0
+                    for k in k1 & k2:
+                        if any(_vs(m1[k].get(c)) != _vs(m2[k].get(c))
+                               for c in set(m1[k]) | set(m2[k])
+                               if c not in exclude_cols and c not in kf):
+                            changed += 1
+                    entry['changed'] = changed
+                    entry['unchanged'] = len(k1 & k2) - changed
+
+                elif ds['kind'] == 'interval_events':
+                    self._compare_lifecycle_counts(executor, ds, run_id_1, run_id_2, entry)
+
+                elif ds['kind'] == 'metadata':
+                    row = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {table}")
+                    cnt = row['cnt'] if row else 0
+                    entry['run1Count'] = cnt
+                    entry['run2Count'] = cnt
+                    entry['availableInRun1'] = False
+                    entry['availableInRun2'] = False
+                    entry['notes'] = 'Non-versioned — shows current state only'
+
+            except Exception as exc:
+                _log.warning("[sql_tracking] compare manifest: dataset '%s' error: %s", ds['id'], exc)
+                entry['availableInRun1'] = False
+                entry['availableInRun2'] = False
+                entry['notes'] = 'Table not present in schema at this run version'
+
+            datasets.append(entry)
+
+        return {'run1': r1, 'run2': r2, 'datasets': datasets}
+
+    def _compare_lifecycle_counts(self, executor, ds, run_id_1, run_id_2, entry):
+        """Compute lifecycle manifest counts for an interval_events dataset."""
+        table = self._t(ds['table'])
+        ds_id = ds['id']
+
+        if ds_id == 'issues':
+            for rid, key in [(run_id_1, 'run1Count'), (run_id_2, 'run2Count')]:
+                r = self._read_one(executor,
+                    f"SELECT COUNT(*) AS cnt FROM {table} "
+                    f"WHERE first_detected_run <= {_L(rid)} "
+                    f"AND (resolved_run IS NULL OR resolved_run > {_L(rid)})")
+                entry[key] = r['cnt'] if r else 0
+            opened = self._read_one(executor,
+                f"SELECT COUNT(*) AS cnt FROM {table} "
+                f"WHERE first_detected_run > {_L(min(run_id_1, run_id_2))} "
+                f"AND first_detected_run <= {_L(max(run_id_1, run_id_2))}")
+            resolved = self._read_one(executor,
+                f"SELECT COUNT(*) AS cnt FROM {table} "
+                f"WHERE resolved_run > {_L(min(run_id_1, run_id_2))} "
+                f"AND resolved_run <= {_L(max(run_id_1, run_id_2))}")
+            entry['added'] = opened['cnt'] if opened else 0
+            entry['removed'] = resolved['cnt'] if resolved else 0
+            entry['notes'] = 'added=opened, removed=resolved between runs'
+
+        elif ds_id in ('known_users', 'known_projects'):
+            for rid, key in [(run_id_1, 'run1Count'), (run_id_2, 'run2Count')]:
+                r = self._read_one(executor,
+                    f"SELECT COUNT(*) AS cnt FROM {table} "
+                    f"WHERE first_seen_run <= {_L(rid)} AND last_seen_run >= {_L(rid)}")
+                entry[key] = r['cnt'] if r else 0
+            lo, hi = min(run_id_1, run_id_2), max(run_id_1, run_id_2)
+            added = self._read_one(executor,
+                f"SELECT COUNT(*) AS cnt FROM {table} "
+                f"WHERE first_seen_run > {_L(lo)} AND first_seen_run <= {_L(hi)}")
+            gone = self._read_one(executor,
+                f"SELECT COUNT(*) AS cnt FROM {table} "
+                f"WHERE last_seen_run >= {_L(lo)} AND last_seen_run < {_L(hi)} "
+                f"AND first_seen_run <= {_L(lo)}")
+            entry['added'] = added['cnt'] if added else 0
+            entry['removed'] = gone['cnt'] if gone else 0
+
+        elif ds_id == 'outreach_emails':
+            for rid, key in [(run_id_1, 'run1Count'), (run_id_2, 'run2Count')]:
+                r = self._read_one(executor,
+                    f"SELECT COUNT(*) AS cnt FROM {table} WHERE run_id = {_L(rid)}")
+                entry[key] = r['cnt'] if r else 0
+            lo, hi = min(run_id_1, run_id_2), max(run_id_1, run_id_2)
+            between = self._read_one(executor,
+                f"SELECT COUNT(*) AS cnt FROM {table} "
+                f"WHERE run_id > {_L(lo)} AND run_id <= {_L(hi)}")
+            entry['added'] = between['cnt'] if between else 0
+            entry['notes'] = 'added=emails sent between runs'
+
+        elif ds_id == 'issue_notes':
+            total = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {table}")
+            entry['run1Count'] = total['cnt'] if total else 0
+            entry['run2Count'] = entry['run1Count']
+            r1_at = self._read_one(executor,
+                f"SELECT run_at FROM {self._t('runs')} WHERE run_id = {_L(run_id_1)}")
+            r2_at = self._read_one(executor,
+                f"SELECT run_at FROM {self._t('runs')} WHERE run_id = {_L(run_id_2)}")
+            if r1_at and r2_at:
+                ts1, ts2 = r1_at['run_at'], r2_at['run_at']
+                lo_ts, hi_ts = (ts1, ts2) if ts1 < ts2 else (ts2, ts1)
+                between = self._read_one(executor,
+                    f"SELECT COUNT(*) AS cnt FROM {table} "
+                    f"WHERE created_at > {_L(lo_ts)} AND created_at <= {_L(hi_ts)}")
+                entry['added'] = between['cnt'] if between else 0
+            entry['notes'] = 'added=notes created between run timestamps'
+
+        elif ds_id == 'outreach_email_issues':
+            total = self._read_one(executor, f"SELECT COUNT(*) AS cnt FROM {table}")
+            entry['run1Count'] = total['cnt'] if total else 0
+            entry['run2Count'] = entry['run1Count']
+            entry['notes'] = 'Non-versioned link table'
+
+    def get_compare_dataset_detail(self, run_id_1: int, run_id_2: int, dataset_id: str,
+                                    change_type: str = 'all', page: int = 1, page_size: int = 100,
+                                    search: Optional[str] = None, sort: Optional[str] = None) -> Dict[str, Any]:
+        """Return paginated detail rows for a dataset comparison."""
+        self._init_tables()
+        executor = self._get_executor()
+
+        ds = next((d for d in _COMPARE_DATASETS if d['id'] == dataset_id), None)
+        if not ds:
+            return {'error': f'Unknown dataset: {dataset_id}'}
+
+        result: Dict[str, Any] = {
+            'datasetId': dataset_id, 'columns': [], 'keyFields': ds['key_fields'],
+            'rows': [], 'page': page, 'pageSize': page_size,
+            'totalRows': 0, 'support': ds['support'], 'notes': None,
+        }
+
+        try:
+            kind = ds['kind']
+            table = self._t(ds['table'])
+            if kind == 'scalar':
+                self._detail_scalar(executor, table, ds, run_id_1, run_id_2, result)
+            elif kind == 'keyed_table':
+                self._detail_keyed(executor, table, ds, run_id_1, run_id_2,
+                                   change_type, page, page_size, search, sort, result)
+            elif kind == 'interval_events':
+                self._detail_lifecycle(executor, table, ds, run_id_1, run_id_2,
+                                       change_type, page, page_size, search, sort, result)
+            elif kind == 'metadata':
+                self._detail_metadata(executor, table, ds, page, page_size, search, sort, result)
+        except Exception as exc:
+            _log.warning("[sql_tracking] compare detail '%s' error: %s", dataset_id, exc)
+            result['notes'] = f'Table not available: {exc}'
+
+        return result
+
+    @staticmethod
+    def _filter_sort_paginate(diff_rows, change_type, page, page_size, search, sort):
+        """Apply filtering, search, sort, and pagination to diff rows."""
+        if change_type != 'all':
+            diff_rows = [r for r in diff_rows if r['changeType'] == change_type]
+        if search:
+            sl = search.lower()
+            def _matches(row):
+                if sl in row['key'].lower():
+                    return True
+                for side in (row.get('run1'), row.get('run2')):
+                    if isinstance(side, dict) and any(sl in str(v).lower() for v in side.values()):
+                        return True
+                return False
+            diff_rows = [r for r in diff_rows if _matches(r)]
+        if sort:
+            parts = sort.split(':')
+            col = parts[0]
+            asc = parts[1] == 'asc' if len(parts) > 1 else True
+            def _sk(row):
+                for s in ('run2', 'run1'):
+                    if isinstance(row.get(s), dict) and col in row[s]:
+                        return str(row[s][col] or '')
+                return ''
+            diff_rows.sort(key=_sk, reverse=not asc)
+        total = len(diff_rows)
+        start = (page - 1) * page_size
+        return diff_rows[start:start + page_size], total
+
+    def _detail_scalar(self, executor, table, ds, rid1, rid2, out):
+        """Field-by-field side-by-side for scalar datasets."""
+        row1 = self._read_one(executor, f"SELECT * FROM {table} WHERE run_id = {_L(rid1)}")
+        row2 = self._read_one(executor, f"SELECT * FROM {table} WHERE run_id = {_L(rid2)}")
+        exclude = {'run_id', 'instance_id'}
+        cols = sorted(c for c in set((row1 or {}).keys()) | set((row2 or {}).keys()) if c not in exclude)
+        out['columns'] = cols
+        rows = []
+        for col in cols:
+            v1 = (row1 or {}).get(col)
+            v2 = (row2 or {}).get(col)
+            ct = 'changed' if (row1 and row2 and _vs(v1) != _vs(v2)) else 'unchanged'
+            is_json = col.endswith('_json') or col in ('java_memory_raw',)
+            if is_json and (v1 or v2):
+                p1 = p2 = None
+                try:
+                    p1 = json.loads(v1) if isinstance(v1, str) else v1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                try:
+                    p2 = json.loads(v2) if isinstance(v2, str) else v2
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                rows.append({'key': col, 'changeType': ct,
+                             'run1': {'fieldType': 'json', 'raw': v1, 'parsed': p1},
+                             'run2': {'fieldType': 'json', 'raw': v2, 'parsed': p2}})
+            else:
+                rows.append({'key': col, 'changeType': ct,
+                             'run1': {col: v1}, 'run2': {col: v2}})
+        out['rows'] = rows
+        out['totalRows'] = len(rows)
+
+    def _detail_keyed(self, executor, table, ds, rid1, rid2,
+                       change_type, page, page_size, search, sort, out):
+        """Paginated diff table for keyed snapshot datasets."""
+        kf = ds['key_fields']
+        exclude = {'run_id', 'instance_id'}
+        rows1 = self._read(executor, f"SELECT * FROM {table} WHERE run_id = {_L(rid1)}")
+        rows2 = self._read(executor, f"SELECT * FROM {table} WHERE run_id = {_L(rid2)}")
+
+        all_cols = set()
+        for r in rows1 + rows2:
+            all_cols |= set(r.keys())
+        cols = sorted(c for c in all_cols if c not in exclude)
+        out['columns'] = cols
+
+        m1 = {tuple(_vs(r.get(k)) for k in kf): r for r in rows1}
+        m2 = {tuple(_vs(r.get(k)) for k in kf): r for r in rows2}
+        k1, k2 = set(m1), set(m2)
+
+        diff_rows: List[Dict[str, Any]] = []
+        for k in sorted(k2 - k1):
+            diff_rows.append({'key': '|'.join(k), 'changeType': 'added',
+                              'run1': None, 'run2': {c: m2[k].get(c) for c in cols}})
+        for k in sorted(k1 - k2):
+            diff_rows.append({'key': '|'.join(k), 'changeType': 'removed',
+                              'run1': {c: m1[k].get(c) for c in cols}, 'run2': None})
+        for k in sorted(k1 & k2):
+            r1, r2 = m1[k], m2[k]
+            changed = any(_vs(r1.get(c)) != _vs(r2.get(c)) for c in cols if c not in kf)
+            diff_rows.append({'key': '|'.join(k),
+                              'changeType': 'changed' if changed else 'unchanged',
+                              'run1': {c: r1.get(c) for c in cols},
+                              'run2': {c: r2.get(c) for c in cols}})
+
+        out['rows'], out['totalRows'] = self._filter_sort_paginate(
+            diff_rows, change_type, page, page_size, search, sort)
+
+    def _detail_lifecycle(self, executor, table, ds, rid1, rid2,
+                           change_type, page, page_size, search, sort, out):
+        """Interval-aware detail for lifecycle datasets."""
+        ds_id = ds['id']
+        diff_rows: List[Dict[str, Any]] = []
+        lo, hi = min(rid1, rid2), max(rid1, rid2)
+
+        if ds_id == 'issues':
+            rows = self._read(executor,
+                f"SELECT * FROM {table} WHERE first_detected_run <= {_L(hi)} "
+                f"AND (resolved_run IS NULL OR resolved_run >= {_L(lo)})")
+            for r in rows:
+                fdr = r.get('first_detected_run') or 0
+                rr = r.get('resolved_run')
+                at1 = fdr <= rid1 and (rr is None or rr > rid1)
+                at2 = fdr <= rid2 and (rr is None or rr > rid2)
+                if not at1 and not at2:
+                    continue
+                ct = ('unchanged' if at1 and at2 else
+                      'added' if at2 and not at1 else
+                      'removed' if at1 and not at2 else 'changed')
+                diff_rows.append({
+                    'key': f"{r.get('campaign_id')}|{r.get('entity_type')}|{r.get('entity_key')}",
+                    'changeType': ct, 'run1': r if at1 else None, 'run2': r if at2 else None})
+
+        elif ds_id in ('known_users', 'known_projects'):
+            rows = self._read(executor,
+                f"SELECT * FROM {table} WHERE first_seen_run <= {_L(hi)} AND last_seen_run >= {_L(lo)}")
+            kf = ds['key_fields']
+            for r in rows:
+                at1 = r.get('first_seen_run', 0) <= rid1 and r.get('last_seen_run', 0) >= rid1
+                at2 = r.get('first_seen_run', 0) <= rid2 and r.get('last_seen_run', 0) >= rid2
+                if not at1 and not at2:
+                    continue
+                ct = ('unchanged' if at1 and at2 else
+                      'added' if at2 and not at1 else
+                      'removed' if at1 and not at2 else 'changed')
+                diff_rows.append({
+                    'key': '|'.join(_vs(r.get(k)) for k in kf),
+                    'changeType': ct, 'run1': r if at1 else None, 'run2': r if at2 else None})
+
+        elif ds_id == 'outreach_emails':
+            rows = self._read(executor,
+                f"SELECT * FROM {table} WHERE run_id >= {_L(lo)} AND run_id <= {_L(hi)}")
+            for r in rows:
+                rid = r.get('run_id')
+                ct = 'unchanged' if rid == rid1 or rid == rid2 else 'added'
+                diff_rows.append({
+                    'key': str(r.get('email_id', '')), 'changeType': ct,
+                    'run1': r if rid == rid1 else None, 'run2': r})
+
+        elif ds_id == 'issue_notes':
+            r1_at = self._read_one(executor,
+                f"SELECT run_at FROM {self._t('runs')} WHERE run_id = {_L(rid1)}")
+            r2_at = self._read_one(executor,
+                f"SELECT run_at FROM {self._t('runs')} WHERE run_id = {_L(rid2)}")
+            if r1_at and r2_at:
+                ts1, ts2 = r1_at['run_at'], r2_at['run_at']
+                lo_ts, hi_ts = (ts1, ts2) if ts1 < ts2 else (ts2, ts1)
+                rows = self._read(executor,
+                    f"SELECT * FROM {table} "
+                    f"WHERE created_at > {_L(lo_ts)} AND created_at <= {_L(hi_ts)}")
+                for r in rows:
+                    diff_rows.append({
+                        'key': str(r.get('note_id', '')), 'changeType': 'added',
+                        'run1': None, 'run2': r})
+
+        elif ds_id == 'outreach_email_issues':
+            rows = self._read(executor, f"SELECT * FROM {table}")
+            for r in rows:
+                diff_rows.append({
+                    'key': f"{r.get('email_id')}|{r.get('issue_id')}",
+                    'changeType': 'unchanged', 'run1': r, 'run2': r})
+
+        all_cols: Set[str] = set()
+        for r in diff_rows:
+            for side in (r.get('run1'), r.get('run2')):
+                if isinstance(side, dict):
+                    all_cols |= set(side.keys())
+        out['columns'] = sorted(all_cols)
+
+        out['rows'], out['totalRows'] = self._filter_sort_paginate(
+            diff_rows, change_type, page, page_size, search, sort)
+
+    def _detail_metadata(self, executor, table, ds, page, page_size, search, sort, out):
+        """Simple current-only table for metadata datasets."""
+        rows = self._read(executor, f"SELECT * FROM {table}")
+        kf = ds['key_fields']
+        all_cols: Set[str] = set()
+        for r in rows:
+            all_cols |= set(r.keys())
+        out['columns'] = sorted(all_cols)
+        diff_rows = [{'key': '|'.join(_vs(r.get(k)) for k in kf),
+                      'changeType': 'unchanged', 'run1': r, 'run2': r} for r in rows]
+        out['rows'], out['totalRows'] = self._filter_sort_paginate(
+            diff_rows, 'all', page, page_size, search, sort)
+        out['notes'] = 'Non-versioned table — shows current state only'
 
     def get_dashboard(self, instance_id: Optional[str] = None) -> Dict[str, Any]:
         self._init_tables()
