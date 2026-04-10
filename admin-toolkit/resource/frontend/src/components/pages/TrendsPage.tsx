@@ -40,15 +40,28 @@ function fmtNum(v: unknown): string {
   return String(v);
 }
 
-function fmtBytes(bytes: number): string {
-  if (!bytes) return '0 B';
+function fmtBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || bytes === 0) return '--';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
 
-function fmtPct(v: number): string {
+function fmtPct(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '--';
   return `${v.toFixed(1)}%`;
+}
+
+/** Parse a scalar field value to number, returning null (not 0) for missing data */
+function toNum(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function fmtMB(mb: number | null): string {
+  if (mb === null) return '--';
+  return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 function deltaColor(delta: number | null | undefined): string {
@@ -571,15 +584,15 @@ function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
     return <SectionCard title="Memory"><NoDataMessage /></SectionCard>;
   }
 
-  const totalBefore = Number(totalField.run2Value || 0);
-  const totalAfter = Number(totalField.run1Value || 0);
-  const usedBefore = Number(getField('memory_used_mb')?.run2Value || 0);
-  const usedAfter = Number(getField('memory_used_mb')?.run1Value || 0);
-  const availBefore = Number(getField('memory_available_mb')?.run2Value || 0);
-  const availAfter = Number(getField('memory_available_mb')?.run1Value || 0);
+  const totalBefore = toNum(totalField.run2Value);
+  const totalAfter = toNum(totalField.run1Value);
+  const usedBefore = toNum(getField('memory_used_mb')?.run2Value);
+  const usedAfter = toNum(getField('memory_used_mb')?.run1Value);
+  const availBefore = toNum(getField('memory_available_mb')?.run2Value);
+  const availAfter = toNum(getField('memory_available_mb')?.run1Value);
 
-  const pctBefore = totalBefore > 0 ? (usedBefore / totalBefore) * 100 : 0;
-  const pctAfter = totalAfter > 0 ? (usedAfter / totalAfter) * 100 : 0;
+  const pctBefore = totalBefore && usedBefore ? (usedBefore / totalBefore) * 100 : null;
+  const pctAfter = totalAfter && usedAfter ? (usedAfter / totalAfter) * 100 : null;
 
   const memFields = [
     { key: 'backend_heap_mb', label: 'Backend Heap' },
@@ -596,7 +609,7 @@ function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
           <MemoryCircle total={totalBefore} pct={pctBefore} label="Before" />
           <div className="flex flex-col items-center">
             <span className="text-lg text-[var(--text-muted)]">→</span>
-            <ChangeBadge delta={pctAfter - pctBefore} suffix="%" />
+            {pctBefore !== null && pctAfter !== null && <ChangeBadge delta={pctAfter - pctBefore} suffix="%" />}
           </div>
           <MemoryCircle total={totalAfter} pct={pctAfter} label="After" />
         </div>
@@ -604,14 +617,15 @@ function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
         {/* Memory analysis numbers side by side */}
         <div className="space-y-2">
           <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Memory Analysis</div>
-          <CompareValue label="Total Memory" before={`${(totalBefore / 1024).toFixed(1)} GB`} after={`${(totalAfter / 1024).toFixed(1)} GB`} />
-          <CompareValue label="Available" before={`${(availBefore / 1024).toFixed(1)} GB`} after={`${(availAfter / 1024).toFixed(1)} GB`} />
+          <CompareValue label="Total Memory" before={fmtMB(totalBefore)} after={fmtMB(totalAfter)} />
+          <CompareValue label="Available" before={fmtMB(availBefore)} after={fmtMB(availAfter)} />
           {memFields.map(({ key, label }) => {
             const f = getField(key);
+            if (!f || (f.run1Value === null && f.run2Value === null)) return null;
             return (
               <CompareValue key={key} label={label}
-                before={f?.run2Value != null ? `${fmtNum(f.run2Value)} MB` : '--'}
-                after={f?.run1Value != null ? `${fmtNum(f.run1Value)} MB` : '--'} />
+                before={f.run2Value != null ? `${fmtNum(f.run2Value)} MB` : '--'}
+                after={f.run1Value != null ? `${fmtNum(f.run1Value)} MB` : '--'} />
             );
           })}
         </div>
@@ -621,13 +635,14 @@ function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
 }
 
 function MemoryCircle({ total, pct, label }: {
-  total: number; pct: number; label: string;
+  total: number | null; pct: number | null; label: string;
 }) {
   const size = 100;
   const r = (size - 10) / 2;
   const circ = 2 * Math.PI * r;
-  const offset = circ * (1 - pct / 100);
-  const color = pct >= 90 ? 'var(--neon-red)' : pct >= 70 ? 'var(--neon-amber)' : 'var(--neon-green)';
+  const hasData = pct !== null && total !== null;
+  const offset = hasData ? circ * (1 - pct / 100) : circ;
+  const color = !hasData ? 'var(--text-muted)' : pct >= 90 ? 'var(--neon-red)' : pct >= 70 ? 'var(--neon-amber)' : 'var(--neon-green)';
 
   return (
     <div className="flex flex-col items-center">
@@ -639,8 +654,8 @@ function MemoryCircle({ total, pct, label }: {
             strokeLinecap="round" className="transition-all duration-700" />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="font-mono text-sm font-bold" style={{ color }}>{pct.toFixed(0)}%</span>
-          <span className="text-[9px] text-[var(--text-muted)]">{(total / 1024).toFixed(1)} GB</span>
+          <span className="font-mono text-sm font-bold" style={{ color }}>{hasData ? `${pct.toFixed(0)}%` : 'N/A'}</span>
+          <span className="text-[9px] text-[var(--text-muted)]">{hasData ? fmtMB(total) : ''}</span>
         </div>
       </div>
       <span className="text-xs text-[var(--text-muted)] mt-1">{label}</span>
@@ -677,35 +692,37 @@ function TrendsConnectionsSection({ detail, connHealthDetail }: {
     return {};
   };
 
-  const connsBefore = parseConns(field?.run2Value);
-  const connsAfter = parseConns(field?.run1Value);
-  const totalBefore = Object.values(connsBefore).reduce((s, v) => s + v, 0);
-  const totalAfter = Object.values(connsAfter).reduce((s, v) => s + v, 0);
+  const connsBefore = parseConns(field.run2Value);
+  const connsAfter = parseConns(field.run1Value);
+  const hasBefore = Object.keys(connsBefore).length > 0;
+  const hasAfter = Object.keys(connsAfter).length > 0;
+  const totalBefore = hasBefore ? Object.values(connsBefore).reduce((s, v) => s + v, 0) : null;
+  const totalAfter = hasAfter ? Object.values(connsAfter).reduce((s, v) => s + v, 0) : null;
 
   // Merge connection types
   const allTypes = new Set([...Object.keys(connsBefore), ...Object.keys(connsAfter)]);
   const sorted = Array.from(allTypes).sort((a, b) => (connsAfter[b] || 0) - (connsAfter[a] || 0));
 
   return (
-    <SectionCard title="Connections" badge={<ChangeBadge delta={totalAfter - totalBefore} />}>
+    <SectionCard title="Connections" badge={totalBefore !== null && totalAfter !== null ? <ChangeBadge delta={totalAfter - totalBefore} /> : undefined}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Two donut-style summaries side by side */}
         <div className="flex items-center justify-center gap-8">
           <div className="flex flex-col items-center">
             <div className="w-20 h-20 rounded-full border-4 flex items-center justify-center"
               style={{ borderColor: 'var(--neon-cyan)' }}>
-              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalBefore}</span>
+              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalBefore ?? 'N/A'}</span>
             </div>
             <span className="text-xs text-[var(--text-muted)] mt-1">Before</span>
           </div>
           <div className="flex flex-col items-center">
             <span className="text-lg text-[var(--text-muted)]">→</span>
-            <ChangeBadge delta={totalAfter - totalBefore} />
+            {totalBefore !== null && totalAfter !== null && <ChangeBadge delta={totalAfter - totalBefore} />}
           </div>
           <div className="flex flex-col items-center">
             <div className="w-20 h-20 rounded-full border-4 flex items-center justify-center"
               style={{ borderColor: 'var(--neon-purple)' }}>
-              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalAfter}</span>
+              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalAfter ?? 'N/A'}</span>
             </div>
             <span className="text-xs text-[var(--text-muted)] mt-1">After</span>
           </div>
@@ -1027,8 +1044,8 @@ function TrendsFootprintSection({ detail }: { detail: CompareDatasetDetail }) {
 
   // Sort by biggest size delta
   const sorted = Array.from(merged.entries()).sort((x, y) => {
-    const dX = Math.abs(Number(x[1].a?.sizeBytes || 0) - Number(x[1].b?.sizeBytes || 0));
-    const dY = Math.abs(Number(y[1].a?.sizeBytes || 0) - Number(y[1].b?.sizeBytes || 0));
+    const dX = Math.abs((toNum(x[1].a?.sizeBytes) ?? 0) - (toNum(x[1].b?.sizeBytes) ?? 0));
+    const dY = Math.abs((toNum(y[1].a?.sizeBytes) ?? 0) - (toNum(y[1].b?.sizeBytes) ?? 0));
     return dY - dX;
   });
 
@@ -1048,16 +1065,16 @@ function TrendsFootprintSection({ detail }: { detail: CompareDatasetDetail }) {
           </thead>
           <tbody>
             {sorted.slice(0, 50).map(([key, { b, a }]) => {
-              const bSize = Number(b?.sizeBytes || 0);
-              const aSize = Number(a?.sizeBytes || 0);
-              const delta = aSize - bSize;
+              const bSize = toNum(b?.sizeBytes);
+              const aSize = toNum(a?.sizeBytes);
+              const delta = (aSize ?? 0) - (bSize ?? 0);
               return (
                 <tr key={key} className={`border-b border-[var(--border-glass)] ${delta !== 0 ? 'bg-[var(--neon-amber)]/5' : ''}`}>
                   <td className="py-1 px-2 text-[var(--text-primary)] truncate max-w-[200px]">{key}</td>
                   <td className="py-1 px-2 text-right text-[var(--text-muted)]">{fmtBytes(bSize)}</td>
                   <td className="py-1 px-2 text-right text-[var(--text-primary)]">{fmtBytes(aSize)}</td>
                   <td className="py-1 px-2 text-right">
-                    {delta !== 0 ? (
+                    {bSize !== null && aSize !== null && delta !== 0 ? (
                       <span style={{ color: deltaColor(delta) }}>{deltaSign(delta)}{fmtBytes(Math.abs(delta))}</span>
                     ) : (
                       <span className="text-[var(--text-muted)]">--</span>
@@ -1202,8 +1219,8 @@ function DbHealthTableDiff({ detail }: { detail: CompareDatasetDetail }) {
 
   // Sort changed by biggest dead tuple increase
   const sorted = [...changed].sort((a, b) => {
-    const aDelta = Math.abs(Number(a.run1?.dead_tuples || 0) - Number(a.run2?.dead_tuples || 0));
-    const bDelta = Math.abs(Number(b.run1?.dead_tuples || 0) - Number(b.run2?.dead_tuples || 0));
+    const aDelta = Math.abs((toNum(a.run1?.dead_tuples) ?? 0) - (toNum(a.run2?.dead_tuples) ?? 0));
+    const bDelta = Math.abs((toNum(b.run1?.dead_tuples) ?? 0) - (toNum(b.run2?.dead_tuples) ?? 0));
     return bDelta - aDelta;
   });
 
@@ -1235,7 +1252,7 @@ function DbHealthTableDiff({ detail }: { detail: CompareDatasetDetail }) {
                       </span>
                     </td>
                     <td className="py-1 px-2 text-[var(--text-primary)] truncate max-w-[200px]">{r.key.table_name}</td>
-                    <td className="py-1 px-2 text-right">{fmtBytes(Number(d.table_size || 0))}</td>
+                    <td className="py-1 px-2 text-right">{fmtBytes(toNum(d.table_size))}</td>
                     <td className="py-1 px-2 text-right">{fmtNum(d.row_count)}</td>
                     <td className="py-1 px-2 text-right">{fmtNum(d.dead_tuples)}</td>
                     <td className="py-1 px-2 text-right">{typeof d.bloat_pct === 'number' ? fmtPct(d.bloat_pct) : '--'}</td>
