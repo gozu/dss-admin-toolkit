@@ -8529,6 +8529,8 @@ def api_tracking_ingest_parsed():
     run_data = {
         'dss_version': pd.get('dssVersion'),
         'python_version': pd.get('pythonVersion'),
+        'health_score': pd.get('_healthScore'),
+        'health_status': pd.get('_healthStatus'),
         'user_count': (pd.get('userStats') or {}).get('Total Users'),
         'enabled_user_count': (pd.get('userStats') or {}).get('Enabled Users'),
         'project_count': len(pd.get('projects') or []),
@@ -8550,6 +8552,7 @@ def api_tracking_ingest_parsed():
             max_fs_pct = pct
             max_fs_mount = fs.get('Mounted on', '')
 
+    category_scores = pd.get('_categoryScores') or {}
     health_metrics = {
         'cpu_cores': pd.get('cpuCores'),
         'memory_total_mb': mem_info.get('totalMB') or mem_info.get('total_mb'),
@@ -8559,6 +8562,10 @@ def api_tracking_ingest_parsed():
         'swap_used_mb': mem_info.get('swapUsedMB') or mem_info.get('swap_used_mb'),
         'max_filesystem_pct': max_fs_pct if max_fs_pct else None,
         'max_filesystem_mount': max_fs_mount or None,
+        'version_currency_score': category_scores.get('version_currency'),
+        'system_capacity_score': category_scores.get('system_capacity'),
+        'configuration_score': category_scores.get('configuration'),
+        'security_isolation_score': category_scores.get('security_isolation'),
     }
 
     # Parse memory from string values like "31.1 GB" if numeric keys are absent
