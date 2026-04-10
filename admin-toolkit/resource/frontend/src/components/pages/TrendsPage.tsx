@@ -369,13 +369,13 @@ function TopChangesGrid({ manifest }: { manifest: CompareManifest }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {cards.map((c, i) => (
-        <div key={i} className="glass-card px-4 py-3">
+        <div key={i} className="glass-card px-4 py-3" style={{ borderLeft: `3px solid ${c.color}` }}>
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-lg font-mono font-bold" style={{ color: c.color }}>{c.icon}</span>
+            <div className="w-7 h-7 rounded-full flex items-center justify-center text-lg font-mono font-bold" style={{ color: c.color, background: `color-mix(in srgb, ${c.color} 15%, transparent)` }}>{c.icon}</div>
             <span className="text-xs text-[var(--text-primary)] font-medium truncate">{c.title}</span>
           </div>
           <div className="text-xs text-[var(--text-muted)] mb-1">{c.text}</div>
-          <span className="text-xl font-mono font-bold" style={{ color: c.color }}>{c.value}</span>
+          <span className="text-2xl font-mono font-bold" style={{ color: c.color }}>{c.value}</span>
         </div>
       ))}
     </div>
@@ -438,7 +438,7 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
 }) {
   const totalChanges = ds.added + ds.removed + ds.changed;
   const [activeFilter, setActiveFilter] = useState<FilterType>(
-    () => totalChanges > 0 ? 'changed' : 'all'
+    () => ds.changed > 0 ? 'changed' : 'all'
   );
   const [searchTerm, setSearchTerm] = useState('');
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -449,7 +449,7 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
   const supportColor = SUPPORT_COLORS[ds.support] || 'var(--text-muted)';
 
   return (
-    <div className="glass-card overflow-hidden" style={{ opacity: ds.support === 'current_only' ? 0.75 : 1 }}>
+    <div className="glass-card overflow-hidden" style={{ opacity: ds.support === 'current_only' ? 0.65 : totalChanges === 0 && !unavailable ? 0.5 : 1 }}>
       <button
         className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-[var(--bg-glass-hover)] transition-colors"
         onClick={onToggle}
@@ -716,7 +716,7 @@ function ScalarView({ fields }: { fields: CompareScalarField[] }) {
         <div className="pt-1">
           <button
             onClick={() => setShowStable(!showStable)}
-            className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors font-mono"
+            className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors font-mono px-2 py-1 rounded border border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]"
           >
             {showStable ? '▼' : '▶'} Show {stableFields.length} stable fields
           </button>
@@ -1082,7 +1082,7 @@ export function TrendsPage() {
       const toExpand = scored.slice(0, 4).map(x => x.id);
       setExpandedSet(new Set(toExpand));
       for (const { id, ds } of scored.slice(0, 4)) {
-        const defaultFilter = (ds.added + ds.removed + ds.changed) > 0 ? 'changed' : 'all';
+        const defaultFilter = ds.changed > 0 ? 'changed' : 'all';
         loadDetail(id, defaultFilter);
       }
     }
@@ -1098,7 +1098,7 @@ export function TrendsPage() {
         // Lazy load on expand with smart default filter
         if (!detailCache[datasetId]) {
           const dsInfo = manifest?.datasets.find(d => d.datasetId === datasetId);
-          const defaultFilter = dsInfo && (dsInfo.added + dsInfo.removed + dsInfo.changed) > 0 ? 'changed' : 'all';
+          const defaultFilter = dsInfo && dsInfo.changed > 0 ? 'changed' : 'all';
           loadDetail(datasetId, defaultFilter);
         }
       }
