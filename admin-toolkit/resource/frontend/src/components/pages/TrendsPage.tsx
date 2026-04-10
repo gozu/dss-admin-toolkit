@@ -61,6 +61,46 @@ const FILTER_COLORS: Record<string, string> = {
   unchanged: 'var(--text-muted)',
 };
 
+/* ---------- Scoring & summary helpers ---------- */
+
+function datasetScore(d: CompareDatasetSummary): number {
+  const changePart = (d.removed * 3) + (d.added * 2) + (d.changed * 1);
+  const kindBonus = d.kind === 'scalar' ? 100 : 0;
+  const catBonus: Record<DatasetCategory, number> = {
+    run_summary: 50, health_metrics: 40,
+    snapshot_entities: 30, lifecycle: 20, metadata: 0,
+  };
+  return changePart + kindBonus + (catBonus[d.category] ?? 0);
+}
+
+function datasetSummaryLine(ds: CompareDatasetSummary): string {
+  if (ds.support === 'current_only') return 'Current state only';
+  if (!ds.availableInRun1 || !ds.availableInRun2) return '';
+  const total = ds.added + ds.removed + ds.changed;
+  if (total === 0) return 'No changes';
+  const parts: string[] = [];
+  if (ds.removed > 0) parts.push(`${ds.removed.toLocaleString()} removed`);
+  if (ds.added > 0) parts.push(`${ds.added.toLocaleString()} added`);
+  if (ds.changed > 0) parts.push(`${ds.changed.toLocaleString()} changed`);
+  return parts.join(', ');
+}
+
+function categorySummary(category: DatasetCategory, datasets: CompareDatasetSummary[]): string {
+  if (category === 'metadata') return 'Informational only';
+  const changed = datasets.filter(d => d.added + d.removed + d.changed > 0).length;
+  if (changed === 0) return 'No changes detected';
+  const dominant = datasets.reduce<CompareDatasetSummary | null>((best, d) => {
+    const s = d.added + d.removed + d.changed;
+    return s > (best ? best.added + best.removed + best.changed : 0) ? d : best;
+  }, null);
+  if (!dominant) return `${changed} of ${datasets.length} datasets changed`;
+  const parts: string[] = [];
+  if (dominant.removed > 0) parts.push(`${dominant.removed.toLocaleString()} removed`);
+  if (dominant.added > 0) parts.push(`${dominant.added.toLocaleString()} added`);
+  if (dominant.changed > 0) parts.push(`${dominant.changed.toLocaleString()} changed`);
+  return `${changed} of ${datasets.length} datasets changed — ${dominant.label} dominates (${parts.join(', ')})`;
+}
+
 /* ---------- Helpers ---------- */
 
 function formatDate(iso: string): string {
@@ -217,6 +257,8 @@ function SkeletonCard() {
 /* Step 39: Summary band */
 function SummaryBand({ manifest }: { manifest: CompareManifest }) {
   const s = manifest.summary;
+  const changedDatasetCount = manifest.datasets.filter(d => d.added + d.removed + d.changed > 0).length;
+  const dssVersionDrift = manifest.run1.dss_version !== manifest.run2.dss_version;
   const chips: { label: string; data: CompareSummaryDelta }[] = [
     { label: 'Health', data: s.healthScore },
     { label: 'Users', data: s.userCount },
@@ -234,19 +276,33 @@ function SummaryBand({ manifest }: { manifest: CompareManifest }) {
     >
       <div className="flex flex-wrap gap-4 items-center">
         {chips.map(({ label, data }) => (
-          <DeltaChip key={label} label={label} data={data} />
+          <DeltaChip key={label} label={label} data={data} large />
         ))}
-        {s.coverageStatus.run1 !== 'complete' && (
-          <span className="text-xs px-2 py-1 rounded bg-[var(--neon-amber)]/10 text-[var(--neon-amber)]">
-            Run 1: {s.coverageStatus.run1}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-[var(--text-muted)]">Changed</span>
+          <span className="font-mono text-base font-bold text-[var(--neon-amber)]">{changedDatasetCount}</span>
+          <span className="text-xs text-[var(--text-muted)]">datasets</span>
+        </div>
       </div>
+      {dssVersionDrift && (
+        <div className="text-xs text-[var(--text-muted)] mt-2">
+          DSS {manifest.run2.dss_version ?? '?'} → {manifest.run1.dss_version ?? '?'}
+        </div>
+      )}
+      {manifest.coverageWarnings.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {manifest.coverageWarnings.map((w, i) => (
+            <div key={i} className="text-xs text-[var(--neon-amber)] bg-[var(--neon-amber)]/5 rounded px-3 py-1.5 border border-[var(--neon-amber)]/15">
+              {w.message}
+            </div>
+          ))}
+        </div>
+      )}
     </motion.div>
   );
 }
 
-function DeltaChip({ label, data }: { label: string; data: CompareSummaryDelta }) {
+function DeltaChip({ label, data, large }: { label: string; data: CompareSummaryDelta; large?: boolean }) {
   const v1 = data.run1;
   const delta = data.delta;
   const color = delta === null || delta === 0 ? 'var(--text-muted)' : delta > 0 ? 'var(--neon-green)' : 'var(--neon-red)';
@@ -254,14 +310,74 @@ function DeltaChip({ label, data }: { label: string; data: CompareSummaryDelta }
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-[var(--text-muted)]">{label}</span>
-      <span className="font-mono text-sm font-bold text-[var(--text-primary)]">{formatNum(v1)}</span>
+      <span className={large ? 'text-sm text-[var(--text-muted)]' : 'text-xs text-[var(--text-muted)]'}>{label}</span>
+      <span className={large ? 'font-mono text-base font-bold text-[var(--text-primary)]' : 'font-mono text-sm font-bold text-[var(--text-primary)]'}>{formatNum(v1)}</span>
       {delta !== null && delta !== 0 && (
         <span className="text-xs font-mono px-1.5 py-0.5 rounded-full" style={{ color, border: `1px solid color-mix(in srgb, ${color} 35%, transparent)` }}>
           {sign}{formatNum(delta)}
           {data.pctDelta !== null ? ` (${sign}${data.pctDelta}%)` : ''}
         </span>
       )}
+    </div>
+  );
+}
+
+/* TopChangesGrid — spotlight cards */
+function TopChangesGrid({ manifest }: { manifest: CompareManifest }) {
+  const ds = manifest.datasets.filter(d => d.availableInRun1 && d.availableInRun2);
+  const cards: { icon: string; title: string; text: string; value: string; color: string }[] = [];
+
+  const bigRemoval = ds.filter(d => d.removed > 0).sort((a, b) => b.removed - a.removed)[0];
+  if (bigRemoval) {
+    cards.push({
+      icon: '−', title: bigRemoval.label,
+      text: 'Biggest removal', value: bigRemoval.removed.toLocaleString(),
+      color: 'var(--neon-red)',
+    });
+  }
+
+  const bigAddition = ds.filter(d => d.added > 0 && d.datasetId !== bigRemoval?.datasetId)
+    .sort((a, b) => b.added - a.added)[0];
+  if (bigAddition) {
+    cards.push({
+      icon: '+', title: bigAddition.label,
+      text: 'Biggest addition', value: bigAddition.added.toLocaleString(),
+      color: 'var(--neon-green)',
+    });
+  }
+
+  const mostChanged = ds.filter(d => d.changed > 0).sort((a, b) => b.changed - a.changed)[0];
+  if (mostChanged) {
+    cards.push({
+      icon: '~', title: mostChanged.label,
+      text: 'Most changed rows', value: mostChanged.changed.toLocaleString(),
+      color: 'var(--neon-amber)',
+    });
+  }
+
+  const unavail = manifest.datasets.find(d => !d.availableInRun1 || !d.availableInRun2);
+  if (unavail) {
+    cards.push({
+      icon: '?', title: unavail.label,
+      text: !unavail.availableInRun1 ? 'Missing in newer run' : 'Missing in older run',
+      value: '!', color: 'var(--text-muted)',
+    });
+  }
+
+  if (cards.length === 0) return null;
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {cards.map((c, i) => (
+        <div key={i} className="glass-card px-4 py-3">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-lg font-mono font-bold" style={{ color: c.color }}>{c.icon}</span>
+            <span className="text-xs text-[var(--text-primary)] font-medium truncate">{c.title}</span>
+          </div>
+          <div className="text-xs text-[var(--text-muted)] mb-1">{c.text}</div>
+          <span className="text-xl font-mono font-bold" style={{ color: c.color }}>{c.value}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -291,6 +407,9 @@ function CategorySection({ category, datasets, onExpand, expandedSet, detailCach
         <div className="flex-1 h-px bg-[var(--border-default)]" />
         <span className="text-xs text-[var(--text-muted)]">{datasets.length} datasets</span>
       </div>
+      <p className="text-xs text-[var(--text-muted)] pb-2">
+        {categorySummary(category, datasets)}
+      </p>
       <div className="space-y-2">
         {datasets.map((ds) => (
           <DatasetSection
@@ -317,18 +436,20 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
   isLoading: boolean;
   onReload?: (changeType: string, page?: number, search?: string) => void;
 }) {
-  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const totalChanges = ds.added + ds.removed + ds.changed;
+  const [activeFilter, setActiveFilter] = useState<FilterType>(
+    () => totalChanges > 0 ? 'changed' : 'all'
+  );
   const [searchTerm, setSearchTerm] = useState('');
   const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const unavailable = !ds.availableInRun1 || !ds.availableInRun2;
   const showPagination = (ds.kind === 'keyed_table' || ds.kind === 'interval_events' || ds.kind === 'metadata')
     && detail && detail.totalRows !== undefined && detail.totalRows > (detail.pageSize ?? 100);
   const showSearch = ds.kind === 'keyed_table' || ds.kind === 'interval_events';
-  const totalChanges = ds.added + ds.removed + ds.changed;
   const supportColor = SUPPORT_COLORS[ds.support] || 'var(--text-muted)';
 
   return (
-    <div className="glass-card overflow-hidden">
+    <div className="glass-card overflow-hidden" style={{ opacity: ds.support === 'current_only' ? 0.75 : 1 }}>
       <button
         className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-[var(--bg-glass-hover)] transition-colors"
         onClick={onToggle}
@@ -336,7 +457,13 @@ function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }:
         <span className="text-xs font-mono" style={{ color: supportColor, opacity: 0.8 }}>
           {expanded ? '▼' : '▶'}
         </span>
-        <span className="font-semibold text-sm text-[var(--text-primary)] flex-1">{ds.label}</span>
+        <span className="font-semibold text-sm text-[var(--text-primary)]">{ds.label}</span>
+        {datasetSummaryLine(ds) && (
+          <span className="text-xs text-[var(--text-muted)] font-normal hidden sm:inline truncate max-w-[200px]">
+            {datasetSummaryLine(ds)}
+          </span>
+        )}
+        <span className="flex-1" />
 
         {/* Support badge */}
         <span
@@ -540,25 +667,35 @@ function DatasetContent({ ds, detail }: { ds: CompareDatasetSummary; detail: Com
 
 /* Step 45: Scalar comparison views */
 function ScalarView({ fields }: { fields: CompareScalarField[] }) {
+  const [showStable, setShowStable] = useState(false);
+  const changedFields = fields.filter(f => f.status === 'changed');
+  const stableFields = fields.filter(f => f.status !== 'changed');
+
   return (
     <div className="space-y-0.5">
-      {fields.map((f) => (
+      {changedFields.map((f) => (
         <div
           key={f.field}
-          className="flex items-center gap-3 py-1.5 px-2 rounded hover:bg-[var(--bg-glass-hover)] transition-colors"
+          style={{ borderLeft: '2px solid var(--neon-amber)', background: 'color-mix(in srgb, var(--neon-amber) 5%, transparent)' }}
+          className="py-2 px-3 rounded mb-0.5"
         >
-          <span className="text-xs text-[var(--text-muted)] w-48 truncate font-mono">{f.field}</span>
-
+          <div className="text-xs text-[var(--text-muted)] font-mono mb-1">{f.field}</div>
           {f.kind === 'json' ? (
             <JsonFieldView field={f} />
           ) : f.kind === 'text' ? (
             <TextFieldView field={f} />
           ) : (
-            <>
-              <span className="font-mono text-sm text-[var(--text-primary)] w-32 text-right">{formatNum(f.run1Value)}</span>
-              <span className="text-xs text-[var(--text-muted)]">was</span>
-              <span className="font-mono text-sm text-[var(--text-secondary)] w-32 text-right">{formatNum(f.run2Value)}</span>
-              {f.status === 'changed' && f.delta !== undefined && (
+            <div className="flex items-center gap-3">
+              <div>
+                <div className="text-[10px] text-[var(--text-muted)]">Before</div>
+                <span className="font-mono text-sm text-[var(--text-secondary)]">{formatNum(f.run2Value)}</span>
+              </div>
+              <span className="text-xs text-[var(--text-muted)]">→</span>
+              <div>
+                <div className="text-[10px] text-[var(--text-muted)]">Now</div>
+                <span className="font-mono text-sm text-[var(--text-primary)]">{formatNum(f.run1Value)}</span>
+              </div>
+              {f.delta !== undefined && (
                 <span
                   className="text-xs font-mono px-1.5 py-0.5 rounded-full"
                   style={{
@@ -570,13 +707,50 @@ function ScalarView({ fields }: { fields: CompareScalarField[] }) {
                   {f.pctDelta !== undefined ? ` (${f.pctDelta > 0 ? '+' : ''}${f.pctDelta}%)` : ''}
                 </span>
               )}
-              {f.status === 'same' && (
-                <span className="text-xs text-[var(--text-muted)]">--</span>
-              )}
-            </>
+            </div>
           )}
         </div>
       ))}
+
+      {stableFields.length > 0 && (
+        <div className="pt-1">
+          <button
+            onClick={() => setShowStable(!showStable)}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors font-mono"
+          >
+            {showStable ? '▼' : '▶'} Show {stableFields.length} stable fields
+          </button>
+          {showStable && (
+            <div className="mt-1 space-y-0.5 opacity-60">
+              {stableFields.map((f) => (
+                <div
+                  key={f.field}
+                  className="flex items-center gap-3 py-1 px-2 rounded hover:bg-[var(--bg-glass-hover)] transition-colors"
+                >
+                  <span className="text-xs text-[var(--text-muted)] w-48 truncate font-mono">{f.field}</span>
+                  {f.kind === 'json' ? (
+                    <JsonFieldView field={f} />
+                  ) : f.kind === 'text' ? (
+                    <TextFieldView field={f} />
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <div className="text-[10px] text-[var(--text-muted)]">Before</div>
+                        <span className="font-mono text-sm text-[var(--text-secondary)]">{formatNum(f.run2Value)}</span>
+                      </div>
+                      <span className="text-xs text-[var(--text-muted)]">→</span>
+                      <div>
+                        <div className="text-[10px] text-[var(--text-muted)]">Now</div>
+                        <span className="font-mono text-sm text-[var(--text-primary)]">{formatNum(f.run1Value)}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -655,9 +829,9 @@ function KeyedTable({ detail }: { detail: CompareDatasetDetail }) {
   }
 
   return (
-    <div className="overflow-auto">
+    <div className="max-h-80 overflow-y-auto">
       <table className="w-full text-xs font-mono">
-        <thead>
+        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
           <tr className="border-b border-[var(--border-glass)]">
             <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal w-20">Status</th>
             {cols.map((c) => (
@@ -741,12 +915,12 @@ function LifecycleTable({ detail }: { detail: CompareDatasetDetail }) {
   };
 
   return (
-    <div className="overflow-auto">
+    <div className="max-h-80 overflow-y-auto">
       {detail.notes && (
         <div className="text-xs text-[var(--neon-amber)] italic mb-2">{detail.notes}</div>
       )}
       <table className="w-full text-xs font-mono">
-        <thead>
+        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
           <tr className="border-b border-[var(--border-glass)]">
             <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal w-36">Lifecycle</th>
             {cols.slice(0, 8).map((c) => (
@@ -798,9 +972,9 @@ function MetadataTable({ detail }: { detail: CompareDatasetDetail }) {
   }
 
   return (
-    <div className="overflow-auto">
+    <div className="max-h-80 overflow-y-auto">
       <table className="w-full text-xs font-mono">
-        <thead>
+        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
           <tr className="border-b border-[var(--border-glass)]">
             {cols.map((c) => (
               <th key={c} className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">{c}</th>
@@ -829,6 +1003,64 @@ function MetadataTable({ detail }: { detail: CompareDatasetDetail }) {
   );
 }
 
+/* CompareHeader — page title + run selectors */
+function CompareHeader({ runs, run1Id, run2Id, manifest, selectRun1, selectRun2 }: {
+  runs: TrendsRun[];
+  run1Id: number | null;
+  run2Id: number | null;
+  manifest: CompareManifest | null;
+  selectRun1: (id: number) => void;
+  selectRun2: (id: number) => void;
+}) {
+  return (
+    <motion.div
+      className="flex flex-wrap items-center justify-between gap-3"
+      initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+    >
+      <div>
+        <h1 className="font-bold text-xl text-[var(--text-primary)]">Trends</h1>
+        {manifest && (
+          <p className="text-xs text-[var(--text-muted)]">
+            Comparing {formatDate(manifest.run2.run_at)} → {formatDate(manifest.run1.run_at)}
+          </p>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-[var(--text-muted)]">Run 1 (newer):</span>
+          <select
+            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
+            value={run1Id ?? ''}
+            onChange={(e) => e.target.value && selectRun1(Number(e.target.value))}
+          >
+            <option value="">Select run...</option>
+            {runs.map((r) => (
+              <option key={r.run_id} value={r.run_id}>
+                #{r.run_id} — {formatDate(r.run_at)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-[var(--text-muted)]">Run 2 (older):</span>
+          <select
+            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
+            value={run2Id ?? ''}
+            onChange={(e) => e.target.value && selectRun2(Number(e.target.value))}
+          >
+            <option value="">Select run...</option>
+            {runs.map((r) => (
+              <option key={r.run_id} value={r.run_id}>
+                #{r.run_id} — {formatDate(r.run_at)}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 /* ---------- Main Page ---------- */
 
 export function TrendsPage() {
@@ -843,16 +1075,15 @@ export function TrendsPage() {
   useEffect(() => {
     if (manifest && manifest !== manifetRef.current) {
       manifetRef.current = manifest;
-      // Auto-expand scalar datasets and any dataset with changes
-      const toExpand = manifest.datasets
-        .filter((d) => d.availableInRun1 && d.availableInRun2 && (
-          d.kind === 'scalar' || d.added > 0 || d.removed > 0 || d.changed > 0
-        ))
-        .map((d) => d.datasetId);
+      const scored = manifest.datasets
+        .filter(d => d.availableInRun1 && d.availableInRun2)
+        .map(d => ({ id: d.datasetId, score: datasetScore(d), ds: d }))
+        .sort((a, b) => b.score - a.score);
+      const toExpand = scored.slice(0, 4).map(x => x.id);
       setExpandedSet(new Set(toExpand));
-      // Preload details for expanded datasets
-      for (const id of toExpand) {
-        loadDetail(id);
+      for (const { id, ds } of scored.slice(0, 4)) {
+        const defaultFilter = (ds.added + ds.removed + ds.changed) > 0 ? 'changed' : 'all';
+        loadDetail(id, defaultFilter);
       }
     }
   }, [manifest, loadDetail]);
@@ -864,14 +1095,16 @@ export function TrendsPage() {
         next.delete(datasetId);
       } else {
         next.add(datasetId);
-        // Lazy load on expand
+        // Lazy load on expand with smart default filter
         if (!detailCache[datasetId]) {
-          loadDetail(datasetId);
+          const dsInfo = manifest?.datasets.find(d => d.datasetId === datasetId);
+          const defaultFilter = dsInfo && (dsInfo.added + dsInfo.removed + dsInfo.changed) > 0 ? 'changed' : 'all';
+          loadDetail(datasetId, defaultFilter);
         }
       }
       return next;
     });
-  }, [detailCache, loadDetail]);
+  }, [detailCache, loadDetail, manifest]);
 
   const handleReload = useCallback((datasetId: string, changeType: string, page?: number, search?: string) => {
     loadDetail(datasetId, changeType, page, search);
@@ -885,6 +1118,9 @@ export function TrendsPage() {
       const cat = ds.category as DatasetCategory;
       if (!g[cat]) g[cat] = [];
       g[cat]!.push(ds);
+    }
+    for (const cat of Object.keys(g) as DatasetCategory[]) {
+      g[cat]!.sort((a, b) => datasetScore(b) - datasetScore(a));
     }
     return g;
   }, [manifest]);
@@ -927,42 +1163,11 @@ export function TrendsPage() {
 
   return (
     <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-      {/* Run selectors (Steps 36-37) */}
-      <motion.div
-        className="flex flex-wrap items-center gap-3"
-        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
-      >
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-[var(--text-muted)]">Run 1 (newer):</span>
-          <select
-            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
-            value={run1Id ?? ''}
-            onChange={(e) => e.target.value && selectRun1(Number(e.target.value))}
-          >
-            <option value="">Select run...</option>
-            {runs.map((r) => (
-              <option key={r.run_id} value={r.run_id}>
-                #{r.run_id} — {formatDate(r.run_at)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-[var(--text-muted)]">Run 2 (older):</span>
-          <select
-            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
-            value={run2Id ?? ''}
-            onChange={(e) => e.target.value && selectRun2(Number(e.target.value))}
-          >
-            <option value="">Select run...</option>
-            {runs.map((r) => (
-              <option key={r.run_id} value={r.run_id}>
-                #{r.run_id} — {formatDate(r.run_at)}
-              </option>
-            ))}
-          </select>
-        </div>
-      </motion.div>
+      {/* Header with title + run selectors */}
+      <CompareHeader
+        runs={runs} run1Id={run1Id} run2Id={run2Id}
+        manifest={manifest} selectRun1={selectRun1} selectRun2={selectRun2}
+      />
 
       {/* Error display */}
       {error && (
@@ -981,22 +1186,11 @@ export function TrendsPage() {
         </div>
       )}
 
-      {/* Coverage warnings */}
-      {manifest && manifest.coverageWarnings.length > 0 && (
-        <motion.div
-          className="text-xs space-y-1"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        >
-          {manifest.coverageWarnings.map((w, i) => (
-            <div key={i} className="text-[var(--neon-amber)] bg-[var(--neon-amber)]/5 rounded px-3 py-1.5 border border-[var(--neon-amber)]/15">
-              {w.message}
-            </div>
-          ))}
-        </motion.div>
-      )}
-
-      {/* Summary band (Step 39) */}
+      {/* Summary band (Step 39) — coverage warnings now inside */}
       {manifest && <SummaryBand manifest={manifest} />}
+
+      {/* Top changes spotlight */}
+      {manifest && <TopChangesGrid manifest={manifest} />}
 
       {/* Category sections (Step 40) */}
       {manifest && CATEGORY_ORDER.map((cat) => {
