@@ -1478,6 +1478,19 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           log('Deferred tails resolved');
         }
         dispatch({ type: 'SET_PARSED_DATA', payload: { dataReady: true } });
+
+        // Write parsed data to SQL tracking tables for trends comparison
+        try {
+          log('Ingesting parsed data to tracking SQL...');
+          await fetchJson('/api/tracking/ingest-parsed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentParsedData),
+          });
+          log('Tracking ingest complete');
+        } catch (ingestErr) {
+          log(`Tracking ingest failed (non-critical): ${ingestErr instanceof Error ? ingestErr.message : ingestErr}`, 'warn');
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         log(`Live data load failed: ${message}`, 'error');

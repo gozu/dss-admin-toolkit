@@ -238,22 +238,25 @@ function CompareValue({ label, before, after, unit }: {
 function ScoreCircle({ score, label, size = 120, color }: {
   score: number | null; label: string; size?: number; color?: string;
 }) {
-  const s = score ?? 0;
-  const c = color || (s >= 80 ? 'var(--neon-green)' : s >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)');
+  const hasScore = score !== null && score !== undefined;
+  const s = hasScore ? score : 0;
+  const c = !hasScore ? 'var(--text-muted)' : color || (s >= 80 ? 'var(--neon-green)' : s >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)');
   const r = (size - 12) / 2;
   const circ = 2 * Math.PI * r;
-  const offset = circ * (1 - s / 100);
+  const offset = hasScore ? circ * (1 - s / 100) : circ;
 
   return (
     <div className="flex flex-col items-center">
-      <svg width={size} height={size} className="transform -rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-glass)" strokeWidth="6" />
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={c} strokeWidth="6"
-          strokeDasharray={circ} strokeDashoffset={offset}
-          strokeLinecap="round" className="transition-all duration-700" />
-      </svg>
-      <div className="absolute flex flex-col items-center justify-center" style={{ width: size, height: size }}>
-        <span className="font-mono text-2xl font-bold" style={{ color: c }}>{s}</span>
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="transform -rotate-90">
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-glass)" strokeWidth="6" />
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={c} strokeWidth="6"
+            strokeDasharray={circ} strokeDashoffset={offset}
+            strokeLinecap="round" className="transition-all duration-700" />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-mono text-2xl font-bold" style={{ color: c }}>{hasScore ? s : 'N/A'}</span>
+        </div>
       </div>
       <span className="text-xs text-[var(--text-muted)] mt-1">{label}</span>
     </div>
@@ -262,6 +265,22 @@ function ScoreCircle({ score, label, size = 120, color }: {
 
 function LoadingPlaceholder() {
   return <div className="text-sm text-[var(--text-muted)] animate-pulse py-4 text-center">Loading...</div>;
+}
+
+function NoDataMessage({ message }: { message?: string }) {
+  return (
+    <div className="text-center py-6 text-[var(--text-muted)]">
+      <div className="text-2xl mb-2 opacity-30">--</div>
+      <div className="text-sm">{message || 'Data not collected for these runs'}</div>
+      <div className="text-xs mt-1 opacity-60">Run a new diagnostic analysis to populate this data</div>
+    </div>
+  );
+}
+
+/** Check if a scalar detail has any non-null field values */
+function hasAnyData(detail?: CompareDatasetDetail): boolean {
+  if (!detail?.fields) return false;
+  return detail.fields.some(f => f.run1Value !== null || f.run2Value !== null);
 }
 
 /* ================================================================
@@ -275,8 +294,8 @@ function TrendsHealthSection({ manifest, detail }: {
   const run1Score = manifest.run1.health_score;
   const run2Score = manifest.run2.health_score;
   const delta = manifest.summary.healthScore.delta;
+  const hmHasData = hasAnyData(detail);
 
-  // Extract category scores from health metrics detail
   const getField = (name: string): CompareScalarField | undefined =>
     detail?.fields?.find(f => f.field === name);
 
@@ -286,6 +305,11 @@ function TrendsHealthSection({ manifest, detail }: {
     { key: 'configuration_score', label: 'Configuration' },
     { key: 'security_isolation_score', label: 'Security & Isolation' },
   ];
+
+  const hasCategoryData = categories.some(({ key }) => {
+    const f = getField(key);
+    return f && (f.run1Value !== null || f.run2Value !== null);
+  });
 
   return (
     <SectionCard title="Health Score" badge={<ChangeBadge delta={delta} />}>
@@ -304,46 +328,53 @@ function TrendsHealthSection({ manifest, detail }: {
           </div>
         </div>
 
-        {/* Category scores — single bars with dual colors */}
+        {/* Category scores */}
         <div className="space-y-3">
           <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Category Scores</div>
-          {categories.map(({ key, label }) => {
+          {hasCategoryData ? categories.map(({ key, label }) => {
             const field = getField(key);
-            const before = typeof field?.run2Value === 'number' ? field.run2Value : 0;
-            const after = typeof field?.run1Value === 'number' ? field.run1Value : 0;
+            const before = typeof field?.run2Value === 'number' ? field.run2Value : null;
+            const after = typeof field?.run1Value === 'number' ? field.run1Value : null;
+            if (before === null && after === null) return null;
+            const bv = before ?? 0;
+            const av = after ?? 0;
             const changed = before !== after;
             return (
               <div key={key}>
                 <div className="flex justify-between text-xs mb-1">
                   <span className="text-[var(--text-secondary)]">{label}</span>
                   <span className="font-mono text-[var(--text-muted)]">
-                    {changed ? `${before.toFixed(0)} → ${after.toFixed(0)}` : after.toFixed(0)}
+                    {changed ? `${bv.toFixed(0)} → ${av.toFixed(0)}` : av.toFixed(0)}
                   </span>
                 </div>
                 <div className="relative h-3 rounded-full bg-[var(--bg-glass)] overflow-hidden">
-                  {changed && (
+                  {changed && before !== null && (
                     <div className="absolute inset-y-0 rounded-full opacity-40"
-                      style={{ width: `${before}%`, background: 'var(--neon-amber)' }} />
+                      style={{ width: `${bv}%`, background: 'var(--neon-amber)' }} />
                   )}
                   <div className="absolute inset-y-0 rounded-full"
                     style={{
-                      width: `${after}%`,
-                      background: after >= 80 ? 'var(--neon-green)' : after >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)',
+                      width: `${av}%`,
+                      background: av >= 80 ? 'var(--neon-green)' : av >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)',
                       opacity: changed ? 0.9 : 1,
                     }} />
                 </div>
               </div>
             );
-          })}
+          }) : (
+            <div className="text-xs text-[var(--text-muted)]">Category scores not collected</div>
+          )}
         </div>
 
         {/* Issues trend summary */}
         <div>
           <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Issue Trends</div>
-          {detail ? (
+          {!detail ? (
+            <div className="text-xs text-[var(--text-muted)]">Loading...</div>
+          ) : hmHasData ? (
             <IssueTrends detail={detail} />
           ) : (
-            <div className="text-xs text-[var(--text-muted)]">Loading issue data...</div>
+            <div className="text-xs text-[var(--text-muted)]">Issue data not collected</div>
           )}
         </div>
       </div>
@@ -469,6 +500,9 @@ function TrendsSystemSection({ manifest, detail }: {
 function TrendsFilesystemSection({ detail }: { detail?: CompareDatasetDetail }) {
   const field = detail?.fields?.find(f => f.field === 'filesystem_mounts_json');
   if (!field) return <SectionCard title="Filesystem"><LoadingPlaceholder /></SectionCard>;
+  if (field.run1Value === null && field.run2Value === null) {
+    return <SectionCard title="Filesystem"><NoDataMessage /></SectionCard>;
+  }
 
   const mountsBefore = (safeJsonParse(field.run2Value) || []) as Record<string, string>[];
   const mountsAfter = (safeJsonParse(field.run1Value) || []) as Record<string, string>[];
@@ -532,8 +566,13 @@ function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
   const getField = (name: string): CompareScalarField | undefined =>
     detail?.fields?.find(f => f.field === name);
 
-  const totalBefore = Number(getField('memory_total_mb')?.run2Value || 0);
-  const totalAfter = Number(getField('memory_total_mb')?.run1Value || 0);
+  const totalField = getField('memory_total_mb');
+  if (!totalField || (totalField.run1Value === null && totalField.run2Value === null)) {
+    return <SectionCard title="Memory"><NoDataMessage /></SectionCard>;
+  }
+
+  const totalBefore = Number(totalField.run2Value || 0);
+  const totalAfter = Number(totalField.run1Value || 0);
   const usedBefore = Number(getField('memory_used_mb')?.run2Value || 0);
   const usedAfter = Number(getField('memory_used_mb')?.run1Value || 0);
   const availBefore = Number(getField('memory_available_mb')?.run2Value || 0);
@@ -618,6 +657,9 @@ function TrendsConnectionsSection({ detail, connHealthDetail }: {
   connHealthDetail?: CompareDatasetDetail;
 }) {
   const field = detail?.fields?.find(f => f.field === 'connections_json');
+  if (!field || (field.run1Value === null && field.run2Value === null)) {
+    return <SectionCard title="Connections"><NoDataMessage /></SectionCard>;
+  }
 
   const parseConns = (val: unknown): Record<string, number> => {
     const parsed = safeJsonParse(val);
@@ -763,6 +805,9 @@ function TrendsRuntimeSection({ detail }: { detail?: CompareDatasetDetail }) {
   const [showUnchanged, setShowUnchanged] = useState(false);
   const field = detail?.fields?.find(f => f.field === 'general_settings_json');
   if (!field) return <SectionCard title="Runtime Config"><LoadingPlaceholder /></SectionCard>;
+  if (field.run1Value === null && field.run2Value === null) {
+    return <SectionCard title="Runtime Config"><NoDataMessage /></SectionCard>;
+  }
 
   const before = (safeJsonParse(field.run2Value) || {}) as Record<string, Record<string, unknown>>;
   const after = (safeJsonParse(field.run1Value) || {}) as Record<string, Record<string, unknown>>;
@@ -1033,9 +1078,11 @@ function TrendsFootprintSection({ detail }: { detail: CompareDatasetDetail }) {
    ================================================================ */
 
 function TrendsCodeEnvsSection({ detail }: { detail?: CompareDatasetDetail }) {
-  // Code envs come as JSON blob from run_health_metrics
   const field = detail?.fields?.find(f => f.field === 'code_envs_json');
   if (!field) return <SectionCard title="Code Environments"><LoadingPlaceholder /></SectionCard>;
+  if (field.run1Value === null && field.run2Value === null) {
+    return <SectionCard title="Code Environments"><NoDataMessage /></SectionCard>;
+  }
 
   const before = safeJsonParse(field.run2Value) as Record<string, unknown> | null;
   const after = safeJsonParse(field.run1Value) as Record<string, unknown> | null;

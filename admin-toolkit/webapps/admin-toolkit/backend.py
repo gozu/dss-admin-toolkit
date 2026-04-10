@@ -6187,6 +6187,22 @@ def _do_tracking_ingest(db, data):
     import time as _time
     _t0 = _time.time()
     app.logger.info("[tracking:ingest] === INGEST STARTED ===")
+
+    # Warm caches if cold — overview, users, plugins, connections are needed for health metrics
+    for cache_key, endpoint_fn in [
+        ('overview', lambda: api_overview()),
+        ('users', lambda: api_users()),
+        ('plugins', lambda: api_plugins()),
+        ('connections', lambda: api_connections()),
+    ]:
+        if not _CACHE.get(cache_key, {}).get('value'):
+            try:
+                app.logger.info("[tracking:ingest] warming cold cache: %s", cache_key)
+                with app.test_request_context():
+                    endpoint_fn()
+            except Exception as exc:
+                app.logger.warning("[tracking:ingest] cache warm failed for %s: %s", cache_key, exc)
+
     overview = _CACHE.get('overview', {}).get('value') or {}
     instance_info = overview.get('instanceInfo') or {}
     install_id = instance_info.get('installId') or ''
@@ -8483,6 +8499,191 @@ def api_tracking_compare_full_dataset():
     if 'error' in result:
         return jsonify(result), 404
     return jsonify(_sanitize(result))
+
+
+@app.route('/api/tracking/ingest-parsed', methods=['POST'])
+def api_tracking_ingest_parsed():
+    """Ingest a tracking run directly from the frontend's parsedData.
+
+    This is the primary path for populating tracking SQL tables with full
+    diagnostic data.  The frontend calls this after each analysis completes,
+    sending the same parsedData object it uses to render the UI.
+    """
+    import hashlib
+    db = _get_tracking_db()
+    if db is None:
+        return jsonify({'error': 'Tracking not available'}), 501
+
+    pd = request.get_json(force=True, silent=True) or {}
+    if not pd:
+        return jsonify({'error': 'No data provided'}), 400
+
+    # --- Resolve instance identity ---
+    inst_info = pd.get('instanceInfo') or {}
+    install_id = inst_info.get('installId') or ''
+    instance_url = inst_info.get('instanceUrl') or ''
+    inst_id = install_id or (hashlib.sha256(instance_url.encode()).hexdigest()[:16] if instance_url else 'unknown')
+
+    # --- run_data (goes into `runs` table) ---
+    mem_info = pd.get('memoryInfo') or {}
+    run_data = {
+        'dss_version': pd.get('dssVersion'),
+        'python_version': pd.get('pythonVersion'),
+        'user_count': (pd.get('userStats') or {}).get('Total Users'),
+        'enabled_user_count': (pd.get('userStats') or {}).get('Enabled Users'),
+        'project_count': len(pd.get('projects') or []),
+        'code_env_count': pd.get('totalEnvCount') or len(pd.get('codeEnvs') or []),
+        'plugin_count': pd.get('pluginsCount') or len(pd.get('pluginDetails') or []),
+        'connection_count': len(pd.get('connectionDetails') or []),
+        'cluster_count': len(pd.get('clusters') or []),
+    }
+
+    # --- health_metrics (goes into `run_health_metrics`) ---
+    fs_info = pd.get('filesystemInfo') or []
+    mounts = fs_info if isinstance(fs_info, list) else (fs_info.get('mounts') or [] if isinstance(fs_info, dict) else [])
+    max_fs_pct = 0.0
+    max_fs_mount = ''
+    for fs in mounts:
+        raw_pct = fs.get('Use%', '0')
+        pct = float(str(raw_pct).rstrip('%')) if raw_pct else 0
+        if pct > max_fs_pct:
+            max_fs_pct = pct
+            max_fs_mount = fs.get('Mounted on', '')
+
+    health_metrics = {
+        'cpu_cores': pd.get('cpuCores'),
+        'memory_total_mb': mem_info.get('totalMB') or mem_info.get('total_mb'),
+        'memory_used_mb': mem_info.get('usedMB') or mem_info.get('used_mb'),
+        'memory_available_mb': mem_info.get('availableMB') or mem_info.get('available_mb'),
+        'swap_total_mb': mem_info.get('swapTotalMB') or mem_info.get('swap_total_mb'),
+        'swap_used_mb': mem_info.get('swapUsedMB') or mem_info.get('swap_used_mb'),
+        'max_filesystem_pct': max_fs_pct if max_fs_pct else None,
+        'max_filesystem_mount': max_fs_mount or None,
+    }
+
+    # Parse memory from string values like "31.1 GB" if numeric keys are absent
+    if health_metrics['memory_total_mb'] is None and mem_info.get('total'):
+        health_metrics['memory_total_mb'] = _parse_mem_str_to_mb(mem_info['total'])
+    if health_metrics['memory_used_mb'] is None and mem_info.get('used'):
+        health_metrics['memory_used_mb'] = _parse_mem_str_to_mb(mem_info['used'])
+    if health_metrics['memory_available_mb'] is None and mem_info.get('available'):
+        health_metrics['memory_available_mb'] = _parse_mem_str_to_mb(mem_info['available'])
+
+    # --- snapshot_data (JSON blobs + normalized tables) ---
+    # Build general_settings from the individual settings objects
+    general_settings = {}
+    for key in ['enabledSettings', 'sparkSettings', 'authSettings', 'containerSettings',
+                'integrationSettings', 'resourceLimits', 'cgroupSettings', 'proxySettings',
+                'maxRunningActivities', 'javaMemorySettings', 'javaMemoryLimits',
+                'systemLimits', 'userStats', 'usersByProjects']:
+        val = pd.get(key)
+        if val is not None:
+            general_settings[key] = val
+
+    snapshot_data = {
+        'plugins': pd.get('pluginDetails'),
+        'connections': {
+            'typeCounts': pd.get('connections') or pd.get('connectionCounts'),
+            'details': pd.get('connectionDetails'),
+        } if pd.get('connectionDetails') else None,
+        'filesystem_mounts': mounts or None,
+        'user_profile_stats': pd.get('userStats'),
+        'os_info': pd.get('osInfo'),
+        'spark_version': None,  # not available in parsedData
+        'general_settings': general_settings or None,
+        'java_memory_raw': None,
+        'code_envs': {
+            'codeEnvs': pd.get('codeEnvs'),
+            'totalEnvCount': pd.get('totalEnvCount'),
+            'skippedEnvCount': pd.get('skippedEnvCount'),
+            'pythonVersionCounts': pd.get('pythonVersionCounts'),
+            'rVersionCounts': pd.get('rVersionCounts'),
+            'sizes': pd.get('codeEnvSizes'),
+        } if pd.get('codeEnvs') else None,
+        'log_errors': {
+            'logStats': pd.get('logStats'),
+            'formattedLogErrors': pd.get('formattedLogErrors'),
+        } if pd.get('logStats') else None,
+        'project_footprint': pd.get('projectFootprint'),
+        # Connection health from frontend scan results
+        'connection_health': pd.get('connectionHealth'),
+        # DB health not available from frontend parsedData
+        'db_health': None,
+    }
+
+    # --- Users and projects for snapshot tables ---
+    user_ingest = []
+    for u in (pd.get('users') or []):
+        if isinstance(u, dict) and u.get('login'):
+            user_ingest.append({
+                'login': u['login'],
+                'email': u.get('email'),
+                'display_name': u.get('displayName') or u.get('display_name'),
+                'user_profile': u.get('userProfile') or u.get('user_profile'),
+                'enabled': u.get('enabled', True),
+            })
+
+    project_ingest = []
+    for p in (pd.get('projects') or []):
+        if isinstance(p, dict):
+            project_ingest.append({
+                'projectKey': p.get('projectKey') or p.get('key'),
+                'name': p.get('name'),
+                'owner': p.get('owner') or p.get('ownerLogin'),
+            })
+
+    # --- Findings from outreach data (if available) ---
+    findings = []
+    outreach = pd.get('outreachData')
+    if outreach and isinstance(outreach, dict):
+        try:
+            disabled = db.get_disabled_campaigns()
+            exemptions = db.get_exemption_set()
+            findings = extract_findings_from_outreach_data(outreach, disabled_campaigns=disabled, exemptions=exemptions)
+        except Exception as exc:
+            app.logger.warning("[tracking:ingest-parsed] findings extraction failed: %s", exc)
+
+    sections = {}
+    campaign_summaries = []
+
+    app.logger.info("[tracking:ingest-parsed] ingesting: dss=%s users=%d projects=%d plugins=%d connections=%d",
+                    pd.get('dssVersion'), len(user_ingest), len(project_ingest),
+                    len(pd.get('pluginDetails') or []), len(pd.get('connectionDetails') or []))
+
+    try:
+        run_id = db.ingest_run(
+            instance_id=inst_id,
+            instance_url=instance_url,
+            install_id=install_id or None,
+            node_id=inst_info.get('nodeId'),
+            run_data=run_data,
+            findings=findings,
+            users=user_ingest,
+            projects=project_ingest,
+            sections=sections,
+            health_metrics=health_metrics,
+            campaign_summaries=campaign_summaries,
+            snapshot_data=snapshot_data,
+        )
+        app.logger.info("[tracking:ingest-parsed] run_id=%d ingested successfully", run_id)
+        return jsonify({'ok': True, 'run_id': run_id})
+    except Exception as exc:
+        app.logger.error("[tracking:ingest-parsed] ingest failed: %s", exc, exc_info=True)
+        return jsonify({'error': str(exc)[:300]}), 500
+
+
+def _parse_mem_str_to_mb(s):
+    """Parse memory string like '31.1 GB' or '512 MB' to MB integer."""
+    if not s or not isinstance(s, str):
+        return None
+    import re
+    m = re.match(r'([\d.]+)\s*(GB|MB|KB|TB)', s.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = m.group(2).upper()
+    multipliers = {'TB': 1024 * 1024, 'GB': 1024, 'MB': 1, 'KB': 1 / 1024}
+    return int(val * multipliers.get(unit, 1))
 
 
 @app.route('/api/tracking/dashboard')
