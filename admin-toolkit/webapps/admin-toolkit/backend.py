@@ -6441,6 +6441,149 @@ def _do_tracking_ingest(db, data):
                     snapshot_data.get('log_errors') is not None,
                     snapshot_data.get('project_footprint') is not None)
 
+    # -- V9 snapshot: connection health + DB health --
+    import re as _re_v9
+    _SANITIZE_RE_V9 = _re_v9.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|/[\w/.-]{4,}')
+
+    # Connection health: test all connections synchronously with thread pool
+    try:
+        _t_conn_health = _time.time()
+        conn_health_results = []
+        connections_raw = _sdk_fetch(
+            'list_connections',
+            _BACKEND_SETTINGS['cache_ttl_connections'],
+            lambda: dataiku.api_client().list_connections(),
+        )
+        if isinstance(connections_raw, dict):
+            conn_items = list(connections_raw.items())
+        else:
+            conn_items = [(c.get('name'), c) for c in connections_raw]
+
+        def _test_conn_health(name, conn_type):
+            try:
+                c = _thread_client()
+                resp = c.get_connection(name).test()
+                ok = resp.get('connectionOK', False) if isinstance(resp, dict) else False
+                if ok:
+                    return {'name': name, 'type': conn_type, 'status': 'ok'}
+                error_msg = ''
+                if isinstance(resp, dict):
+                    error_msg = resp.get('connectionErrorMsg') or resp.get('message') or ''
+                sanitized = _SANITIZE_RE_V9.sub('***', error_msg)[:200] if error_msg else 'Connection test failed'
+                # Classify error category
+                error_cat = None
+                el = error_msg.lower() if error_msg else ''
+                if 'credential' in el or 'password' in el or 'auth' in el:
+                    error_cat = 'invalid_credentials'
+                elif 'not found' in el or 'missing' in el or 'configuration' in el:
+                    error_cat = 'missing_configuration'
+                elif 'unreachable' in el or 'connect' in el or 'timeout' in el or 'refused' in el:
+                    error_cat = 'unreachable'
+                return {'name': name, 'type': conn_type, 'status': 'fail',
+                        'error_category': error_cat, 'error_message': sanitized}
+            except Exception as exc:
+                msg = str(exc)
+                if 'NotImplementedException' in msg or 'not implemented' in msg.lower():
+                    return {'name': name, 'type': conn_type, 'status': 'skipped'}
+                sanitized = _SANITIZE_RE_V9.sub('***', msg)[:200]
+                return {'name': name, 'type': conn_type, 'status': 'fail',
+                        'error_category': 'unreachable', 'error_message': sanitized}
+
+        workers = min(8, max(1, len(conn_items)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {
+                pool.submit(_test_conn_health, name,
+                            (config.get('type', 'unknown') if isinstance(config, dict) else 'unknown')): name
+                for name, config in conn_items if name
+            }
+            for future in as_completed(futures, timeout=120):
+                try:
+                    conn_health_results.append(future.result())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            pool.shutdown(wait=False)
+
+        snapshot_data['connection_health'] = conn_health_results
+        app.logger.info("[tracking:v9] connection health: %d connections tested in %.1fs",
+                        len(conn_health_results), _time.time() - _t_conn_health)
+    except Exception as exc:
+        snapshot_data['connection_health'] = None
+        app.logger.warning("[tracking:v9] connection health collection failed: %s", exc)
+
+    # DB health: collect overview + per-table data from configured PostgreSQL connection
+    try:
+        _t_db_health = _time.time()
+        db_cfg = _get_dbhealth_config()
+        db_conn_name = db_cfg.connection_name if db_cfg else None
+        db_password = db_cfg.password if db_cfg else None
+        known_pg = [c['name'] for c in _list_pg_connections()]
+        if db_conn_name and db_conn_name in known_pg:
+            # Overview
+            db_summary = {'db_size': '', 'db_size_bytes': 0, 'pg_version': '', 'table_count': 0, 'total_dead_tuples': 0}
+            try:
+                ov_rows = _pg_query_rows(db_conn_name,
+                    "SELECT pg_size_pretty(pg_database_size(current_database())) as db_size,"
+                    " pg_database_size(current_database()) as db_size_bytes,"
+                    " current_setting('server_version') as version",
+                    user_password=db_password)
+                if ov_rows:
+                    db_summary['db_size'] = str(ov_rows[0].get('db_size', ''))
+                    db_summary['db_size_bytes'] = int(ov_rows[0].get('db_size_bytes', 0))
+                    db_summary['pg_version'] = str(ov_rows[0].get('version', ''))
+            except Exception:
+                pass
+            try:
+                st_rows = _pg_query_rows(db_conn_name,
+                    "SELECT count(*) as table_count, coalesce(sum(n_dead_tup),0) as total_dead"
+                    " FROM pg_stat_user_tables",
+                    user_password=db_password)
+                if st_rows:
+                    db_summary['table_count'] = int(st_rows[0].get('table_count', 0))
+                    db_summary['total_dead_tuples'] = int(st_rows[0].get('total_dead', 0))
+            except Exception:
+                pass
+
+            # Per-table detail
+            db_tables = []
+            try:
+                tbl_rows = _pg_query_rows(db_conn_name,
+                    "SELECT schemaname, relname, pg_total_relation_size(relid) as total_size_bytes,"
+                    " n_live_tup, n_dead_tup,"
+                    " CASE WHEN n_live_tup + n_dead_tup > 0"
+                    "      THEN round(n_dead_tup::numeric / (n_live_tup + n_dead_tup), 4)"
+                    "      ELSE 0 END as bloat_ratio,"
+                    " last_vacuum, last_autovacuum, last_analyze"
+                    " FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC",
+                    user_password=db_password)
+                for r in tbl_rows:
+                    db_tables.append({
+                        'table_name': str(r.get('relname', '')),
+                        'schema_name': str(r.get('schemaname', '')),
+                        'table_size': int(r.get('total_size_bytes', 0)),
+                        'row_count': int(r.get('n_live_tup', 0)),
+                        'dead_tuples': int(r.get('n_dead_tup', 0)),
+                        'bloat_pct': float(r.get('bloat_ratio', 0)) * 100,
+                        'last_vacuum': str(r.get('last_vacuum', '') or ''),
+                        'last_autovacuum': str(r.get('last_autovacuum', '') or ''),
+                        'last_analyze': str(r.get('last_analyze', '') or ''),
+                    })
+            except Exception:
+                pass
+
+            snapshot_data['db_health'] = {'summary': db_summary, 'tables': db_tables}
+            app.logger.info("[tracking:v9] db health: %d tables collected in %.1fs",
+                            len(db_tables), _time.time() - _t_db_health)
+        else:
+            snapshot_data['db_health'] = None
+            app.logger.info("[tracking:v9] db health: no configured PostgreSQL connection, skipping")
+    except Exception as exc:
+        snapshot_data['db_health'] = None
+        app.logger.warning("[tracking:v9] db health collection failed: %s", exc)
+
     _campaign_recipient_keys = {
         'project': 'projectRecipients', 'code_env': 'codeEnvRecipients',
         'code_studio': 'codeStudioRecipients', 'auto_scenario': 'autoScenarioRecipients',

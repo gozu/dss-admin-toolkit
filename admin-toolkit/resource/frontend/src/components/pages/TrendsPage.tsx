@@ -1,18 +1,17 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ChangeEvent } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import { fetchJson } from '../../utils/api';
 import type {
   CompareManifest,
-  CompareDatasetSummary,
   CompareDatasetDetail,
   CompareScalarField,
-  CompareRowDiff,
   CompareSummaryDelta,
-  DatasetCategory,
 } from '../../types';
 
-/* ---------- Constants ---------- */
+/* ================================================================
+   TYPES
+   ================================================================ */
 
 interface TrendsRun {
   run_id: number;
@@ -22,86 +21,9 @@ interface TrendsRun {
   project_count: number | null;
 }
 
-const CATEGORY_ORDER: DatasetCategory[] = [
-  'run_summary',
-  'health_metrics',
-  'snapshot_entities',
-  'lifecycle',
-  'metadata',
-];
-
-const CATEGORY_LABELS: Record<DatasetCategory, string> = {
-  run_summary: 'Run Summary',
-  health_metrics: 'Health Metrics',
-  snapshot_entities: 'Snapshot Entities',
-  lifecycle: 'Lifecycle / Interval Data',
-  metadata: 'Metadata / Admin',
-};
-
-const SUPPORT_LABELS: Record<string, string> = {
-  full: 'Full Diff',
-  lifecycle: 'Lifecycle',
-  current_only: 'Current Only',
-};
-
-const SUPPORT_COLORS: Record<string, string> = {
-  full: 'var(--neon-green)',
-  lifecycle: 'var(--neon-amber)',
-  current_only: 'var(--text-muted)',
-};
-
-const FILTER_OPTIONS = ['all', 'added', 'removed', 'changed', 'unchanged'] as const;
-type FilterType = (typeof FILTER_OPTIONS)[number];
-
-const FILTER_COLORS: Record<string, string> = {
-  all: 'var(--text-secondary)',
-  added: 'var(--neon-green)',
-  removed: 'var(--neon-red)',
-  changed: 'var(--neon-amber)',
-  unchanged: 'var(--text-muted)',
-};
-
-/* ---------- Scoring & summary helpers ---------- */
-
-function datasetScore(d: CompareDatasetSummary): number {
-  const changePart = (d.removed * 3) + (d.added * 2) + (d.changed * 1);
-  const kindBonus = d.kind === 'scalar' ? 100 : 0;
-  const catBonus: Record<DatasetCategory, number> = {
-    run_summary: 50, health_metrics: 40,
-    snapshot_entities: 30, lifecycle: 20, metadata: 0,
-  };
-  return changePart + kindBonus + (catBonus[d.category] ?? 0);
-}
-
-function datasetSummaryLine(ds: CompareDatasetSummary): string {
-  if (ds.support === 'current_only') return 'Current state only';
-  if (!ds.availableInRun1 || !ds.availableInRun2) return '';
-  const total = ds.added + ds.removed + ds.changed;
-  if (total === 0) return 'No changes';
-  const parts: string[] = [];
-  if (ds.removed > 0) parts.push(`${ds.removed.toLocaleString()} removed`);
-  if (ds.added > 0) parts.push(`${ds.added.toLocaleString()} added`);
-  if (ds.changed > 0) parts.push(`${ds.changed.toLocaleString()} changed`);
-  return parts.join(', ');
-}
-
-function categorySummary(category: DatasetCategory, datasets: CompareDatasetSummary[]): string {
-  if (category === 'metadata') return 'Informational only';
-  const changed = datasets.filter(d => d.added + d.removed + d.changed > 0).length;
-  if (changed === 0) return 'No changes detected';
-  const dominant = datasets.reduce<CompareDatasetSummary | null>((best, d) => {
-    const s = d.added + d.removed + d.changed;
-    return s > (best ? best.added + best.removed + best.changed : 0) ? d : best;
-  }, null);
-  if (!dominant) return `${changed} of ${datasets.length} datasets changed`;
-  const parts: string[] = [];
-  if (dominant.removed > 0) parts.push(`${dominant.removed.toLocaleString()} removed`);
-  if (dominant.added > 0) parts.push(`${dominant.added.toLocaleString()} added`);
-  if (dominant.changed > 0) parts.push(`${dominant.changed.toLocaleString()} changed`);
-  return `${changed} of ${datasets.length} datasets changed — ${dominant.label} dominates (${parts.join(', ')})`;
-}
-
-/* ---------- Helpers ---------- */
+/* ================================================================
+   HELPERS
+   ================================================================ */
 
 function formatDate(iso: string): string {
   try {
@@ -112,13 +34,44 @@ function formatDate(iso: string): string {
   } catch { return iso; }
 }
 
-function formatNum(v: unknown): string {
-  if (v === null || v === undefined) return '--';
+function fmtNum(v: unknown): string {
+  if (v === null || v === undefined || v === '') return '--';
   if (typeof v === 'number') return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
   return String(v);
 }
 
-/* ---------- URL state ---------- */
+function fmtBytes(bytes: number): string {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
+}
+
+function fmtPct(v: number): string {
+  return `${v.toFixed(1)}%`;
+}
+
+function deltaColor(delta: number | null | undefined): string {
+  if (!delta || delta === 0) return 'var(--text-muted)';
+  return delta > 0 ? 'var(--neon-green)' : 'var(--neon-red)';
+}
+
+function deltaSign(delta: number | null | undefined): string {
+  if (!delta || delta === 0) return '';
+  return delta > 0 ? '+' : '';
+}
+
+/** Safe JSON parse for scalar field values that come as strings from the compare API */
+function safeJsonParse(val: unknown): unknown {
+  if (typeof val === 'string') {
+    try { return JSON.parse(val); } catch { return val; }
+  }
+  return val;
+}
+
+/* ================================================================
+   URL STATE
+   ================================================================ */
 
 function useUrlState() {
   const getParam = (key: string) => {
@@ -137,7 +90,9 @@ function useUrlState() {
   return { getParam, setParams };
 }
 
-/* ---------- Data hook (Step 35) ---------- */
+/* ================================================================
+   DATA HOOKS
+   ================================================================ */
 
 function useTrendsCompare() {
   const { addDebugLog } = useDiag();
@@ -156,7 +111,6 @@ function useTrendsCompare() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch runs list
   useEffect(() => {
     let c = false;
     fetchJson<{ runs: TrendsRun[] }>('/api/tracking/runs?limit=100')
@@ -164,9 +118,7 @@ function useTrendsCompare() {
         if (c) return;
         const list = data.runs ?? [];
         setRuns(list);
-        // Step 36: newest = run1 default
         if (list.length > 0 && !run1Id) setRun1Id(list[0].run_id);
-        // Step 37: oldest = run2 default
         if (list.length > 1 && !run2Id) setRun2Id(list[list.length - 1].run_id);
         if (list.length <= 1) setLoading(false);
         addDebugLog(`[trends] Fetched ${list.length} runs`, 'trends');
@@ -178,832 +130,1163 @@ function useTrendsCompare() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fetch manifest when runs selected
   useEffect(() => {
     if (!run1Id || !run2Id) return;
     let c = false;
     setLoading(true);
     setError(null);
     setParams({ run1: String(run1Id), run2: String(run2Id) });
-    const t0 = performance.now();
     fetchJson<CompareManifest>(`/api/tracking/compare/full?run1=${run1Id}&run2=${run2Id}`)
       .then((data) => {
         if (c) return;
-        if (data.swapped) {
-          setRun1Id(data.run1.run_id);
-          setRun2Id(data.run2.run_id);
-        }
+        if (data.swapped) { setRun1Id(data.run1.run_id); setRun2Id(data.run2.run_id); }
         setManifest(data);
-        addDebugLog(`[trends] Manifest loaded in ${(performance.now() - t0).toFixed(0)}ms`, 'trends');
       })
-      .catch((err) => {
-        if (!c) setError(err instanceof Error ? err.message : String(err));
-      })
+      .catch((err) => { if (!c) setError(err instanceof Error ? err.message : String(err)); })
       .finally(() => { if (!c) setLoading(false); });
     return () => { c = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run1Id, run2Id]);
 
-  const selectRun1 = useCallback((id: number) => setRun1Id(id), []);
-  const selectRun2 = useCallback((id: number) => setRun2Id(id), []);
-
-  return { runs, run1Id, run2Id, manifest, loading, error, selectRun1, selectRun2 };
+  return { runs, run1Id, run2Id, manifest, loading, error, selectRun1: setRun1Id, selectRun2: setRun2Id };
 }
-
-/* ---------- Lazy detail loader (Step 43) ---------- */
 
 function useDatasetDetail(run1Id: number | null, run2Id: number | null) {
   const [cache, setCache] = useState<Record<string, CompareDatasetDetail>>({});
   const [loadingSet, setLoadingSet] = useState<Set<string>>(new Set());
 
-  const load = useCallback((datasetId: string, changeType: string = 'all', page: number = 1, search?: string, sort?: string) => {
+  const load = useCallback((datasetId: string, changeType: string = 'all', page: number = 1) => {
     if (!run1Id || !run2Id) return;
-    const key = `${datasetId}:${changeType}:${page}:${search || ''}:${sort || ''}`;
     setLoadingSet((s) => new Set(s).add(datasetId));
     const params = new URLSearchParams({
       run1: String(run1Id), run2: String(run2Id), dataset: datasetId,
-      change_type: changeType, page: String(page), page_size: '100',
+      change_type: changeType, page: String(page), page_size: '500',
     });
-    if (search) params.set('search', search);
-    if (sort) params.set('sort', sort);
     fetchJson<CompareDatasetDetail>(`/api/tracking/compare/full/dataset?${params}`)
-      .then((data) => {
-        setCache((c) => ({ ...c, [key]: data, [datasetId]: data }));
-      })
-      .finally(() => {
-        setLoadingSet((s) => { const n = new Set(s); n.delete(datasetId); return n; });
-      });
+      .then((data) => { setCache((c) => ({ ...c, [datasetId]: data })); })
+      .finally(() => { setLoadingSet((s) => { const n = new Set(s); n.delete(datasetId); return n; }); });
   }, [run1Id, run2Id]);
 
   return { cache, loadingSet, load };
 }
 
-/* ---------- Sub-components ---------- */
+/* ================================================================
+   REUSABLE UI PIECES
+   ================================================================ */
 
-function SkeletonCard() {
-  return (
-    <div className="glass-card animate-pulse">
-      <div className="px-4 py-3 border-b border-[var(--border-glass)]">
-        <div className="h-4 w-24 rounded bg-[var(--bg-glass-hover)]" />
-      </div>
-      <div className="px-4 py-6 space-y-3">
-        <div className="h-8 w-20 rounded bg-[var(--bg-glass-hover)]" />
-        <div className="h-3 w-32 rounded bg-[var(--bg-glass-hover)]" />
-      </div>
-    </div>
-  );
-}
-
-/* Step 39: Summary band */
-function SummaryBand({ manifest }: { manifest: CompareManifest }) {
-  const s = manifest.summary;
-  const changedDatasetCount = manifest.datasets.filter(d => d.added + d.removed + d.changed > 0).length;
-  const dssVersionDrift = manifest.run1.dss_version !== manifest.run2.dss_version;
-  const chips: { label: string; data: CompareSummaryDelta }[] = [
-    { label: 'Health', data: s.healthScore },
-    { label: 'Users', data: s.userCount },
-    { label: 'Projects', data: s.projectCount },
-    { label: 'Plugins', data: s.pluginCount },
-    { label: 'Connections', data: s.connectionCount },
-    { label: 'Code Envs', data: s.codeEnvCount },
-  ];
-
+function SectionCard({ title, children, subtitle, badge }: {
+  title: string; children: React.ReactNode; subtitle?: string; badge?: React.ReactNode;
+}) {
   return (
     <motion.div
-      className="sticky top-0 z-10 glass-card border-[var(--border-glow)] shadow-[var(--glow-sm)] px-4 py-3"
-      initial={{ opacity: 0, y: -10 }}
-      animate={{ opacity: 1, y: 0 }}
+      className="glass-card overflow-hidden"
+      initial={{ opacity: 0, y: 10 }} whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '-40px' }} transition={{ duration: 0.3 }}
     >
-      <div className="flex flex-wrap gap-4 items-center">
-        {chips.map(({ label, data }) => (
-          <DeltaChip key={label} label={label} data={data} large />
-        ))}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-[var(--text-muted)]">Changed</span>
-          <span className="font-mono text-base font-bold text-[var(--neon-amber)]">{changedDatasetCount}</span>
-          <span className="text-xs text-[var(--text-muted)]">datasets</span>
-        </div>
-      </div>
-      {dssVersionDrift && (
-        <div className="text-xs text-[var(--text-muted)] mt-2">
-          DSS {manifest.run2.dss_version ?? '?'} → {manifest.run1.dss_version ?? '?'}
-        </div>
-      )}
-      {manifest.coverageWarnings.length > 0 && (
-        <div className="mt-2 space-y-1">
-          {manifest.coverageWarnings.map((w, i) => (
-            <div key={i} className="text-xs text-[var(--neon-amber)] bg-[var(--neon-amber)]/5 rounded px-3 py-1.5 border border-[var(--neon-amber)]/15">
-              {w.message}
-            </div>
-          ))}
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-function DeltaChip({ label, data, large }: { label: string; data: CompareSummaryDelta; large?: boolean }) {
-  const v1 = data.run1;
-  const delta = data.delta;
-  const color = delta === null || delta === 0 ? 'var(--text-muted)' : delta > 0 ? 'var(--neon-green)' : 'var(--neon-red)';
-  const sign = delta !== null && delta > 0 ? '+' : '';
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className={large ? 'text-sm text-[var(--text-muted)]' : 'text-xs text-[var(--text-muted)]'}>{label}</span>
-      <span className={large ? 'font-mono text-base font-bold text-[var(--text-primary)]' : 'font-mono text-sm font-bold text-[var(--text-primary)]'}>{formatNum(v1)}</span>
-      {delta !== null && delta !== 0 && (
-        <span className="text-xs font-mono px-1.5 py-0.5 rounded-full" style={{ color, border: `1px solid color-mix(in srgb, ${color} 35%, transparent)` }}>
-          {sign}{formatNum(delta)}
-          {data.pctDelta !== null ? ` (${sign}${data.pctDelta}%)` : ''}
-        </span>
-      )}
-    </div>
-  );
-}
-
-/* TopChangesGrid — spotlight cards */
-function TopChangesGrid({ manifest }: { manifest: CompareManifest }) {
-  const ds = manifest.datasets.filter(d => d.availableInRun1 && d.availableInRun2);
-  const cards: { icon: string; title: string; text: string; value: string; color: string }[] = [];
-
-  const bigRemoval = ds.filter(d => d.removed > 0).sort((a, b) => b.removed - a.removed)[0];
-  if (bigRemoval) {
-    cards.push({
-      icon: '−', title: bigRemoval.label,
-      text: 'Biggest removal', value: bigRemoval.removed.toLocaleString(),
-      color: 'var(--neon-red)',
-    });
-  }
-
-  const bigAddition = ds.filter(d => d.added > 0 && d.datasetId !== bigRemoval?.datasetId)
-    .sort((a, b) => b.added - a.added)[0];
-  if (bigAddition) {
-    cards.push({
-      icon: '+', title: bigAddition.label,
-      text: 'Biggest addition', value: bigAddition.added.toLocaleString(),
-      color: 'var(--neon-green)',
-    });
-  }
-
-  const mostChanged = ds.filter(d => d.changed > 0).sort((a, b) => b.changed - a.changed)[0];
-  if (mostChanged) {
-    cards.push({
-      icon: '~', title: mostChanged.label,
-      text: 'Most changed rows', value: mostChanged.changed.toLocaleString(),
-      color: 'var(--neon-amber)',
-    });
-  }
-
-  const unavail = manifest.datasets.find(d => !d.availableInRun1 || !d.availableInRun2);
-  if (unavail) {
-    cards.push({
-      icon: '?', title: unavail.label,
-      text: !unavail.availableInRun1 ? 'Missing in newer run' : 'Missing in older run',
-      value: '!', color: 'var(--text-muted)',
-    });
-  }
-
-  if (cards.length === 0) return null;
-
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      {cards.map((c, i) => (
-        <div key={i} className="glass-card px-4 py-3" style={{ borderLeft: `3px solid ${c.color}` }}>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-7 h-7 rounded-full flex items-center justify-center text-lg font-mono font-bold" style={{ color: c.color, background: `color-mix(in srgb, ${c.color} 15%, transparent)` }}>{c.icon}</div>
-            <span className="text-xs text-[var(--text-primary)] font-medium truncate">{c.title}</span>
-          </div>
-          <div className="text-xs text-[var(--text-muted)] mb-1">{c.text}</div>
-          <span className="text-2xl font-mono font-bold" style={{ color: c.color }}>{c.value}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* Step 40: Category sections */
-function CategorySection({ category, datasets, onExpand, expandedSet, detailCache, detailLoading, onReload }: {
-  category: DatasetCategory;
-  datasets: CompareDatasetSummary[];
-  onExpand: (id: string) => void;
-  expandedSet: Set<string>;
-  detailCache: Record<string, CompareDatasetDetail>;
-  detailLoading: Set<string>;
-  onReload: (datasetId: string, changeType: string, page?: number, search?: string) => void;
-}) {
-  if (datasets.length === 0) return null;
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
-    >
-      <div className="flex items-center gap-3 pt-4 pb-2">
-        <h3 className="text-base font-semibold text-[var(--text-secondary)] tracking-wide uppercase">
-          {CATEGORY_LABELS[category]}
-        </h3>
-        <div className="flex-1 h-px bg-[var(--border-default)]" />
-        <span className="text-xs text-[var(--text-muted)]">{datasets.length} datasets</span>
-      </div>
-      <p className="text-xs text-[var(--text-muted)] pb-2">
-        {categorySummary(category, datasets)}
-      </p>
-      <div className="space-y-2">
-        {datasets.map((ds) => (
-          <DatasetSection
-            key={ds.datasetId}
-            ds={ds}
-            expanded={expandedSet.has(ds.datasetId)}
-            onToggle={() => onExpand(ds.datasetId)}
-            detail={detailCache[ds.datasetId]}
-            isLoading={detailLoading.has(ds.datasetId)}
-            onReload={(ct, pg, s) => onReload(ds.datasetId, ct, pg, s)}
-          />
-        ))}
-      </div>
-    </motion.div>
-  );
-}
-
-/* Step 41: Dataset section headers */
-function DatasetSection({ ds, expanded, onToggle, detail, isLoading, onReload }: {
-  ds: CompareDatasetSummary;
-  expanded: boolean;
-  onToggle: () => void;
-  detail?: CompareDatasetDetail;
-  isLoading: boolean;
-  onReload?: (changeType: string, page?: number, search?: string) => void;
-}) {
-  const totalChanges = ds.added + ds.removed + ds.changed;
-  const [activeFilter, setActiveFilter] = useState<FilterType>(
-    () => ds.changed > 0 ? 'changed' : 'all'
-  );
-  const [searchTerm, setSearchTerm] = useState('');
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const unavailable = !ds.availableInRun1 || !ds.availableInRun2;
-  const showPagination = (ds.kind === 'keyed_table' || ds.kind === 'interval_events' || ds.kind === 'metadata')
-    && detail && detail.totalRows !== undefined && detail.totalRows > (detail.pageSize ?? 100);
-  const showSearch = ds.kind === 'keyed_table' || ds.kind === 'interval_events';
-  const supportColor = SUPPORT_COLORS[ds.support] || 'var(--text-muted)';
-
-  return (
-    <div className="glass-card overflow-hidden" style={{ opacity: ds.support === 'current_only' ? 0.65 : totalChanges === 0 && !unavailable ? 0.5 : 1 }}>
-      <button
-        className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-[var(--bg-glass-hover)] transition-colors"
-        onClick={onToggle}
-      >
-        <span className="text-xs font-mono" style={{ color: supportColor, opacity: 0.8 }}>
-          {expanded ? '▼' : '▶'}
-        </span>
-        <span className="font-semibold text-sm text-[var(--text-primary)]">{ds.label}</span>
-        {datasetSummaryLine(ds) && (
-          <span className="text-xs text-[var(--text-muted)] font-normal hidden sm:inline truncate max-w-[200px]">
-            {datasetSummaryLine(ds)}
-          </span>
-        )}
+      <div className="px-4 py-3 border-b border-[var(--border-glass)] flex items-center gap-3">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
+        {badge}
         <span className="flex-1" />
+        {subtitle && <span className="text-xs text-[var(--text-muted)]">{subtitle}</span>}
+      </div>
+      <div className="px-4 py-4">{children}</div>
+    </motion.div>
+  );
+}
 
-        {/* Support badge */}
-        <span
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-          style={{ color: supportColor, border: `1px solid color-mix(in srgb, ${supportColor} 30%, transparent)` }}
-        >
-          {SUPPORT_LABELS[ds.support]}
-        </span>
-
-        {/* Count chips */}
-        {!unavailable && ds.support !== 'current_only' && (
-          <div className="flex gap-1.5">
-            {ds.added > 0 && <CountChip count={ds.added} label="+" color="var(--neon-green)" />}
-            {ds.removed > 0 && <CountChip count={ds.removed} label="-" color="var(--neon-red)" />}
-            {ds.changed > 0 && <CountChip count={ds.changed} label="~" color="var(--neon-amber)" />}
-            {totalChanges === 0 && <span className="text-xs text-[var(--text-muted)] font-mono">no changes</span>}
-          </div>
-        )}
-
-        {/* Step 54: Unavailable badge */}
-        {unavailable && (
-          <span className="text-xs text-[var(--text-muted)] italic">
-            {!ds.availableInRun1 && !ds.availableInRun2 ? 'not available' : `not available for ${!ds.availableInRun1 ? 'run 1' : 'run 2'}`}
-          </span>
-        )}
-
-        {/* Row counts */}
-        <span className="text-xs text-[var(--text-muted)] font-mono min-w-[60px] text-right">
-          {ds.run1Count}/{ds.run2Count}
-        </span>
-      </button>
-
-      {/* Expanded content */}
-      {expanded && (
-        <div className="border-t border-[var(--border-glass)] px-4 py-3">
-          {isLoading && <div className="text-sm text-[var(--text-muted)] animate-pulse">Loading detail...</div>}
-
-          {/* Step 54: Unavailable state */}
-          {unavailable && !isLoading && (
-            <div className="text-sm text-[var(--text-muted)] italic py-2">
-              Not available for this run — data was not collected at the time of the selected run.
-              {ds.notes && <span className="block mt-1 text-xs">{ds.notes}</span>}
-            </div>
-          )}
-
-          {/* Step 55: Current-only labeling */}
-          {ds.support === 'current_only' && !isLoading && detail && (
-            <div>
-              <div className="text-xs text-[var(--neon-amber)] mb-2 italic">
-                This data is not historically versioned — showing current state only.
-              </div>
-              <MetadataTable detail={detail} />
-            </div>
-          )}
-
-          {/* Search input */}
-          {!unavailable && ds.support !== 'current_only' && showSearch && (
-            <SearchInput
-              value={searchTerm}
-              onChange={(v) => {
-                setSearchTerm(v);
-                clearTimeout(searchTimerRef.current);
-                searchTimerRef.current = setTimeout(() => onReload?.(activeFilter, 1, v), 400);
-              }}
-            />
-          )}
-
-          {/* Step 42: Filter chips for diffable datasets */}
-          {!unavailable && ds.support !== 'current_only' && (ds.kind === 'keyed_table' || ds.kind === 'interval_events') && (
-            <FilterChips
-              active={activeFilter}
-              counts={{ added: ds.added, removed: ds.removed, changed: ds.changed, unchanged: ds.unchanged }}
-              onChange={(f) => { setActiveFilter(f); onReload?.(f, 1, searchTerm); }}
-            />
-          )}
-
-          {/* Full / lifecycle content */}
-          {!unavailable && ds.support !== 'current_only' && !isLoading && detail && (
-            <DatasetContent ds={ds} detail={detail} />
-          )}
-
-          {/* Pagination */}
-          {!unavailable && !isLoading && showPagination && detail && (
-            <PaginationBar
-              page={detail.page ?? 1}
-              pageSize={detail.pageSize ?? 100}
-              totalRows={detail.totalRows ?? 0}
-              onPageChange={(p) => onReload?.(activeFilter, p, searchTerm)}
-            />
-          )}
-
-          {/* Step 53: Zero-row empty state */}
-          {!unavailable && !isLoading && detail && ds.run1Count === 0 && ds.run2Count === 0 && (
-            <div className="text-sm text-[var(--text-muted)] py-2 text-center">
-              No data in either run for this dataset.
-            </div>
-          )}
-        </div>
-      )}
+function SectionDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-6 pb-2">
+      <h2 className="text-base font-semibold text-[var(--text-secondary)] tracking-wide uppercase">{label}</h2>
+      <div className="flex-1 h-px bg-[var(--border-default)]" />
     </div>
   );
 }
 
-function CountChip({ count, label, color }: { count: number; label: string; color: string }) {
+function ChangeBadge({ delta, suffix }: { delta: number | null | undefined; suffix?: string }) {
+  if (!delta || delta === 0) return null;
+  const color = deltaColor(delta);
   return (
-    <span
-      className="text-[10px] font-mono px-1.5 py-0.5 rounded-full"
-      style={{ color, border: `1px solid color-mix(in srgb, ${color} 40%, transparent)` }}
-    >
-      {label}{count}
+    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full"
+      style={{ color, border: `1px solid color-mix(in srgb, ${color} 35%, transparent)` }}>
+      {deltaSign(delta)}{fmtNum(delta)}{suffix || ''}
     </span>
   );
 }
 
-/* Step 42: Filter chips */
-function FilterChips({ active, counts, onChange }: {
-  active: FilterType;
-  counts: { added: number; removed: number; changed: number; unchanged: number };
-  onChange: (f: FilterType) => void;
+function CompareValue({ label, before, after, unit }: {
+  label: string; before: unknown; after: unknown; unit?: string;
 }) {
+  const changed = String(before) !== String(after);
   return (
-    <div className="flex gap-1.5 mb-3">
-      {FILTER_OPTIONS.map((f) => {
-        const c = f === 'all' ? counts.added + counts.removed + counts.changed + counts.unchanged : counts[f as keyof typeof counts] ?? 0;
-        const isActive = active === f;
-        const color = FILTER_COLORS[f];
-        return (
-          <button
-            key={f}
-            onClick={() => onChange(f)}
-            className="text-[11px] font-mono px-2 py-1 rounded transition-colors"
-            style={{
-              color: isActive ? color : 'var(--text-muted)',
-              background: isActive ? `color-mix(in srgb, ${color} 10%, transparent)` : 'transparent',
-              border: `1px solid ${isActive ? `color-mix(in srgb, ${color} 40%, transparent)` : 'transparent'}`,
-            }}
-          >
-            {f} ({c})
-          </button>
-        );
-      })}
+    <div className={`rounded-lg px-3 py-2 ${changed ? 'bg-[var(--neon-amber)]/5 border border-[var(--neon-amber)]/15' : 'bg-[var(--bg-glass)]'}`}>
+      <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1">{label}</div>
+      {changed ? (
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm text-[var(--text-muted)] line-through">{fmtNum(before)}{unit || ''}</span>
+          <span className="text-xs text-[var(--text-muted)]">→</span>
+          <span className="font-mono text-sm text-[var(--neon-amber)] font-bold">{fmtNum(after)}{unit || ''}</span>
+        </div>
+      ) : (
+        <span className="font-mono text-sm text-[var(--text-primary)]">{fmtNum(after)}{unit || ''}</span>
+      )}
     </div>
   );
 }
 
-/* Pagination bar */
-function PaginationBar({ page, pageSize, totalRows, onPageChange }: {
-  page: number; pageSize: number; totalRows: number; onPageChange: (p: number) => void;
+/** Circular score gauge used in health section */
+function ScoreCircle({ score, label, size = 120, color }: {
+  score: number | null; label: string; size?: number; color?: string;
 }) {
-  const totalPages = Math.ceil(totalRows / pageSize);
-  if (totalPages <= 1) return null;
+  const s = score ?? 0;
+  const c = color || (s >= 80 ? 'var(--neon-green)' : s >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)');
+  const r = (size - 12) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - s / 100);
+
   return (
-    <div className="flex items-center justify-center gap-3 mt-3 text-xs font-mono">
-      <button
-        className="px-2 py-1 rounded border border-[var(--border-glass)] text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] disabled:opacity-30"
-        disabled={page <= 1}
-        onClick={() => onPageChange(page - 1)}
-      >
-        ← Prev
-      </button>
-      <span className="text-[var(--text-muted)]">
-        Page {page} of {totalPages} ({totalRows} rows)
-      </span>
-      <button
-        className="px-2 py-1 rounded border border-[var(--border-glass)] text-[var(--text-secondary)] hover:bg-[var(--bg-glass-hover)] disabled:opacity-30"
-        disabled={page >= totalPages}
-        onClick={() => onPageChange(page + 1)}
-      >
-        Next →
-      </button>
+    <div className="flex flex-col items-center">
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-glass)" strokeWidth="6" />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={c} strokeWidth="6"
+          strokeDasharray={circ} strokeDashoffset={offset}
+          strokeLinecap="round" className="transition-all duration-700" />
+      </svg>
+      <div className="absolute flex flex-col items-center justify-center" style={{ width: size, height: size }}>
+        <span className="font-mono text-2xl font-bold" style={{ color: c }}>{s}</span>
+      </div>
+      <span className="text-xs text-[var(--text-muted)] mt-1">{label}</span>
     </div>
   );
 }
 
-/* Search input */
-function SearchInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <input
-      type="text"
-      value={value}
-      onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-      placeholder="Search rows..."
-      className="w-full max-w-xs text-xs font-mono px-2.5 py-1.5 mb-2 rounded border border-[var(--border-glass)] bg-[var(--bg-glass)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-glow)]"
-    />
-  );
+function LoadingPlaceholder() {
+  return <div className="text-sm text-[var(--text-muted)] animate-pulse py-4 text-center">Loading...</div>;
 }
 
-/* DatasetContent — routes to the right renderer */
-function DatasetContent({ ds, detail }: { ds: CompareDatasetSummary; detail: CompareDatasetDetail }) {
-  if (detail.fields) {
-    return <ScalarView fields={detail.fields} />;
-  }
-  if (detail.rows) {
-    if (ds.kind === 'interval_events') {
-      return <LifecycleTable detail={detail} />;
-    }
-    return <KeyedTable detail={detail} />;
-  }
-  return null;
-}
+/* ================================================================
+   SECTION: HEALTH SCORE
+   ================================================================ */
 
-/* Step 45: Scalar comparison views */
-function ScalarView({ fields }: { fields: CompareScalarField[] }) {
-  const [showStable, setShowStable] = useState(false);
-  const changedFields = fields.filter(f => f.status === 'changed');
-  const stableFields = fields.filter(f => f.status !== 'changed');
+function TrendsHealthSection({ manifest, detail }: {
+  manifest: CompareManifest;
+  detail?: CompareDatasetDetail;
+}) {
+  const run1Score = manifest.run1.health_score;
+  const run2Score = manifest.run2.health_score;
+  const delta = manifest.summary.healthScore.delta;
+
+  // Extract category scores from health metrics detail
+  const getField = (name: string): CompareScalarField | undefined =>
+    detail?.fields?.find(f => f.field === name);
+
+  const categories = [
+    { key: 'version_currency_score', label: 'Version Currency' },
+    { key: 'system_capacity_score', label: 'System Capacity' },
+    { key: 'configuration_score', label: 'Configuration' },
+    { key: 'security_isolation_score', label: 'Security & Isolation' },
+  ];
 
   return (
-    <div className="space-y-0.5">
-      {changedFields.map((f) => (
-        <div
-          key={f.field}
-          style={{ borderLeft: '2px solid var(--neon-amber)', background: 'color-mix(in srgb, var(--neon-amber) 5%, transparent)' }}
-          className="py-2 px-3 rounded mb-0.5"
-        >
-          <div className="text-xs text-[var(--text-muted)] font-mono mb-1">{f.field}</div>
-          {f.kind === 'json' ? (
-            <JsonFieldView field={f} />
-          ) : f.kind === 'text' ? (
-            <TextFieldView field={f} />
+    <SectionCard title="Health Score" badge={<ChangeBadge delta={delta} />}>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Score circles */}
+        <div className="flex items-center justify-center gap-6">
+          <div className="relative">
+            <ScoreCircle score={run2Score} label="Before" size={110} />
+          </div>
+          <div className="flex flex-col items-center">
+            <span className="text-lg text-[var(--text-muted)]">→</span>
+            <ChangeBadge delta={delta} />
+          </div>
+          <div className="relative">
+            <ScoreCircle score={run1Score} label="After" size={110} />
+          </div>
+        </div>
+
+        {/* Category scores — single bars with dual colors */}
+        <div className="space-y-3">
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Category Scores</div>
+          {categories.map(({ key, label }) => {
+            const field = getField(key);
+            const before = typeof field?.run2Value === 'number' ? field.run2Value : 0;
+            const after = typeof field?.run1Value === 'number' ? field.run1Value : 0;
+            const changed = before !== after;
+            return (
+              <div key={key}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-[var(--text-secondary)]">{label}</span>
+                  <span className="font-mono text-[var(--text-muted)]">
+                    {changed ? `${before.toFixed(0)} → ${after.toFixed(0)}` : after.toFixed(0)}
+                  </span>
+                </div>
+                <div className="relative h-3 rounded-full bg-[var(--bg-glass)] overflow-hidden">
+                  {changed && (
+                    <div className="absolute inset-y-0 rounded-full opacity-40"
+                      style={{ width: `${before}%`, background: 'var(--neon-amber)' }} />
+                  )}
+                  <div className="absolute inset-y-0 rounded-full"
+                    style={{
+                      width: `${after}%`,
+                      background: after >= 80 ? 'var(--neon-green)' : after >= 50 ? 'var(--neon-amber)' : 'var(--neon-red)',
+                      opacity: changed ? 0.9 : 1,
+                    }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Issues trend summary */}
+        <div>
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Issue Trends</div>
+          {detail ? (
+            <IssueTrends detail={detail} />
           ) : (
-            <div className="flex items-center gap-3">
-              <div>
-                <div className="text-[10px] text-[var(--text-muted)]">Before</div>
-                <span className="font-mono text-sm text-[var(--text-secondary)]">{formatNum(f.run2Value)}</span>
-              </div>
-              <span className="text-xs text-[var(--text-muted)]">→</span>
-              <div>
-                <div className="text-[10px] text-[var(--text-muted)]">Now</div>
-                <span className="font-mono text-sm text-[var(--text-primary)]">{formatNum(f.run1Value)}</span>
-              </div>
-              {f.delta !== undefined && (
-                <span
-                  className="text-xs font-mono px-1.5 py-0.5 rounded-full"
-                  style={{
-                    color: f.delta > 0 ? 'var(--neon-green)' : 'var(--neon-red)',
-                    border: `1px solid color-mix(in srgb, ${f.delta > 0 ? 'var(--neon-green)' : 'var(--neon-red)'} 35%, transparent)`,
-                  }}
-                >
-                  {f.delta > 0 ? '+' : ''}{formatNum(f.delta)}
-                  {f.pctDelta !== undefined ? ` (${f.pctDelta > 0 ? '+' : ''}${f.pctDelta}%)` : ''}
-                </span>
-              )}
-            </div>
+            <div className="text-xs text-[var(--text-muted)]">Loading issue data...</div>
           )}
         </div>
-      ))}
+      </div>
+    </SectionCard>
+  );
+}
 
-      {stableFields.length > 0 && (
-        <div className="pt-1">
-          <button
-            onClick={() => setShowStable(!showStable)}
-            className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors font-mono px-2 py-1 rounded border border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]"
-          >
-            {showStable ? '▼' : '▶'} Show {stableFields.length} stable fields
-          </button>
-          {showStable && (
-            <div className="mt-1 space-y-0.5 opacity-60">
-              {stableFields.map((f) => (
-                <div
-                  key={f.field}
-                  className="flex items-center gap-3 py-1 px-2 rounded hover:bg-[var(--bg-glass-hover)] transition-colors"
-                >
-                  <span className="text-xs text-[var(--text-muted)] w-48 truncate font-mono">{f.field}</span>
-                  {f.kind === 'json' ? (
-                    <JsonFieldView field={f} />
-                  ) : f.kind === 'text' ? (
-                    <TextFieldView field={f} />
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      <div>
-                        <div className="text-[10px] text-[var(--text-muted)]">Before</div>
-                        <span className="font-mono text-sm text-[var(--text-secondary)]">{formatNum(f.run2Value)}</span>
-                      </div>
-                      <span className="text-xs text-[var(--text-muted)]">→</span>
-                      <div>
-                        <div className="text-[10px] text-[var(--text-muted)]">Now</div>
-                        <span className="font-mono text-sm text-[var(--text-primary)]">{formatNum(f.run1Value)}</span>
-                      </div>
-                    </div>
-                  )}
+function IssueTrends({ detail }: { detail: CompareDatasetDetail }) {
+  // Extract issue-related JSON fields from health metrics
+  const getJson = (name: string): Record<string, unknown> | null => {
+    const f = detail.fields?.find(ff => ff.field === name);
+    if (!f) return null;
+    const v = safeJsonParse(f.run1Value);
+    return typeof v === 'object' && v !== null ? v as Record<string, unknown> : null;
+  };
+  const getJsonBefore = (name: string): Record<string, unknown> | null => {
+    const f = detail.fields?.find(ff => ff.field === name);
+    if (!f) return null;
+    const v = safeJsonParse(f.run2Value);
+    return typeof v === 'object' && v !== null ? v as Record<string, unknown> : null;
+  };
+
+  // Parse general_settings to extract issue counts
+  const settingsAfter = getJson('general_settings_json');
+  const settingsBefore = getJsonBefore('general_settings_json');
+
+  // Count disabled features as a proxy for issues
+  const countIssues = (settings: Record<string, unknown> | null): number => {
+    if (!settings) return 0;
+    let count = 0;
+    for (const val of Object.values(settings)) {
+      if (typeof val === 'object' && val !== null && 'value' in (val as Record<string, unknown>)) {
+        const v = (val as Record<string, unknown>).value;
+        if (v === false || v === 'false') count++;
+      }
+    }
+    return count;
+  };
+
+  const issuesBefore = countIssues(settingsBefore);
+  const issuesAfter = countIssues(settingsAfter);
+  const diff = issuesAfter - issuesBefore;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3 rounded-lg bg-[var(--bg-glass)] px-3 py-2">
+        <span className="text-xs text-[var(--text-muted)]">Disabled features</span>
+        <span className="font-mono text-sm font-bold text-[var(--text-primary)]">{issuesBefore} → {issuesAfter}</span>
+        <ChangeBadge delta={diff} />
+      </div>
+      {diff < 0 && (
+        <div className="text-xs text-[var(--neon-green)] bg-[var(--neon-green)]/5 rounded px-3 py-1.5">
+          {Math.abs(diff)} issue{Math.abs(diff) > 1 ? 's' : ''} resolved
+        </div>
+      )}
+      {diff > 0 && (
+        <div className="text-xs text-[var(--neon-red)] bg-[var(--neon-red)]/5 rounded px-3 py-1.5">
+          {diff} new issue{diff > 1 ? 's' : ''} detected
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   SECTION: SYSTEM OVERVIEW
+   ================================================================ */
+
+function TrendsSystemSection({ manifest, detail }: {
+  manifest: CompareManifest; detail?: CompareDatasetDetail;
+}) {
+  const getField = (name: string): CompareScalarField | undefined =>
+    detail?.fields?.find(f => f.field === name);
+
+  const fields = [
+    { key: 'dss_version', label: 'DSS Version', src: 'run' },
+    { key: 'python_version', label: 'Python Version', src: 'run' },
+    { key: 'cpu_cores', label: 'CPU Cores', src: 'hm' },
+    { key: 'memory_total_mb', label: 'Memory', src: 'hm', fmt: (v: unknown) => typeof v === 'number' ? `${(v / 1024).toFixed(1)} GB` : fmtNum(v) },
+    { key: 'os_info', label: 'OS', src: 'hm' },
+  ];
+
+  return (
+    <SectionCard title="System Overview">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {fields.map(({ key, label, src, fmt }) => {
+          let before: unknown, after: unknown;
+          if (src === 'run') {
+            before = manifest.run2[key as keyof typeof manifest.run2];
+            after = manifest.run1[key as keyof typeof manifest.run1];
+          } else {
+            const f = getField(key);
+            before = f?.run2Value;
+            after = f?.run1Value;
+          }
+          const bStr = fmt ? fmt(before) : fmtNum(before);
+          const aStr = fmt ? fmt(after) : fmtNum(after);
+          const changed = bStr !== aStr;
+          return (
+            <div key={key} className={`rounded-lg px-3 py-2 ${changed ? 'bg-[var(--neon-amber)]/5 border border-[var(--neon-amber)]/15' : 'bg-[var(--bg-glass)]'}`}>
+              <div className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide mb-1">{label}</div>
+              {changed ? (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-mono text-xs text-[var(--text-muted)] line-through">{bStr}</span>
+                  <span className="text-xs text-[var(--text-muted)]">→</span>
+                  <span className="font-mono text-sm text-[var(--neon-amber)] font-bold">{aStr}</span>
                 </div>
+              ) : (
+                <span className="font-mono text-sm text-[var(--text-primary)]">{aStr}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
+}
+
+/* ================================================================
+   SECTION: FILESYSTEM
+   ================================================================ */
+
+function TrendsFilesystemSection({ detail }: { detail?: CompareDatasetDetail }) {
+  const field = detail?.fields?.find(f => f.field === 'filesystem_mounts_json');
+  if (!field) return <SectionCard title="Filesystem"><LoadingPlaceholder /></SectionCard>;
+
+  const mountsBefore = (safeJsonParse(field.run2Value) || []) as Record<string, string>[];
+  const mountsAfter = (safeJsonParse(field.run1Value) || []) as Record<string, string>[];
+
+  // Merge mounts by mount point
+  const allMounts = new Map<string, { before?: Record<string, string>; after?: Record<string, string> }>();
+  for (const m of mountsBefore) {
+    const key = m['Mounted on'] || m['mount'] || '';
+    allMounts.set(key, { before: m });
+  }
+  for (const m of mountsAfter) {
+    const key = m['Mounted on'] || m['mount'] || '';
+    const existing = allMounts.get(key) || {};
+    allMounts.set(key, { ...existing, after: m });
+  }
+
+  return (
+    <SectionCard title="Filesystem" subtitle={`${allMounts.size} mount points`}>
+      <div className="space-y-3">
+        {Array.from(allMounts.entries()).map(([mount, { before, after }]) => {
+          const bPct = parseFloat(before?.['Use%'] || '0');
+          const aPct = parseFloat(after?.['Use%'] || '0');
+          const changed = Math.abs(bPct - aPct) > 0.5;
+          const pctDelta = aPct - bPct;
+          return (
+            <div key={mount}>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-[var(--text-secondary)] truncate max-w-[300px]">{mount}</span>
+                <span className="font-mono text-[var(--text-muted)] flex items-center gap-2">
+                  {after?.Size || before?.Size}
+                  {changed && <ChangeBadge delta={pctDelta} suffix="%" />}
+                </span>
+              </div>
+              <div className="relative h-4 rounded-full bg-[var(--bg-glass)] overflow-hidden">
+                {changed && (
+                  <div className="absolute inset-y-0 rounded-full opacity-30"
+                    style={{ width: `${bPct}%`, background: 'var(--neon-cyan)' }} />
+                )}
+                <div className="absolute inset-y-0 rounded-full"
+                  style={{
+                    width: `${aPct}%`,
+                    background: aPct >= 90 ? 'var(--neon-red)' : aPct >= 70 ? 'var(--neon-amber)' : 'var(--neon-green)',
+                  }} />
+                <div className="absolute inset-0 flex items-center justify-end pr-2">
+                  <span className="text-[10px] font-mono text-[var(--text-primary)]">{aPct.toFixed(1)}%</span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
+}
+
+/* ================================================================
+   SECTION: MEMORY
+   ================================================================ */
+
+function TrendsMemorySection({ detail }: { detail?: CompareDatasetDetail }) {
+  const getField = (name: string): CompareScalarField | undefined =>
+    detail?.fields?.find(f => f.field === name);
+
+  const totalBefore = Number(getField('memory_total_mb')?.run2Value || 0);
+  const totalAfter = Number(getField('memory_total_mb')?.run1Value || 0);
+  const usedBefore = Number(getField('memory_used_mb')?.run2Value || 0);
+  const usedAfter = Number(getField('memory_used_mb')?.run1Value || 0);
+  const availBefore = Number(getField('memory_available_mb')?.run2Value || 0);
+  const availAfter = Number(getField('memory_available_mb')?.run1Value || 0);
+
+  const pctBefore = totalBefore > 0 ? (usedBefore / totalBefore) * 100 : 0;
+  const pctAfter = totalAfter > 0 ? (usedAfter / totalAfter) * 100 : 0;
+
+  const memFields = [
+    { key: 'backend_heap_mb', label: 'Backend Heap' },
+    { key: 'jek_heap_mb', label: 'JEK Heap' },
+    { key: 'fek_heap_mb', label: 'FEK Heap' },
+    { key: 'open_files_limit', label: 'Open Files Limit' },
+  ];
+
+  return (
+    <SectionCard title="Memory">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Two memory circles side by side */}
+        <div className="flex items-center justify-center gap-8">
+          <MemoryCircle total={totalBefore} pct={pctBefore} label="Before" />
+          <div className="flex flex-col items-center">
+            <span className="text-lg text-[var(--text-muted)]">→</span>
+            <ChangeBadge delta={pctAfter - pctBefore} suffix="%" />
+          </div>
+          <MemoryCircle total={totalAfter} pct={pctAfter} label="After" />
+        </div>
+
+        {/* Memory analysis numbers side by side */}
+        <div className="space-y-2">
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Memory Analysis</div>
+          <CompareValue label="Total Memory" before={`${(totalBefore / 1024).toFixed(1)} GB`} after={`${(totalAfter / 1024).toFixed(1)} GB`} />
+          <CompareValue label="Available" before={`${(availBefore / 1024).toFixed(1)} GB`} after={`${(availAfter / 1024).toFixed(1)} GB`} />
+          {memFields.map(({ key, label }) => {
+            const f = getField(key);
+            return (
+              <CompareValue key={key} label={label}
+                before={f?.run2Value != null ? `${fmtNum(f.run2Value)} MB` : '--'}
+                after={f?.run1Value != null ? `${fmtNum(f.run1Value)} MB` : '--'} />
+            );
+          })}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+function MemoryCircle({ total, pct, label }: {
+  total: number; pct: number; label: string;
+}) {
+  const size = 100;
+  const r = (size - 10) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - pct / 100);
+  const color = pct >= 90 ? 'var(--neon-red)' : pct >= 70 ? 'var(--neon-amber)' : 'var(--neon-green)';
+
+  return (
+    <div className="flex flex-col items-center">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="transform -rotate-90">
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border-glass)" strokeWidth="5" />
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="5"
+            strokeDasharray={circ} strokeDashoffset={offset}
+            strokeLinecap="round" className="transition-all duration-700" />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-mono text-sm font-bold" style={{ color }}>{pct.toFixed(0)}%</span>
+          <span className="text-[9px] text-[var(--text-muted)]">{(total / 1024).toFixed(1)} GB</span>
+        </div>
+      </div>
+      <span className="text-xs text-[var(--text-muted)] mt-1">{label}</span>
+    </div>
+  );
+}
+
+/* ================================================================
+   SECTION: CONNECTIONS
+   ================================================================ */
+
+function TrendsConnectionsSection({ detail, connHealthDetail }: {
+  detail?: CompareDatasetDetail;
+  connHealthDetail?: CompareDatasetDetail;
+}) {
+  const field = detail?.fields?.find(f => f.field === 'connections_json');
+
+  const parseConns = (val: unknown): Record<string, number> => {
+    const parsed = safeJsonParse(val);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const obj = parsed as Record<string, unknown>;
+    const counts = obj.typeCounts as Record<string, number> | undefined;
+    if (counts && typeof counts === 'object') return counts;
+    // Fallback: count from details array
+    const details = obj.details as Array<Record<string, string>> | undefined;
+    if (Array.isArray(details)) {
+      const result: Record<string, number> = {};
+      for (const d of details) { const t = d.type || 'unknown'; result[t] = (result[t] || 0) + 1; }
+      return result;
+    }
+    return {};
+  };
+
+  const connsBefore = parseConns(field?.run2Value);
+  const connsAfter = parseConns(field?.run1Value);
+  const totalBefore = Object.values(connsBefore).reduce((s, v) => s + v, 0);
+  const totalAfter = Object.values(connsAfter).reduce((s, v) => s + v, 0);
+
+  // Merge connection types
+  const allTypes = new Set([...Object.keys(connsBefore), ...Object.keys(connsAfter)]);
+  const sorted = Array.from(allTypes).sort((a, b) => (connsAfter[b] || 0) - (connsAfter[a] || 0));
+
+  return (
+    <SectionCard title="Connections" badge={<ChangeBadge delta={totalAfter - totalBefore} />}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Two donut-style summaries side by side */}
+        <div className="flex items-center justify-center gap-8">
+          <div className="flex flex-col items-center">
+            <div className="w-20 h-20 rounded-full border-4 flex items-center justify-center"
+              style={{ borderColor: 'var(--neon-cyan)' }}>
+              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalBefore}</span>
+            </div>
+            <span className="text-xs text-[var(--text-muted)] mt-1">Before</span>
+          </div>
+          <div className="flex flex-col items-center">
+            <span className="text-lg text-[var(--text-muted)]">→</span>
+            <ChangeBadge delta={totalAfter - totalBefore} />
+          </div>
+          <div className="flex flex-col items-center">
+            <div className="w-20 h-20 rounded-full border-4 flex items-center justify-center"
+              style={{ borderColor: 'var(--neon-purple)' }}>
+              <span className="font-mono text-xl font-bold text-[var(--text-primary)]">{totalAfter}</span>
+            </div>
+            <span className="text-xs text-[var(--text-muted)] mt-1">After</span>
+          </div>
+        </div>
+
+        {/* Connection type breakdown side by side */}
+        <div className="space-y-1.5">
+          <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">By Type</div>
+          {sorted.map((type) => {
+            const b = connsBefore[type] || 0;
+            const a = connsAfter[type] || 0;
+            const changed = b !== a;
+            return (
+              <div key={type} className={`flex items-center gap-2 text-xs rounded px-2 py-1 ${changed ? 'bg-[var(--neon-amber)]/5' : ''}`}>
+                <span className="text-[var(--text-secondary)] flex-1 truncate">{type}</span>
+                {changed ? (
+                  <>
+                    <span className="font-mono text-[var(--text-muted)]">{b}</span>
+                    <span className="text-[var(--text-muted)]">→</span>
+                    <span className="font-mono text-[var(--text-primary)]">{a}</span>
+                    <ChangeBadge delta={a - b} />
+                  </>
+                ) : (
+                  <span className="font-mono text-[var(--text-primary)]">{a}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Connection Health sub-section */}
+      {connHealthDetail && <TrendsConnectionHealthSub detail={connHealthDetail} />}
+    </SectionCard>
+  );
+}
+
+function TrendsConnectionHealthSub({ detail }: { detail: CompareDatasetDetail }) {
+  const rows = detail.rows ?? [];
+  if (rows.length === 0) return null;
+
+  const broken = rows.filter(r => r.status === 'changed' && r.run1?.status === 'fail' && r.run2?.status === 'ok');
+  const fixed = rows.filter(r => r.status === 'changed' && r.run1?.status === 'ok' && r.run2?.status === 'fail');
+  const newFails = rows.filter(r => r.status === 'added' && (r.run1?.status === 'fail' || r.run2?.status === 'fail'));
+  const unchanged = rows.filter(r => r.status === 'unchanged');
+  const changedRows = [...broken, ...fixed, ...newFails];
+
+  if (changedRows.length === 0 && unchanged.length > 0) {
+    return (
+      <div className="mt-4 pt-4 border-t border-[var(--border-glass)]">
+        <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Connection Health</div>
+        <div className="text-xs text-[var(--text-muted)]">No changes — {unchanged.length} connections unchanged</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 pt-4 border-t border-[var(--border-glass)]">
+      <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Connection Health Changes</div>
+      <div className="space-y-1">
+        {broken.map((r) => (
+          <div key={r.key.connection_name} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-red)]/5">
+            <span className="text-[var(--neon-red)]">broke</span>
+            <span className="text-[var(--text-primary)] font-medium">{r.key.connection_name}</span>
+            <span className="text-[var(--text-muted)] truncate flex-1">{String(r.run1?.error_message || '')}</span>
+          </div>
+        ))}
+        {fixed.map((r) => (
+          <div key={r.key.connection_name} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-green)]/5">
+            <span className="text-[var(--neon-green)]">fixed</span>
+            <span className="text-[var(--text-primary)] font-medium">{r.key.connection_name}</span>
+          </div>
+        ))}
+        {newFails.map((r) => {
+          const data = r.run1 ?? r.run2 ?? {};
+          return (
+            <div key={r.key.connection_name} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-amber)]/5">
+              <span className="text-[var(--neon-amber)]">{r.status}</span>
+              <span className="text-[var(--text-primary)] font-medium">{r.key.connection_name}</span>
+              <span className="text-[var(--text-muted)] truncate flex-1">{String(data.error_message || '')}</span>
+            </div>
+          );
+        })}
+      </div>
+      {unchanged.length > 0 && (
+        <div className="text-xs text-[var(--text-muted)] mt-2">+ {unchanged.length} unchanged connections</div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   SECTION: RUNTIME CONFIG
+   ================================================================ */
+
+function TrendsRuntimeSection({ detail }: { detail?: CompareDatasetDetail }) {
+  const [showUnchanged, setShowUnchanged] = useState(false);
+  const field = detail?.fields?.find(f => f.field === 'general_settings_json');
+  if (!field) return <SectionCard title="Runtime Config"><LoadingPlaceholder /></SectionCard>;
+
+  const before = (safeJsonParse(field.run2Value) || {}) as Record<string, Record<string, unknown>>;
+  const after = (safeJsonParse(field.run1Value) || {}) as Record<string, Record<string, unknown>>;
+
+  // Group by settings category (table name)
+  const allCategories = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const categorized: Record<string, Array<{ key: string; b: unknown; a: unknown; changed: boolean }>> = {};
+
+  for (const cat of allCategories) {
+    const bCat = before[cat] || {};
+    const aCat = after[cat] || {};
+    if (typeof bCat !== 'object' || typeof aCat !== 'object') continue;
+    const allKeys = new Set([...Object.keys(bCat), ...Object.keys(aCat)]);
+    const entries: Array<{ key: string; b: unknown; a: unknown; changed: boolean }> = [];
+    for (const k of allKeys) {
+      const bv = (bCat as Record<string, unknown>)[k];
+      const av = (aCat as Record<string, unknown>)[k];
+      entries.push({ key: k, b: bv, a: av, changed: String(bv) !== String(av) });
+    }
+    if (entries.length > 0) categorized[cat] = entries;
+  }
+
+  const changedCategories = Object.entries(categorized).filter(([, entries]) => entries.some(e => e.changed));
+  const unchangedCategories = Object.entries(categorized).filter(([, entries]) => !entries.some(e => e.changed));
+
+  return (
+    <SectionCard title="Runtime Config"
+      subtitle={`${changedCategories.length} changed, ${unchangedCategories.length} unchanged`}>
+      {changedCategories.length === 0 ? (
+        <div className="text-sm text-[var(--text-muted)]">No configuration changes detected</div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {changedCategories.map(([cat, entries]) => (
+            <SettingsTable key={cat} category={cat} entries={entries} defaultShowUnchanged={false} />
+          ))}
+        </div>
+      )}
+      {unchangedCategories.length > 0 && (
+        <div className="mt-3">
+          <button onClick={() => setShowUnchanged(!showUnchanged)}
+            className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono px-2 py-1 rounded border border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]">
+            {showUnchanged ? '▼' : '▶'} Show {unchangedCategories.length} unchanged categories
+          </button>
+          {showUnchanged && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 opacity-60">
+              {unchangedCategories.map(([cat, entries]) => (
+                <SettingsTable key={cat} category={cat} entries={entries} defaultShowUnchanged={true} />
               ))}
             </div>
           )}
         </div>
       )}
-    </div>
+    </SectionCard>
   );
 }
 
-/* Step 46: JSON viewer */
-function JsonFieldView({ field }: { field: CompareScalarField }) {
-  const [open, setOpen] = useState(false);
+function SettingsTable({ category, entries, defaultShowUnchanged }: {
+  category: string;
+  entries: Array<{ key: string; b: unknown; a: unknown; changed: boolean }>;
+  defaultShowUnchanged: boolean;
+}) {
+  const changed = entries.filter(e => e.changed);
+  const unchanged = entries.filter(e => !e.changed);
+
   return (
-    <div className="flex-1">
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setOpen(!open)}
-          className="text-xs font-mono text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-        >
-          {open ? '▼' : '▶'} {field.status === 'changed' ? 'changed' : 'same'}
-        </button>
+    <div className="glass-card overflow-hidden">
+      <div className="px-3 py-2 border-b border-[var(--border-glass)] bg-[var(--bg-glass)]">
+        <span className="text-xs font-semibold text-[var(--text-secondary)]">{category}</span>
+        {changed.length > 0 && (
+          <span className="ml-2 text-[10px] font-mono text-[var(--neon-amber)]">{changed.length} changed</span>
+        )}
       </div>
-      {open && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <div>
-            <div className="text-[10px] text-[var(--text-muted)] mb-1">Run 1</div>
-            <pre className="text-xs font-mono bg-[var(--bg-surface)] rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">
-              {typeof field.run1Value === 'string' ? field.run1Value : JSON.stringify(field.run1Value, null, 2) ?? 'null'}
-            </pre>
-          </div>
-          <div>
-            <div className="text-[10px] text-[var(--text-muted)] mb-1">Run 2</div>
-            <pre className="text-xs font-mono bg-[var(--bg-surface)] rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">
-              {typeof field.run2Value === 'string' ? field.run2Value : JSON.stringify(field.run2Value, null, 2) ?? 'null'}
-            </pre>
-          </div>
-        </div>
-      )}
+      <div className="max-h-48 overflow-y-auto">
+        <table className="w-full text-xs">
+          <tbody>
+            {changed.map(({ key, b, a }) => (
+              <tr key={key} className="border-b border-[var(--border-glass)] bg-[var(--neon-amber)]/5">
+                <td className="py-1 px-2 text-[var(--text-secondary)] font-mono truncate max-w-[120px]">{key}</td>
+                <td className="py-1 px-2 text-[var(--text-muted)] font-mono line-through">{fmtNum(b)}</td>
+                <td className="py-1 px-2 text-xs text-[var(--text-muted)]">→</td>
+                <td className="py-1 px-2 text-[var(--neon-amber)] font-mono font-bold">{fmtNum(a)}</td>
+              </tr>
+            ))}
+            {(defaultShowUnchanged ? unchanged : []).map(({ key, a }) => (
+              <tr key={key} className="border-b border-[var(--border-glass)]">
+                <td className="py-1 px-2 text-[var(--text-muted)] font-mono truncate max-w-[120px]">{key}</td>
+                <td colSpan={3} className="py-1 px-2 text-[var(--text-primary)] font-mono">{fmtNum(a)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-/* Step 47: Text diff viewer */
-function TextFieldView({ field }: { field: CompareScalarField }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="flex-1">
-      <button
-        onClick={() => setOpen(!open)}
-        className="text-xs font-mono text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-      >
-        {open ? '▼' : '▶'} {field.status === 'changed' ? 'changed' : 'same'}
-      </button>
-      {open && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <div>
-            <div className="text-[10px] text-[var(--text-muted)] mb-1">Run 1</div>
-            <pre className="text-xs font-mono bg-[var(--bg-surface)] rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">
-              {String(field.run1Value ?? '')}
-            </pre>
-          </div>
-          <div>
-            <div className="text-[10px] text-[var(--text-muted)] mb-1">Run 2</div>
-            <pre className="text-xs font-mono bg-[var(--bg-surface)] rounded p-2 overflow-auto max-h-64 whitespace-pre-wrap">
-              {String(field.run2Value ?? '')}
-            </pre>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+/* ================================================================
+   SECTION: PLUGINS (part of runtime)
+   ================================================================ */
 
-/* Step 44: Paginated keyed table */
-function KeyedTable({ detail }: { detail: CompareDatasetDetail }) {
-  const rows = detail.rows ?? [];
-  const cols = detail.columns ?? [];
+function TrendsPluginsSection({ detail }: { detail?: CompareDatasetDetail }) {
+  const [showUnchanged, setShowUnchanged] = useState(false);
+  const rows = detail?.rows ?? [];
 
-  if (rows.length === 0) {
-    return <div className="text-sm text-[var(--text-muted)] py-2">No rows match the current filter.</div>;
+  if (rows.length === 0 && !detail) return null;
+
+  const added = rows.filter(r => r.status === 'added');
+  const removed = rows.filter(r => r.status === 'removed');
+  const changed = rows.filter(r => r.status === 'changed');
+  const unchanged = rows.filter(r => r.status === 'unchanged');
+
+  if (added.length === 0 && removed.length === 0 && changed.length === 0) {
+    return (
+      <SectionCard title="Plugins" subtitle={`${unchanged.length} plugins, no changes`}>
+        <div className="text-sm text-[var(--text-muted)]">No plugin changes detected</div>
+      </SectionCard>
+    );
   }
 
   return (
-    <div className="max-h-80 overflow-y-auto">
-      <table className="w-full text-xs font-mono">
-        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
-          <tr className="border-b border-[var(--border-glass)]">
-            <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal w-20">Status</th>
-            {cols.map((c) => (
-              <th key={c} className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <DiffRow key={i} row={row} columns={cols} />
+    <SectionCard title="Plugins"
+      badge={<>
+        {added.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-green)]">+{added.length}</span>}
+        {removed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-red)]">-{removed.length}</span>}
+        {changed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-amber)]">~{changed.length}</span>}
+      </>}>
+      <div className="space-y-1">
+        {added.map((r) => {
+          const d = r.run1 ?? {};
+          return (
+            <div key={r.key.plugin_id} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-green)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-green)] w-12">added</span>
+              <span className="text-[var(--text-primary)] font-medium">{String(d.label || r.key.plugin_id)}</span>
+              <span className="text-[var(--text-muted)] font-mono">{String(d.version || '')}</span>
+            </div>
+          );
+        })}
+        {removed.map((r) => {
+          const d = r.run2 ?? {};
+          return (
+            <div key={r.key.plugin_id} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-red)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-red)] w-12">removed</span>
+              <span className="text-[var(--text-primary)] font-medium">{String(d.label || r.key.plugin_id)}</span>
+              <span className="text-[var(--text-muted)] font-mono">{String(d.version || '')}</span>
+            </div>
+          );
+        })}
+        {changed.map((r) => (
+          <div key={r.key.plugin_id} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-amber)]/5">
+            <span className="text-[10px] font-mono text-[var(--neon-amber)] w-12">updated</span>
+            <span className="text-[var(--text-primary)] font-medium">{String(r.run1?.label || r.key.plugin_id)}</span>
+            <span className="text-[var(--text-muted)] font-mono line-through">{String(r.run2?.version || '')}</span>
+            <span className="text-[var(--text-muted)]">→</span>
+            <span className="text-[var(--neon-amber)] font-mono font-bold">{String(r.run1?.version || '')}</span>
+          </div>
+        ))}
+      </div>
+      {unchanged.length > 0 && (
+        <div className="mt-2">
+          <button onClick={() => setShowUnchanged(!showUnchanged)}
+            className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono px-2 py-1 rounded border border-[var(--border-glass)]">
+            {showUnchanged ? '▼' : '▶'} {unchanged.length} unchanged plugins
+          </button>
+          {showUnchanged && (
+            <div className="mt-1 space-y-0.5 opacity-50">
+              {unchanged.map((r) => {
+                const d = r.run1 ?? r.run2 ?? {};
+                return (
+                  <div key={r.key.plugin_id} className="flex items-center gap-2 text-xs px-2 py-1">
+                    <span className="text-[var(--text-primary)]">{String(d.label || r.key.plugin_id)}</span>
+                    <span className="text-[var(--text-muted)] font-mono">{String(d.version || '')}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ================================================================
+   SECTION: PROJECTS
+   ================================================================ */
+
+function TrendsProjectsSection({ projectDetail, footprintDetail }: {
+  projectDetail?: CompareDatasetDetail;
+  footprintDetail?: CompareDatasetDetail;
+}) {
+  return (
+    <>
+      <KeyedTableSection title="Projects" detail={projectDetail}
+        nameKey="project_key" extraColumns={['name', 'owner_login']} />
+      {footprintDetail && <TrendsFootprintSection detail={footprintDetail} />}
+    </>
+  );
+}
+
+function TrendsFootprintSection({ detail }: { detail: CompareDatasetDetail }) {
+  const field = detail.fields?.find(f => f.field === 'project_footprint_json');
+  if (!field) return null;
+
+  const before = (safeJsonParse(field.run2Value) || []) as Array<Record<string, unknown>>;
+  const after = (safeJsonParse(field.run1Value) || []) as Array<Record<string, unknown>>;
+
+  // Merge by project key
+  const merged = new Map<string, { b?: Record<string, unknown>; a?: Record<string, unknown> }>();
+  for (const p of before) {
+    const k = String(p.projectKey || p.project_key || '');
+    if (k) merged.set(k, { b: p });
+  }
+  for (const p of after) {
+    const k = String(p.projectKey || p.project_key || '');
+    if (k) merged.set(k, { ...merged.get(k), a: p });
+  }
+
+  // Sort by biggest size delta
+  const sorted = Array.from(merged.entries()).sort((x, y) => {
+    const dX = Math.abs(Number(x[1].a?.sizeBytes || 0) - Number(x[1].b?.sizeBytes || 0));
+    const dY = Math.abs(Number(y[1].a?.sizeBytes || 0) - Number(y[1].b?.sizeBytes || 0));
+    return dY - dX;
+  });
+
+  if (sorted.length === 0) return null;
+
+  return (
+    <SectionCard title="Project Footprint" subtitle={`${sorted.length} projects`}>
+      <div className="max-h-64 overflow-y-auto">
+        <table className="w-full text-xs font-mono">
+          <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
+            <tr className="border-b border-[var(--border-glass)]">
+              <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">Project</th>
+              <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Before</th>
+              <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">After</th>
+              <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.slice(0, 50).map(([key, { b, a }]) => {
+              const bSize = Number(b?.sizeBytes || 0);
+              const aSize = Number(a?.sizeBytes || 0);
+              const delta = aSize - bSize;
+              return (
+                <tr key={key} className={`border-b border-[var(--border-glass)] ${delta !== 0 ? 'bg-[var(--neon-amber)]/5' : ''}`}>
+                  <td className="py-1 px-2 text-[var(--text-primary)] truncate max-w-[200px]">{key}</td>
+                  <td className="py-1 px-2 text-right text-[var(--text-muted)]">{fmtBytes(bSize)}</td>
+                  <td className="py-1 px-2 text-right text-[var(--text-primary)]">{fmtBytes(aSize)}</td>
+                  <td className="py-1 px-2 text-right">
+                    {delta !== 0 ? (
+                      <span style={{ color: deltaColor(delta) }}>{deltaSign(delta)}{fmtBytes(Math.abs(delta))}</span>
+                    ) : (
+                      <span className="text-[var(--text-muted)]">--</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </SectionCard>
+  );
+}
+
+/* ================================================================
+   SECTION: CODE ENVIRONMENTS
+   ================================================================ */
+
+function TrendsCodeEnvsSection({ detail }: { detail?: CompareDatasetDetail }) {
+  // Code envs come as JSON blob from run_health_metrics
+  const field = detail?.fields?.find(f => f.field === 'code_envs_json');
+  if (!field) return <SectionCard title="Code Environments"><LoadingPlaceholder /></SectionCard>;
+
+  const before = safeJsonParse(field.run2Value) as Record<string, unknown> | null;
+  const after = safeJsonParse(field.run1Value) as Record<string, unknown> | null;
+
+  const bEnvs = (before?.codeEnvs || []) as Array<Record<string, unknown>>;
+  const aEnvs = (after?.codeEnvs || []) as Array<Record<string, unknown>>;
+
+  // Index by name
+  const bMap = new Map(bEnvs.map(e => [String(e.envName || e.name || ''), e]));
+  const aMap = new Map(aEnvs.map(e => [String(e.envName || e.name || ''), e]));
+  const allNames = new Set([...bMap.keys(), ...aMap.keys()]);
+
+  const added: Array<Record<string, unknown>> = [];
+  const removed: Array<Record<string, unknown>> = [];
+  const changed: Array<{ name: string; b: Record<string, unknown>; a: Record<string, unknown> }> = [];
+  const unchanged: string[] = [];
+
+  for (const name of allNames) {
+    if (!name) continue;
+    const b = bMap.get(name);
+    const a = aMap.get(name);
+    if (!b && a) { added.push(a); continue; }
+    if (b && !a) { removed.push(b); continue; }
+    if (b && a) {
+      const bStr = JSON.stringify(b);
+      const aStr = JSON.stringify(a);
+      if (bStr !== aStr) { changed.push({ name, b, a }); } else { unchanged.push(name); }
+    }
+  }
+
+  const hasChanges = added.length > 0 || removed.length > 0 || changed.length > 0;
+
+  return (
+    <SectionCard title="Code Environments"
+      subtitle={`${allNames.size} environments`}
+      badge={hasChanges ? <>
+        {added.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-green)]">+{added.length}</span>}
+        {removed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-red)]">-{removed.length}</span>}
+        {changed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-amber)]">~{changed.length}</span>}
+      </> : undefined}>
+      {!hasChanges ? (
+        <div className="text-sm text-[var(--text-muted)]">No code environment changes detected</div>
+      ) : (
+        <div className="space-y-1">
+          {added.map((e) => (
+            <div key={String(e.envName || e.name)} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-green)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-green)] w-14">added</span>
+              <span className="text-[var(--text-primary)] font-medium">{String(e.envName || e.name)}</span>
+              <span className="text-[var(--text-muted)]">{String(e.envLang || '')} {String(e.envVersion || '')}</span>
+            </div>
           ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function DiffRow({ row, columns }: { row: CompareRowDiff; columns: string[] }) {
-  const statusColors: Record<string, string> = {
-    added: 'var(--neon-green)',
-    removed: 'var(--neon-red)',
-    changed: 'var(--neon-amber)',
-    unchanged: 'var(--text-muted)',
-  };
-  const color = statusColors[row.status] || 'var(--text-muted)';
-  const data = row.run1 ?? row.run2 ?? {};
-
-  return (
-    <tr
-      className="border-b border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)] transition-colors"
-      style={{ opacity: row.status === 'unchanged' ? 0.6 : 1 }}
-    >
-      <td className="py-1 px-2">
-        <span
-          className="text-[10px] px-1.5 py-0.5 rounded-full"
-          style={{ color, border: `1px solid color-mix(in srgb, ${color} 40%, transparent)` }}
-        >
-          {row.status}
-        </span>
-      </td>
-      {columns.map((c) => {
-        const isChanged = row.changes.includes(c);
-        const val = data[c];
-        return (
-          <td
-            key={c}
-            className="py-1 px-2 text-[var(--text-primary)] max-w-[200px] truncate"
-            style={{ color: isChanged ? 'var(--neon-amber)' : undefined }}
-            title={val !== null && val !== undefined ? String(val) : ''}
-          >
-            {val !== null && val !== undefined ? String(val) : <span className="text-[var(--text-muted)]">null</span>}
-          </td>
-        );
-      })}
-    </tr>
-  );
-}
-
-/* Steps 48-51: Lifecycle table */
-function LifecycleTable({ detail }: { detail: CompareDatasetDetail }) {
-  const rows = detail.rows ?? [];
-  const cols = detail.columns ?? [];
-
-  if (rows.length === 0) {
-    return <div className="text-sm text-[var(--text-muted)] py-2">No rows match the current filter.</div>;
-  }
-
-  const lifecycleColors: Record<string, string> = {
-    opened_between_runs: 'var(--neon-green)',
-    resolved_between_runs: 'var(--neon-green)',
-    regressed_between_runs: 'var(--neon-red)',
-    existed_in_both: 'var(--text-muted)',
-    visible_only_in_run1: 'var(--neon-amber)',
-    visible_only_in_run2: 'var(--neon-amber)',
-    event_between_runs: 'var(--neon-green)',
-    before_run2: 'var(--text-muted)',
-    after_run1: 'var(--text-muted)',
-    created_between_runs: 'var(--neon-green)',
-    visible_at_run1: 'var(--text-secondary)',
-    visible_at_run2: 'var(--text-muted)',
-  };
-
-  return (
-    <div className="max-h-80 overflow-y-auto">
-      {detail.notes && (
-        <div className="text-xs text-[var(--neon-amber)] italic mb-2">{detail.notes}</div>
+          {removed.map((e) => (
+            <div key={String(e.envName || e.name)} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-red)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-red)] w-14">removed</span>
+              <span className="text-[var(--text-primary)] font-medium">{String(e.envName || e.name)}</span>
+              <span className="text-[var(--text-muted)]">{String(e.envLang || '')} {String(e.envVersion || '')}</span>
+            </div>
+          ))}
+          {changed.map(({ name, b, a }) => (
+            <div key={name} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-amber)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-amber)] w-14">changed</span>
+              <span className="text-[var(--text-primary)] font-medium">{name}</span>
+              {String(b.envVersion) !== String(a.envVersion) && (
+                <span className="text-[var(--text-muted)]">{String(b.envVersion)} → {String(a.envVersion)}</span>
+              )}
+            </div>
+          ))}
+        </div>
       )}
-      <table className="w-full text-xs font-mono">
-        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
-          <tr className="border-b border-[var(--border-glass)]">
-            <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal w-36">Lifecycle</th>
-            {cols.slice(0, 8).map((c) => (
-              <th key={c} className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => {
-            const lc = row._lifecycle;
-            const lcColor = lc ? lifecycleColors[lc] || 'var(--text-muted)' : 'var(--text-muted)';
-            const data: Record<string, unknown> = row.run1 ?? row.run2 ?? (row as unknown as Record<string, unknown>);
-            return (
-              <tr key={i} className="border-b border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]">
-                <td className="py-1 px-2">
-                  <span
-                    className="text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
-                    style={{ color: lcColor, border: `1px solid color-mix(in srgb, ${lcColor} 40%, transparent)` }}
-                  >
-                    {lc?.replace(/_/g, ' ') ?? 'unknown'}
-                  </span>
-                </td>
-                {cols.slice(0, 8).map((c) => {
-                  const val = data[c as keyof typeof data];
-                  return (
-                    <td key={c} className="py-1 px-2 text-[var(--text-primary)] max-w-[180px] truncate"
-                      title={val != null ? String(val) : ''}
-                    >
-                      {val != null ? String(val) : <span className="text-[var(--text-muted)]">null</span>}
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+      {unchanged.length > 0 && (
+        <div className="text-xs text-[var(--text-muted)] mt-2">+ {unchanged.length} unchanged environments</div>
+      )}
+    </SectionCard>
   );
 }
 
-/* Step 52: Current-only metadata table */
-function MetadataTable({ detail }: { detail: CompareDatasetDetail }) {
-  const rows = detail.rows ?? [];
-  const cols = detail.columns ?? [];
+/* ================================================================
+   SECTION: DB HEALTH
+   ================================================================ */
 
-  if (rows.length === 0) {
-    return <div className="text-sm text-[var(--text-muted)] py-2">No metadata rows.</div>;
-  }
+function TrendsDbHealthSection({ summaryDetail, tableDetail }: {
+  summaryDetail?: CompareDatasetDetail;
+  tableDetail?: CompareDatasetDetail;
+}) {
+  const field = summaryDetail?.fields?.find(f => f.field === 'db_health_json');
+  const before = (safeJsonParse(field?.run2Value) || {}) as Record<string, unknown>;
+  const after = (safeJsonParse(field?.run1Value) || {}) as Record<string, unknown>;
+
+  const hasSummary = Object.keys(before).length > 0 || Object.keys(after).length > 0;
+  if (!hasSummary && !tableDetail) return null;
 
   return (
-    <div className="max-h-80 overflow-y-auto">
-      <table className="w-full text-xs font-mono">
-        <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
-          <tr className="border-b border-[var(--border-glass)]">
-            {cols.map((c) => (
-              <th key={c} className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => {
-            const data: Record<string, unknown> = row.run1 ?? row.run2 ?? (row as unknown as Record<string, unknown>);
-            return (
-              <tr key={i} className="border-b border-[var(--border-glass)] hover:bg-[var(--bg-glass-hover)]">
-                {cols.map((c) => {
-                  const val = data[c];
-                  return (
-                    <td key={c} className="py-1 px-2 text-[var(--text-primary)] max-w-[200px] truncate">
-                      {val != null ? String(val) : <span className="text-[var(--text-muted)]">null</span>}
-                    </td>
-                  );
-                })}
+    <SectionCard title="DB Health">
+      {/* Overview cards side by side */}
+      {hasSummary && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <CompareValue label="Database Size" before={before.db_size || '--'} after={after.db_size || '--'} />
+          <CompareValue label="Tables" before={before.table_count} after={after.table_count} />
+          <CompareValue label="PG Version" before={before.pg_version || '--'} after={after.pg_version || '--'} />
+          <CompareValue label="Dead Tuples" before={before.total_dead_tuples} after={after.total_dead_tuples} />
+        </div>
+      )}
+
+      {/* Per-table breakdown */}
+      {tableDetail && tableDetail.rows && tableDetail.rows.length > 0 && (
+        <DbHealthTableDiff detail={tableDetail} />
+      )}
+    </SectionCard>
+  );
+}
+
+function DbHealthTableDiff({ detail }: { detail: CompareDatasetDetail }) {
+  const rows = detail.rows ?? [];
+  const changed = rows.filter(r => r.status !== 'unchanged');
+  const unchanged = rows.filter(r => r.status === 'unchanged');
+  const [showUnchanged, setShowUnchanged] = useState(false);
+
+  // Sort changed by biggest dead tuple increase
+  const sorted = [...changed].sort((a, b) => {
+    const aDelta = Math.abs(Number(a.run1?.dead_tuples || 0) - Number(a.run2?.dead_tuples || 0));
+    const bDelta = Math.abs(Number(b.run1?.dead_tuples || 0) - Number(b.run2?.dead_tuples || 0));
+    return bDelta - aDelta;
+  });
+
+  return (
+    <div>
+      <div className="text-xs text-[var(--text-muted)] uppercase tracking-wide mb-2">Table Breakdown</div>
+      {sorted.length > 0 ? (
+        <div className="max-h-64 overflow-y-auto">
+          <table className="w-full text-xs font-mono">
+            <thead className="sticky top-0 bg-[var(--bg-surface)] z-10">
+              <tr className="border-b border-[var(--border-glass)]">
+                <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">Status</th>
+                <th className="py-1.5 px-2 text-left text-[var(--text-muted)] font-normal">Table</th>
+                <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Size</th>
+                <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Rows</th>
+                <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Dead</th>
+                <th className="py-1.5 px-2 text-right text-[var(--text-muted)] font-normal">Bloat%</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const d = r.run1 ?? r.run2 ?? {};
+                const statusColor = r.status === 'added' ? 'var(--neon-green)' : r.status === 'removed' ? 'var(--neon-red)' : 'var(--neon-amber)';
+                return (
+                  <tr key={r.key.table_name} className="border-b border-[var(--border-glass)]">
+                    <td className="py-1 px-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ color: statusColor, border: `1px solid color-mix(in srgb, ${statusColor} 40%, transparent)` }}>
+                        {r.status}
+                      </span>
+                    </td>
+                    <td className="py-1 px-2 text-[var(--text-primary)] truncate max-w-[200px]">{r.key.table_name}</td>
+                    <td className="py-1 px-2 text-right">{fmtBytes(Number(d.table_size || 0))}</td>
+                    <td className="py-1 px-2 text-right">{fmtNum(d.row_count)}</td>
+                    <td className="py-1 px-2 text-right">{fmtNum(d.dead_tuples)}</td>
+                    <td className="py-1 px-2 text-right">{typeof d.bloat_pct === 'number' ? fmtPct(d.bloat_pct) : '--'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="text-sm text-[var(--text-muted)]">No table changes detected</div>
+      )}
+      {unchanged.length > 0 && (
+        <button onClick={() => setShowUnchanged(!showUnchanged)}
+          className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono px-2 py-1 mt-2 rounded border border-[var(--border-glass)]">
+          {showUnchanged ? '▼' : '▶'} {unchanged.length} unchanged tables
+        </button>
+      )}
     </div>
   );
 }
 
-/* CompareHeader — page title + run selectors */
+/* ================================================================
+   GENERIC KEYED TABLE SECTION (for projects, users, etc.)
+   ================================================================ */
+
+function KeyedTableSection({ title, detail, nameKey, extraColumns }: {
+  title: string; detail?: CompareDatasetDetail;
+  nameKey: string; extraColumns?: string[];
+}) {
+  const [showUnchanged, setShowUnchanged] = useState(false);
+
+  if (!detail) return <SectionCard title={title}><LoadingPlaceholder /></SectionCard>;
+  const rows = detail.rows ?? [];
+  const added = rows.filter(r => r.status === 'added');
+  const removed = rows.filter(r => r.status === 'removed');
+  const changed = rows.filter(r => r.status === 'changed');
+  const unchanged = rows.filter(r => r.status === 'unchanged');
+
+  const hasChanges = added.length > 0 || removed.length > 0 || changed.length > 0;
+
+  return (
+    <SectionCard title={title}
+      subtitle={`${rows.length} total`}
+      badge={hasChanges ? <>
+        {added.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-green)]">+{added.length}</span>}
+        {removed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-red)]">-{removed.length}</span>}
+        {changed.length > 0 && <span className="text-[10px] font-mono text-[var(--neon-amber)]">~{changed.length}</span>}
+      </> : undefined}>
+      {!hasChanges ? (
+        <div className="text-sm text-[var(--text-muted)]">No changes detected</div>
+      ) : (
+        <div className="space-y-1">
+          {added.map((r) => {
+            const d = r.run1 ?? {};
+            return (
+              <div key={r.key[nameKey]} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-green)]/5">
+                <span className="text-[10px] font-mono text-[var(--neon-green)] w-14">added</span>
+                <span className="text-[var(--text-primary)] font-medium">{r.key[nameKey]}</span>
+                {extraColumns?.map(c => <span key={c} className="text-[var(--text-muted)]">{String(d[c] || '')}</span>)}
+              </div>
+            );
+          })}
+          {removed.map((r) => {
+            const d = r.run2 ?? {};
+            return (
+              <div key={r.key[nameKey]} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-red)]/5">
+                <span className="text-[10px] font-mono text-[var(--neon-red)] w-14">removed</span>
+                <span className="text-[var(--text-primary)] font-medium">{r.key[nameKey]}</span>
+                {extraColumns?.map(c => <span key={c} className="text-[var(--text-muted)]">{String(d[c] || '')}</span>)}
+              </div>
+            );
+          })}
+          {changed.map((r) => (
+            <div key={r.key[nameKey]} className="flex items-center gap-2 text-xs rounded px-2 py-1.5 bg-[var(--neon-amber)]/5">
+              <span className="text-[10px] font-mono text-[var(--neon-amber)] w-14">changed</span>
+              <span className="text-[var(--text-primary)] font-medium">{r.key[nameKey]}</span>
+              <span className="text-[var(--text-muted)]">{r.changes.join(', ')}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {unchanged.length > 0 && (
+        <div className="mt-2">
+          <button onClick={() => setShowUnchanged(!showUnchanged)}
+            className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] font-mono px-2 py-1 rounded border border-[var(--border-glass)]">
+            {showUnchanged ? '▼' : '▶'} {unchanged.length} unchanged
+          </button>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ================================================================
+   HEADER + SUMMARY
+   ================================================================ */
+
 function CompareHeader({ runs, run1Id, run2Id, manifest, selectRun1, selectRun2 }: {
   runs: TrendsRun[];
   run1Id: number | null;
@@ -1027,22 +1310,7 @@ function CompareHeader({ runs, run1Id, run2Id, manifest, selectRun1, selectRun2 
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-sm text-[var(--text-muted)]">Run 1 (newer):</span>
-          <select
-            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
-            value={run1Id ?? ''}
-            onChange={(e) => e.target.value && selectRun1(Number(e.target.value))}
-          >
-            <option value="">Select run...</option>
-            {runs.map((r) => (
-              <option key={r.run_id} value={r.run_id}>
-                #{r.run_id} — {formatDate(r.run_at)}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-[var(--text-muted)]">Run 2 (older):</span>
+          <span className="text-sm text-[var(--text-muted)]">Before:</span>
           <select
             className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
             value={run2Id ?? ''}
@@ -1051,7 +1319,22 @@ function CompareHeader({ runs, run1Id, run2Id, manifest, selectRun1, selectRun2 
             <option value="">Select run...</option>
             {runs.map((r) => (
               <option key={r.run_id} value={r.run_id}>
-                #{r.run_id} — {formatDate(r.run_at)}
+                #{r.run_id} — {formatDate(r.run_at)} — Score: {r.health_score ?? '?'}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-[var(--text-muted)]">After:</span>
+          <select
+            className="text-sm font-mono bg-[var(--bg-surface)] border border-[var(--border-default)] rounded-lg px-3 py-2 text-[var(--text-primary)] min-w-[260px]"
+            value={run1Id ?? ''}
+            onChange={(e) => e.target.value && selectRun1(Number(e.target.value))}
+          >
+            <option value="">Select run...</option>
+            {runs.map((r) => (
+              <option key={r.run_id} value={r.run_id}>
+                #{r.run_id} — {formatDate(r.run_at)} — Score: {r.health_score ?? '?'}
               </option>
             ))}
           </select>
@@ -1061,101 +1344,113 @@ function CompareHeader({ runs, run1Id, run2Id, manifest, selectRun1, selectRun2 
   );
 }
 
-/* ---------- Main Page ---------- */
+function SummaryBand({ manifest }: { manifest: CompareManifest }) {
+  const s = manifest.summary;
+  const chips: { label: string; data: CompareSummaryDelta }[] = [
+    { label: 'Health', data: s.healthScore },
+    { label: 'Users', data: s.userCount },
+    { label: 'Projects', data: s.projectCount },
+    { label: 'Plugins', data: s.pluginCount },
+    { label: 'Connections', data: s.connectionCount },
+    { label: 'Code Envs', data: s.codeEnvCount },
+  ];
+
+  return (
+    <motion.div
+      className="sticky top-0 z-10 glass-card border-[var(--border-glow)] shadow-[var(--glow-sm)] px-4 py-3"
+      initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+    >
+      <div className="flex flex-wrap gap-4 items-center">
+        {chips.map(({ label, data }) => {
+          const color = deltaColor(data.delta);
+          return (
+            <div key={label} className="flex items-center gap-2">
+              <span className="text-sm text-[var(--text-muted)]">{label}</span>
+              <span className="font-mono text-base font-bold text-[var(--text-primary)]">{fmtNum(data.run1)}</span>
+              {data.delta !== null && data.delta !== 0 && (
+                <span className="text-xs font-mono px-1.5 py-0.5 rounded-full"
+                  style={{ color, border: `1px solid color-mix(in srgb, ${color} 35%, transparent)` }}>
+                  {deltaSign(data.delta)}{fmtNum(data.delta)}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {manifest.coverageWarnings.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {manifest.coverageWarnings.map((w, i) => (
+            <div key={i} className="text-xs text-[var(--neon-amber)] bg-[var(--neon-amber)]/5 rounded px-3 py-1.5 border border-[var(--neon-amber)]/15">
+              {w.message}
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+/* ================================================================
+   MAIN PAGE
+   ================================================================ */
+
+/** Datasets we auto-load for the section-based UI */
+const AUTO_LOAD_DATASETS = [
+  'run_health_metrics',   // health, system, filesystem, memory, connections, runtime, code envs, footprint
+  'runs',                 // run-level summary (dss_version, python_version)
+  'run_plugins',          // plugins section
+  'project_snapshots',    // projects section
+  'run_connection_health', // connection health section (V9)
+  'run_db_health',        // DB health tables (V9)
+];
 
 export function TrendsPage() {
   const { runs, run1Id, run2Id, manifest, loading, error, selectRun1, selectRun2 } = useTrendsCompare();
-  const { cache: detailCache, loadingSet: detailLoading, load: loadDetail } = useDatasetDetail(run1Id, run2Id);
+  const { cache: detailCache, load: loadDetail } = useDatasetDetail(run1Id, run2Id);
 
-  // Track which datasets are expanded
-  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
-
-  // Auto-expand on manifest load (first few datasets)
-  const manifetRef = useRef<CompareManifest | null>(null);
+  // Auto-load datasets when manifest arrives
+  const manifestRef = useRef<CompareManifest | null>(null);
   useEffect(() => {
-    if (manifest && manifest !== manifetRef.current) {
-      manifetRef.current = manifest;
-      const scored = manifest.datasets
-        .filter(d => d.availableInRun1 && d.availableInRun2)
-        .map(d => ({ id: d.datasetId, score: datasetScore(d), ds: d }))
-        .sort((a, b) => b.score - a.score);
-      const toExpand = scored.slice(0, 4).map(x => x.id);
-      setExpandedSet(new Set(toExpand));
-      for (const { id, ds } of scored.slice(0, 4)) {
-        const defaultFilter = ds.changed > 0 ? 'changed' : 'all';
-        loadDetail(id, defaultFilter);
+    if (manifest && manifest !== manifestRef.current) {
+      manifestRef.current = manifest;
+      for (const dsId of AUTO_LOAD_DATASETS) {
+        const ds = manifest.datasets.find(d => d.datasetId === dsId);
+        if (ds && ds.availableInRun1 && ds.availableInRun2) {
+          loadDetail(dsId, 'all');
+        }
       }
     }
   }, [manifest, loadDetail]);
 
-  const handleToggle = useCallback((datasetId: string) => {
-    setExpandedSet((prev) => {
-      const next = new Set(prev);
-      if (next.has(datasetId)) {
-        next.delete(datasetId);
-      } else {
-        next.add(datasetId);
-        // Lazy load on expand with smart default filter
-        if (!detailCache[datasetId]) {
-          const dsInfo = manifest?.datasets.find(d => d.datasetId === datasetId);
-          const defaultFilter = dsInfo && dsInfo.changed > 0 ? 'changed' : 'all';
-          loadDetail(datasetId, defaultFilter);
-        }
-      }
-      return next;
-    });
-  }, [detailCache, loadDetail, manifest]);
+  // Convenience accessors
+  const hmDetail = detailCache['run_health_metrics'];
+  const pluginDetail = detailCache['run_plugins'];
+  const projectDetail = detailCache['project_snapshots'];
+  const connHealthDetail = detailCache['run_connection_health'];
+  const dbHealthDetail = detailCache['run_db_health'];
 
-  const handleReload = useCallback((datasetId: string, changeType: string, page?: number, search?: string) => {
-    loadDetail(datasetId, changeType, page, search);
-  }, [loadDetail]);
-
-  // Group datasets by category
-  const grouped = useMemo(() => {
-    if (!manifest) return {};
-    const g: Partial<Record<DatasetCategory, CompareDatasetSummary[]>> = {};
-    for (const ds of manifest.datasets) {
-      const cat = ds.category as DatasetCategory;
-      if (!g[cat]) g[cat] = [];
-      g[cat]!.push(ds);
-    }
-    for (const cat of Object.keys(g) as DatasetCategory[]) {
-      g[cat]!.sort((a, b) => datasetScore(b) - datasetScore(a));
-    }
-    return g;
-  }, [manifest]);
-
-  // Empty state: no runs at all
+  // Empty state
   if (!loading && runs.length === 0 && !error) {
     return (
       <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        <motion.div
-          className="flex flex-col items-center justify-center py-20 rounded-xl border border-[var(--border-default)]"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        >
+        <motion.div className="flex flex-col items-center justify-center py-20 rounded-xl border border-[var(--border-default)]"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           <div className="text-4xl mb-4 opacity-40">~</div>
           <div className="text-[var(--text-secondary)] text-lg font-medium">No tracking runs yet</div>
-          <div className="text-[var(--text-muted)] text-sm mt-1">
-            Run a diagnostics collection to start building trend data.
-          </div>
+          <div className="text-[var(--text-muted)] text-sm mt-1">Run a diagnostics collection to start building trend data.</div>
         </motion.div>
       </div>
     );
   }
 
-  // Single-run state
   if (!loading && runs.length === 1 && !error) {
     return (
       <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        <motion.div
-          className="flex flex-col items-center justify-center py-20 rounded-xl border border-[var(--border-default)]"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        >
+        <motion.div className="flex flex-col items-center justify-center py-20 rounded-xl border border-[var(--border-default)]"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           <div className="text-4xl mb-4 opacity-40">1</div>
           <div className="text-[var(--text-secondary)] text-lg font-medium">Only one run available</div>
-          <div className="text-[var(--text-muted)] text-sm mt-1">
-            Run another diagnostics collection to enable comparison.
-          </div>
+          <div className="text-[var(--text-muted)] text-sm mt-1">Run another diagnostics collection to enable comparison.</div>
         </motion.div>
       </div>
     );
@@ -1163,63 +1458,69 @@ export function TrendsPage() {
 
   return (
     <div className="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-      {/* Header with title + run selectors */}
-      <CompareHeader
-        runs={runs} run1Id={run1Id} run2Id={run2Id}
-        manifest={manifest} selectRun1={selectRun1} selectRun2={selectRun2}
-      />
+      <CompareHeader runs={runs} run1Id={run1Id} run2Id={run2Id}
+        manifest={manifest} selectRun1={selectRun1} selectRun2={selectRun2} />
 
-      {/* Error display */}
       {error && (
-        <motion.div
-          className="text-sm text-[var(--neon-red)] bg-[var(--neon-red)]/10 rounded-lg px-4 py-3 border border-[var(--neon-red)]/20"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        >
+        <motion.div className="text-sm text-[var(--neon-red)] bg-[var(--neon-red)]/10 rounded-lg px-4 py-3 border border-[var(--neon-red)]/20"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
           {error}
         </motion.div>
       )}
 
-      {/* Loading */}
       {loading && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <SkeletonCard /><SkeletonCard /><SkeletonCard />
+        <div className="space-y-4">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="glass-card animate-pulse px-4 py-6">
+              <div className="h-4 w-32 rounded bg-[var(--bg-glass-hover)] mb-3" />
+              <div className="h-20 rounded bg-[var(--bg-glass-hover)]" />
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Summary band (Step 39) — coverage warnings now inside */}
-      {manifest && <SummaryBand manifest={manifest} />}
-
-      {/* Top changes spotlight */}
-      {manifest && <TopChangesGrid manifest={manifest} />}
-
-      {/* Category sections (Step 40) */}
-      {manifest && CATEGORY_ORDER.map((cat) => {
-        const datasets = grouped[cat];
-        if (!datasets || datasets.length === 0) return null;
-        return (
-          <CategorySection
-            key={cat}
-            category={cat}
-            datasets={datasets}
-            onExpand={handleToggle}
-            expandedSet={expandedSet}
-            detailCache={detailCache}
-            detailLoading={detailLoading}
-            onReload={handleReload}
-          />
-        );
-      })}
-
-      {/* Run metadata footer */}
       {manifest && (
-        <motion.div
-          className="text-xs text-[var(--text-muted)] text-center pt-4 pb-2"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}
-        >
-          Comparing run #{manifest.run1.run_id} ({formatDate(manifest.run1.run_at)})
-          against run #{manifest.run2.run_id} ({formatDate(manifest.run2.run_at)})
-          — {manifest.datasets.length} datasets
-        </motion.div>
+        <>
+          {/* Summary band */}
+          <SummaryBand manifest={manifest} />
+
+          {/* ── OVERVIEW ── */}
+          <SectionDivider label="Overview" />
+          <TrendsHealthSection manifest={manifest} detail={hmDetail} />
+
+          {/* ── SYSTEM ── */}
+          <SectionDivider label="System" />
+          <TrendsSystemSection manifest={manifest} detail={hmDetail} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <TrendsFilesystemSection detail={hmDetail} />
+            <TrendsMemorySection detail={hmDetail} />
+          </div>
+
+          {/* ── MONITORING ── */}
+          <SectionDivider label="Monitoring" />
+          <TrendsConnectionsSection detail={hmDetail} connHealthDetail={connHealthDetail} />
+          <TrendsRuntimeSection detail={hmDetail} />
+          <TrendsPluginsSection detail={pluginDetail} />
+
+          {/* ── PROJECTS ── */}
+          <SectionDivider label="Projects" />
+          <TrendsProjectsSection projectDetail={projectDetail} footprintDetail={hmDetail} />
+
+          {/* ── CODE ENVIRONMENTS ── */}
+          <SectionDivider label="Code Environments" />
+          <TrendsCodeEnvsSection detail={hmDetail} />
+
+          {/* ── DB HEALTH ── */}
+          <SectionDivider label="DB Health" />
+          <TrendsDbHealthSection summaryDetail={hmDetail} tableDetail={dbHealthDetail} />
+
+          {/* Footer */}
+          <motion.div className="text-xs text-[var(--text-muted)] text-center pt-4 pb-2"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
+            Comparing run #{manifest.run2.run_id} ({formatDate(manifest.run2.run_at)})
+            → run #{manifest.run1.run_id} ({formatDate(manifest.run1.run_at)})
+          </motion.div>
+        </>
       )}
     </div>
   );

@@ -49,6 +49,7 @@ JSON_COLUMNS = frozenset({
     'plugins_json', 'connections_json', 'filesystem_mounts_json',
     'user_profile_stats_json', 'general_settings_json',
     'code_envs_json', 'log_errors_json', 'project_footprint_json',
+    'db_health_json',
 })
 
 # ── Text blob columns ──
@@ -104,6 +105,8 @@ DATASET_REGISTRY: List[Dict[str, Any]] = [
             # V8 additions
             'general_settings_json', 'java_memory_raw',
             'code_envs_json', 'log_errors_json', 'project_footprint_json',
+            # V9 additions
+            'db_health_json',
         ],
     },
 
@@ -266,6 +269,32 @@ DATASET_REGISTRY: List[Dict[str, Any]] = [
         'key_fields': ['project_key', 'commit_hash'],
         'min_schema_version': 7,
         'columns': ['project_key', 'commit_hash', 'author', 'committed_at'],
+    },
+
+    # ── Step 10b: V9 connection health + DB health ──
+
+    {
+        'dataset_id': 'run_connection_health',
+        'label': 'Connection Health',
+        'category': CAT_SNAPSHOT_ENTITIES,
+        'kind': KIND_KEYED_TABLE,
+        'support': SUPPORT_FULL,
+        'table': 'run_connection_health',
+        'key_fields': ['connection_name'],
+        'min_schema_version': 9,
+        'columns': ['connection_name', 'connection_type', 'status', 'error_category', 'error_message'],
+    },
+    {
+        'dataset_id': 'run_db_health',
+        'label': 'DB Health Tables',
+        'category': CAT_SNAPSHOT_ENTITIES,
+        'kind': KIND_KEYED_TABLE,
+        'support': SUPPORT_FULL,
+        'table': 'run_db_health',
+        'key_fields': ['table_name'],
+        'min_schema_version': 9,
+        'columns': ['table_name', 'schema_name', 'table_size', 'row_count', 'dead_tuples',
+                     'bloat_pct', 'last_vacuum', 'last_autovacuum', 'last_analyze'],
     },
 
     # ── Step 11: Findings ──

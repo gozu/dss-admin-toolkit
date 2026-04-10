@@ -84,6 +84,8 @@ _ALL_TABLES = [
     # V7: trends snapshot tables
     'run_datasets', 'run_recipes', 'run_llms', 'run_agents',
     'run_agent_tools', 'run_knowledge_banks', 'run_git_commits',
+    # V9: connection health + DB health
+    'run_connection_health', 'run_db_health',
 ]
 
 
@@ -91,7 +93,7 @@ class SQLTrackingDB:
     """SQL-connection-backed tracking database with the same public API as TrackingDB."""
 
     # Current schema version this code expects
-    _TARGET_SCHEMA_VERSION = 8
+    _TARGET_SCHEMA_VERSION = 9
 
     def __init__(self, connection_name: str, table_prefix: Optional[str] = None, schema: Optional[str] = None):
         self._connection_name = connection_name
@@ -176,6 +178,8 @@ class SQLTrackingDB:
             self._migrate_v7(executor)
             # V8 migration: add extended snapshot columns to run_health_metrics
             self._migrate_v8(executor)
+            # V9 migration: connection health + DB health tables
+            self._migrate_v9(executor)
             # Schema migration: move tables from default schema if schema is configured
             if self._schema:
                 self._migrate_from_default_schema(executor)
@@ -378,6 +382,45 @@ class SQLTrackingDB:
             except Exception:
                 pass  # column already exists
 
+    def _migrate_v9(self, executor) -> None:
+        """Add V9 connection health + DB health tables, and db_health_json column."""
+        v9_ddl = [
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_connection_health')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                connection_name TEXT NOT NULL,
+                connection_type TEXT,
+                status          TEXT NOT NULL,
+                error_category  TEXT,
+                error_message   TEXT,
+                PRIMARY KEY (run_id, connection_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_conn_health_status')} ON {self._t('run_connection_health')}(status)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_db_health')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                table_name      TEXT NOT NULL,
+                schema_name     TEXT,
+                table_size      BIGINT,
+                row_count       BIGINT,
+                dead_tuples     BIGINT,
+                bloat_pct       DOUBLE PRECISION,
+                last_vacuum     TEXT,
+                last_autovacuum TEXT,
+                last_analyze    TEXT,
+                PRIMARY KEY (run_id, table_name)
+            )""",
+        ]
+        for stmt in v9_ddl:
+            try:
+                executor.query_to_df("SELECT 1", pre_queries=[stmt], post_queries=['COMMIT'])
+            except Exception:
+                pass  # table/index already exists
+        # Add db_health_json column to run_health_metrics
+        t = self._t('run_health_metrics')
+        try:
+            executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN db_health_json TEXT")
+        except Exception:
+            pass  # column already exists
+
     def _get_ddl_statements(self) -> List[str]:
         """Return list of CREATE TABLE/INDEX statements."""
         return [
@@ -445,7 +488,8 @@ class SQLTrackingDB:
                 java_memory_raw                 TEXT,
                 code_envs_json                  TEXT,
                 log_errors_json                 TEXT,
-                project_footprint_json          TEXT
+                project_footprint_json          TEXT,
+                db_health_json                  TEXT
             )""",
             f"""CREATE TABLE IF NOT EXISTS {self._t('run_campaign_summaries')} (
                 run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
@@ -606,6 +650,30 @@ class SQLTrackingDB:
                 PRIMARY KEY (run_id, connection_name)
             )""",
             f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_connections_type')} ON {self._t('run_connections')}(connection_type)",
+            # V9 tables: connection health + DB health
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_connection_health')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                connection_name TEXT NOT NULL,
+                connection_type TEXT,
+                status          TEXT NOT NULL,
+                error_category  TEXT,
+                error_message   TEXT,
+                PRIMARY KEY (run_id, connection_name)
+            )""",
+            f"CREATE INDEX IF NOT EXISTS {self._idx('idx_run_conn_health_status')} ON {self._t('run_connection_health')}(status)",
+            f"""CREATE TABLE IF NOT EXISTS {self._t('run_db_health')} (
+                run_id          INTEGER NOT NULL REFERENCES {self._t('runs')}(run_id),
+                table_name      TEXT NOT NULL,
+                schema_name     TEXT,
+                table_size      BIGINT,
+                row_count       BIGINT,
+                dead_tuples     BIGINT,
+                bloat_pct       DOUBLE PRECISION,
+                last_vacuum     TEXT,
+                last_autovacuum TEXT,
+                last_analyze    TEXT,
+                PRIMARY KEY (run_id, table_name)
+            )""",
             # Record schema version (skip if already recorded)
             f"INSERT INTO {self._t('schema_version')} (version, applied_at) "
             f"SELECT {self._TARGET_SCHEMA_VERSION}, {_L(_now_iso())} "
@@ -720,6 +788,7 @@ class SQLTrackingDB:
             code_envs_json = _L(json.dumps(snap['code_envs'])) if snap.get('code_envs') is not None else 'NULL'
             log_errors_json = _L(json.dumps(snap['log_errors'])) if snap.get('log_errors') is not None else 'NULL'
             project_footprint_json = _L(json.dumps(snap['project_footprint'])) if snap.get('project_footprint') is not None else 'NULL'
+            db_health_json = _L(json.dumps(snap['db_health']['summary'])) if isinstance(snap.get('db_health'), dict) and snap['db_health'].get('summary') else 'NULL'
             pre.append(
                 f"INSERT INTO {self._t('run_health_metrics')} "
                 f"(run_id, cpu_cores, memory_total_mb, memory_used_mb, "
@@ -737,7 +806,7 @@ class SQLTrackingDB:
                 f"os_info, spark_version, "
                 f"general_settings_json, java_memory_raw, "
                 f"code_envs_json, log_errors_json, "
-                f"project_footprint_json) "
+                f"project_footprint_json, db_health_json) "
                 f"VALUES ({run_id}, {_int_val(hm.get('cpu_cores'))}, {_int_val(hm.get('memory_total_mb'))}, "
                 f"{_int_val(hm.get('memory_used_mb'))}, {_int_val(hm.get('memory_available_mb'))}, "
                 f"{_int_val(hm.get('swap_total_mb'))}, {_int_val(hm.get('swap_used_mb'))}, "
@@ -754,7 +823,7 @@ class SQLTrackingDB:
                 f"{_L(snap.get('os_info'))}, {_L(snap.get('spark_version'))}, "
                 f"{general_settings_json}, {java_memory_raw}, "
                 f"{code_envs_json}, {log_errors_json}, "
-                f"{project_footprint_json})"
+                f"{project_footprint_json}, {db_health_json})"
             )
 
         # Campaign summaries
@@ -1023,6 +1092,46 @@ class SQLTrackingDB:
                 f"WHERE run_id = {run_id} AND instance_id = {_L(instance_id)} "
                 f"AND project_key = {_L(gc.get('project_key', ''))} AND commit_hash = {_L(chash)})"
             )
+
+        # V9: Connection health snapshots
+        t_run_conn_health = self._t('run_connection_health')
+        for ch in (snap.get('connection_health') or []):
+            if not isinstance(ch, dict):
+                continue
+            cname = ch.get('name')
+            if not cname:
+                continue
+            pre.append(
+                f"INSERT INTO {t_run_conn_health} "
+                f"(run_id, connection_name, connection_type, status, error_category, error_message) "
+                f"SELECT {run_id}, {_L(cname)}, {_L(ch.get('type'))}, "
+                f"{_L(ch.get('status', 'skipped'))}, {_L(ch.get('error_category'))}, {_L(ch.get('error_message'))} "
+                f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_conn_health} "
+                f"WHERE run_id = {run_id} AND connection_name = {_L(cname)})"
+            )
+
+        # V9: DB health table snapshots
+        db_health = snap.get('db_health')
+        if isinstance(db_health, dict):
+            t_run_db_health = self._t('run_db_health')
+            for tbl in (db_health.get('tables') or []):
+                if not isinstance(tbl, dict):
+                    continue
+                tname = tbl.get('table_name')
+                if not tname:
+                    continue
+                pre.append(
+                    f"INSERT INTO {t_run_db_health} "
+                    f"(run_id, table_name, schema_name, table_size, row_count, "
+                    f"dead_tuples, bloat_pct, last_vacuum, last_autovacuum, last_analyze) "
+                    f"SELECT {run_id}, {_L(tname)}, {_L(tbl.get('schema_name'))}, "
+                    f"{_int_val(tbl.get('table_size'))}, {_int_val(tbl.get('row_count'))}, "
+                    f"{_int_val(tbl.get('dead_tuples'))}, {_float_val(tbl.get('bloat_pct'))}, "
+                    f"{_L(tbl.get('last_vacuum'))}, {_L(tbl.get('last_autovacuum'))}, "
+                    f"{_L(tbl.get('last_analyze'))} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {t_run_db_health} "
+                    f"WHERE run_id = {run_id} AND table_name = {_L(tname)})"
+                )
 
         # Findings (skip if exists, with pre-generated IDs)
         finding_keys_this_run: Set[Tuple[str, str, str]] = set()
