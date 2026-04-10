@@ -244,7 +244,9 @@ class SQLTrackingDB:
         ]
         for col_def in v5_columns:
             try:
-                executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN {col_def}")
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"ALTER TABLE {t} ADD COLUMN {col_def}"],
+                                     post_queries=['COMMIT'])
             except Exception:
                 pass  # column already exists
 
@@ -378,7 +380,9 @@ class SQLTrackingDB:
         ]
         for col_def in v8_columns:
             try:
-                executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN {col_def}")
+                executor.query_to_df("SELECT 1",
+                                     pre_queries=[f"ALTER TABLE {t} ADD COLUMN {col_def}"],
+                                     post_queries=['COMMIT'])
             except Exception:
                 pass  # column already exists
 
@@ -417,7 +421,9 @@ class SQLTrackingDB:
         # Add db_health_json column to run_health_metrics
         t = self._t('run_health_metrics')
         try:
-            executor.query_to_df(f"ALTER TABLE {t} ADD COLUMN db_health_json TEXT")
+            executor.query_to_df("SELECT 1",
+                                 pre_queries=[f"ALTER TABLE {t} ADD COLUMN db_health_json TEXT"],
+                                 post_queries=['COMMIT'])
         except Exception:
             pass  # column already exists
 
