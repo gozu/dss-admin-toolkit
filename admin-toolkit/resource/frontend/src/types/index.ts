@@ -441,6 +441,10 @@ export interface ModelAuditPrice {
 export interface ModelAuditSummary {
   projectsScanned: number;
   referencesFound: number;
+  referencesReturned?: number;
+  referencesTruncated?: number;
+  referenceLimit?: number;
+  referencePerRowLimit?: number;
   matchedModels: number;
   unknownModels: number;
   ripoffCount: number;
@@ -512,6 +516,15 @@ export interface ModelAuditResult {
   rows: ModelAuditRow[];
   references: ModelAuditReference[];
   errors: ModelAuditError[];
+  debug?: {
+    rawReferences?: number;
+    dedupedReferences?: number;
+    returnedReferences?: number;
+    truncatedReferences?: number;
+    rows?: number;
+    errors?: number;
+    buildElapsedMs?: number;
+  };
 }
 
 // User stats

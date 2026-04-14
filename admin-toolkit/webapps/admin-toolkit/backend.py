@@ -4714,6 +4714,8 @@ _MODEL_AUDIT_TEXT_EXTENSIONS = {
 }
 _MODEL_AUDIT_MAX_FILE_BYTES = 512 * 1024
 _MODEL_AUDIT_MAX_DEEP_REFS_PER_PROJECT = 200
+_MODEL_AUDIT_MAX_RETURNED_REFERENCES = 5000
+_MODEL_AUDIT_MAX_RETURNED_REFERENCES_PER_ROW = 80
 
 
 def _sse_json(event: str, payload: Dict[str, Any]) -> str:
@@ -5127,8 +5129,11 @@ def _model_audit_build_result(
 ) -> Dict[str, Any]:
     lookup = pricing.get('lookup') or {}
     deduped = _model_audit_dedupe_refs(refs)
-    enriched_refs: List[Dict[str, Any]] = []
+    returned_refs: List[Dict[str, Any]] = []
+    returned_refs_by_row: Dict[str, int] = {}
     row_map: Dict[str, Dict[str, Any]] = {}
+    projects_with_refs = set()
+    references_found = 0
 
     for ref in deduped:
         classification = classify_model_reference(ref.get('rawString'), lookup)
@@ -5149,7 +5154,7 @@ def _model_audit_build_result(
             'modelPrice': classification.get('modelPrice'),
             'unknownReason': classification.get('unknownReason') or '',
         }
-        enriched_refs.append(enriched)
+        references_found += 1
 
         row = row_map.get(row_key)
         if row is None:
@@ -5177,6 +5182,7 @@ def _model_audit_build_result(
         project_key = str(enriched.get('projectKey') or '')
         if project_key:
             row['_projectKeys'].add(project_key)
+            projects_with_refs.add(project_key)
         source = str(enriched.get('source') or '')
         if source == 'used_recipe':
             row['usedCount'] += 1
@@ -5187,6 +5193,14 @@ def _model_audit_build_result(
         elif source == 'file_string':
             row['fileStringCount'] += 1
 
+        returned_for_row = returned_refs_by_row.get(row_key, 0)
+        if (
+            len(returned_refs) < _MODEL_AUDIT_MAX_RETURNED_REFERENCES
+            and returned_for_row < _MODEL_AUDIT_MAX_RETURNED_REFERENCES_PER_ROW
+        ):
+            returned_refs.append(enriched)
+            returned_refs_by_row[row_key] = returned_for_row + 1
+
     rows = []
     for row in row_map.values():
         row['projectCount'] = len(row.pop('_projectKeys', set()))
@@ -5196,8 +5210,12 @@ def _model_audit_build_result(
     rows.sort(key=lambda item: (severity.get(str(item.get('status') or ''), 9), -int(item.get('referenceCount') or 0), str(item.get('canonicalModel') or '')))
 
     summary = {
-        'projectsScanned': len({str(ref.get('projectKey') or '') for ref in deduped if ref.get('projectKey')}),
-        'referencesFound': len(enriched_refs),
+        'projectsScanned': len(projects_with_refs),
+        'referencesFound': references_found,
+        'referencesReturned': len(returned_refs),
+        'referencesTruncated': max(0, references_found - len(returned_refs)),
+        'referenceLimit': _MODEL_AUDIT_MAX_RETURNED_REFERENCES,
+        'referencePerRowLimit': _MODEL_AUDIT_MAX_RETURNED_REFERENCES_PER_ROW,
         'matchedModels': sum(1 for row in rows if row.get('status') != 'unknown'),
         'unknownModels': sum(1 for row in rows if row.get('status') == 'unknown'),
         'ripoffCount': sum(1 for row in rows if row.get('status') == 'ripoff'),
@@ -5216,8 +5234,16 @@ def _model_audit_build_result(
         'fetchedAt': pricing.get('fetchedAt') or '',
         'summary': summary,
         'rows': rows,
-        'references': enriched_refs,
+        'references': returned_refs,
         'errors': errors[:500],
+        'debug': {
+            'rawReferences': len(refs),
+            'dedupedReferences': len(deduped),
+            'returnedReferences': len(returned_refs),
+            'truncatedReferences': max(0, references_found - len(returned_refs)),
+            'rows': len(rows),
+            'errors': len(errors),
+        },
     }
 
 
@@ -5310,6 +5336,21 @@ def api_model_upgrade_audit_scan():
                         'progressPct': round((scanned / total) * 100, 2) if total else 100,
                     })
 
+            app.logger.info(
+                "[model-audit] scan complete mode=%s projects=%s raw_refs=%s errors=%s",
+                mode, scanned, len(all_refs), len(all_errors),
+            )
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'finalize',
+                'message': 'Project scan complete; building report',
+                'scanned': scanned,
+                'total': total,
+                'referencesFound': len(all_refs),
+                'errorsCount': len(all_errors),
+                'progressPct': 100,
+            })
+            build_started = time.time()
             result = _model_audit_build_result(
                 mode,
                 pricing,
@@ -5317,7 +5358,59 @@ def api_model_upgrade_audit_scan():
                 all_errors,
                 (time.time() - started) * 1000.0,
             )
-            yield _sse_json('done', result)
+            build_ms = (time.time() - build_started) * 1000.0
+            result.setdefault('debug', {})['buildElapsedMs'] = round(build_ms, 2)
+            summary = result.get('summary') or {}
+            app.logger.info(
+                "[model-audit] report built mode=%s rows=%s refs_found=%s refs_returned=%s truncated=%s build_ms=%.2f",
+                mode,
+                len(result.get('rows') or []),
+                summary.get('referencesFound'),
+                summary.get('referencesReturned'),
+                summary.get('referencesTruncated'),
+                build_ms,
+            )
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'finalize',
+                'message': 'Report built',
+                'scanned': scanned,
+                'total': total,
+                'referencesFound': summary.get('referencesFound') or 0,
+                'referencesReturned': summary.get('referencesReturned') or 0,
+                'referencesTruncated': summary.get('referencesTruncated') or 0,
+                'rowsCount': len(result.get('rows') or []),
+                'errorsCount': len(all_errors),
+                'buildElapsedMs': round(build_ms, 2),
+                'progressPct': 100,
+            })
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'serialize',
+                'message': 'Serializing final report',
+                'scanned': scanned,
+                'total': total,
+                'progressPct': 100,
+            })
+            serialize_started = time.time()
+            done_event = _sse_json('done', result)
+            serialize_ms = (time.time() - serialize_started) * 1000.0
+            payload_bytes = len(done_event.encode('utf-8'))
+            app.logger.info(
+                "[model-audit] report serialized mode=%s bytes=%s serialize_ms=%.2f",
+                mode, payload_bytes, serialize_ms,
+            )
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'send',
+                'message': 'Sending final report',
+                'scanned': scanned,
+                'total': total,
+                'payloadBytes': payload_bytes,
+                'serializeElapsedMs': round(serialize_ms, 2),
+                'progressPct': 100,
+            })
+            yield done_event
         except GeneratorExit:
             return
         except Exception as exc:

@@ -418,6 +418,23 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           const auditStartTs = new Date().toISOString().slice(11, 19);
           let lastLoggedScanned = -1;
           let lastLoggedPhase = '';
+          let lastEventAt = Date.now();
+          let auditPhase = 'starting';
+          let auditScanned = 0;
+          let auditTotal = 0;
+          let auditRefs = 0;
+          let receivedBytes = 0;
+          let sawDone = false;
+          let sawFullScan = false;
+          const watchdog = setInterval(() => {
+            if (sawDone || cancelled) return;
+            const quietMs = Date.now() - lastEventAt;
+            const level = sawFullScan && quietMs > 10000 ? 'warn' : 'info';
+            log(
+              `Model audit waiting phase=${auditPhase} scanned=${auditScanned}/${auditTotal || '?'} refs=${auditRefs} bytes=${receivedBytes} quietMs=${quietMs}`,
+              level,
+            );
+          }, 10000);
           setModelAuditLoading({
             active: true,
             progressPct: 0,
@@ -433,6 +450,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               const body = await response.text();
               throw new Error(`Model audit failed: ${response.status} ${response.statusText} ${body.slice(0, 160)}`);
             }
+            log(`Model audit stream opened status=${response.status} contentType=${response.headers.get('content-type') || '-'}`);
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -447,6 +465,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               const { done, value } = await reader.read();
               if (done) break;
 
+              receivedBytes += value.byteLength;
               buffer += decoder.decode(value, { stream: true });
               const parts = buffer.split('\n\n');
               buffer = parts.pop() || '';
@@ -462,9 +481,12 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 } catch {
                   continue;
                 }
+                lastEventAt = Date.now();
 
                 if (eventType === 'init') {
                   total = Number(payload.total || 0);
+                  auditPhase = 'catalog';
+                  auditTotal = total;
                   setModelAuditLoading({
                     active: true,
                     progressPct: 0,
@@ -479,6 +501,10 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   const phase = String(payload.phase || 'running');
                   const message = String(payload.message || '');
                   if (totalProjects > 0) total = totalProjects;
+                  auditPhase = phase;
+                  auditScanned = scanned;
+                  auditTotal = totalProjects || total;
+                  auditRefs = Number(payload.referencesFound || auditRefs || 0);
                   setModelAuditLoading({
                     active: true,
                     progressPct,
@@ -487,9 +513,14 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                       ? `Model audit: ${scanned}/${totalProjects} projects`
                       : message || 'Model audit running',
                   });
-                  if (phase !== lastLoggedPhase && message) {
+                  const phaseMessageKey = `${phase}:${message}`;
+                  if (phaseMessageKey !== lastLoggedPhase && message) {
                     log(`Model audit: ${message}`);
-                    lastLoggedPhase = phase;
+                    lastLoggedPhase = phaseMessageKey;
+                  }
+                  if (totalProjects > 0 && scanned === totalProjects && !sawFullScan) {
+                    sawFullScan = true;
+                    log(`Model audit scanned all projects; waiting for final report refs=${auditRefs}`);
                   }
                   if (
                     totalProjects > 0 &&
@@ -502,9 +533,11 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                     );
                   }
                 } else if (eventType === 'done') {
+                  sawDone = true;
+                  const donePayload = payload as unknown as ModelAuditResult;
                   currentParsedData = {
                     ...currentParsedData,
-                    modelAudit: payload as unknown as ModelAuditResult,
+                    modelAudit: donePayload,
                   };
                   dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
                   setModelAuditLoading({
@@ -515,12 +548,20 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                   });
                   recordTiming(auditPath, nowMs() - auditStart);
                   log(`GET ${auditPath} OK (${fmtMs(auditStart)}) [${auditStartTs}→${new Date().toISOString().slice(11, 19)}]`);
-                  const summary = (payload as unknown as ModelAuditResult).summary;
+                  const summary = donePayload.summary;
+                  log(
+                    `Model audit done rows=${donePayload.rows?.length || 0} refsFound=${summary?.referencesFound || 0} refsReturned=${summary?.referencesReturned || donePayload.references?.length || 0} truncated=${summary?.referencesTruncated || 0} bytes=${receivedBytes}`,
+                  );
                   log(`Loaded model upgrade audit (${summary?.referencesFound || 0} refs, ${summary?.ripoffCount || 0} ripoff models)`);
                 } else if (eventType === 'error') {
                   throw new Error(String(payload.error || 'Model audit error'));
                 }
               }
+            }
+            if (!sawDone) {
+              throw new Error(
+                `Model audit stream ended before done event phase=${auditPhase} scanned=${auditScanned}/${auditTotal || '?'} refs=${auditRefs} bytes=${receivedBytes}`,
+              );
             }
           } catch (err) {
             recordTiming(auditPath, nowMs() - auditStart, 'fail');
@@ -531,6 +572,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               message: 'Model audit failed',
             });
             log(`GET ${auditPath} failed (${fmtMs(auditStart)}): ${getErrorMessage(err)}`, 'warn');
+          } finally {
+            clearInterval(watchdog);
           }
         };
         const modelAuditGate = runModelUpgradeAudit();
