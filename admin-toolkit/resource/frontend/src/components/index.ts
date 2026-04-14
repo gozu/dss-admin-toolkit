@@ -15,6 +15,7 @@ export { FilesystemChart } from './FilesystemChart';
 export { ConnectionsChart } from './ConnectionsChart';
 export { ConnectionHealthCard } from './ConnectionHealthCard';
 export { ConnectionUsageCard } from './ConnectionUsageCard';
+export { ModelUpgradeAuditReport } from './ModelUpgradeAuditReport';
 export { MemoryChart } from './MemoryChart';
 export { MemoryAnalysisCard } from './MemoryAnalysisCard';
 export { Modal } from './Modal';
