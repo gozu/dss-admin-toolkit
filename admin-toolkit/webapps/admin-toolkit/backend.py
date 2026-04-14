@@ -5234,10 +5234,26 @@ def api_model_upgrade_audit_scan():
                 yield _sse_json('error', {'error': 'LiteLLM model audit helper failed to import'})
                 return
 
+            yield _sse_json('init', {'mode': mode, 'total': 0})
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'catalog',
+                'message': 'Loading project catalog',
+                'scanned': 0,
+                'total': 0,
+                'progressPct': 0,
+            })
             client = dataiku.api_client()
             projects = _list_projects_catalog(client)
             total = len(projects)
-            yield _sse_json('init', {'mode': mode, 'total': total})
+            yield _sse_json('progress', {
+                'mode': mode,
+                'phase': 'catalog',
+                'message': f'Loaded project catalog ({total} projects)',
+                'scanned': 0,
+                'total': total,
+                'progressPct': 0,
+            })
 
             yield _sse_json('progress', {
                 'mode': mode,

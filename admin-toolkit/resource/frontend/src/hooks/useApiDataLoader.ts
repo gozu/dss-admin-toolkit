@@ -412,6 +412,128 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           };
           dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
         };
+        const runModelUpgradeAudit = async () => {
+          const auditPath = '/api/tools/model-upgrade-audit/scan?mode=used_available';
+          const auditStart = nowMs();
+          const auditStartTs = new Date().toISOString().slice(11, 19);
+          let lastLoggedScanned = -1;
+          let lastLoggedPhase = '';
+          setModelAuditLoading({
+            active: true,
+            progressPct: 0,
+            phase: 'starting',
+            message: 'Starting model upgrade audit',
+            startedAt: new Date().toISOString(),
+          });
+          log(`GET ${auditPath}`);
+          try {
+            const url = getBackendUrl(auditPath);
+            const response = await fetch(url, { credentials: 'same-origin' });
+            if (!response.ok || !response.body) {
+              const body = await response.text();
+              throw new Error(`Model audit failed: ${response.status} ${response.statusText} ${body.slice(0, 160)}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let total = 0;
+
+            while (true) {
+              if (cancelled) {
+                reader.cancel();
+                return;
+              }
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const parts = buffer.split('\n\n');
+              buffer = parts.pop() || '';
+
+              for (const part of parts) {
+                const eventMatch = part.match(/^event:\s*(\S+)/m);
+                const dataMatch = part.match(/^data:\s*(.*)/m);
+                if (!eventMatch || !dataMatch) continue;
+                const eventType = eventMatch[1];
+                let payload: Record<string, unknown>;
+                try {
+                  payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+                } catch {
+                  continue;
+                }
+
+                if (eventType === 'init') {
+                  total = Number(payload.total || 0);
+                  setModelAuditLoading({
+                    active: true,
+                    progressPct: 0,
+                    phase: 'catalog',
+                    message: total > 0 ? `Model audit: ${total} projects queued` : 'Model audit: discovering projects',
+                  });
+                  log(total > 0 ? `Model audit queued (${total} projects)` : 'Model audit queued, discovering projects');
+                } else if (eventType === 'progress') {
+                  const progressPct = Math.max(0, Math.min(100, Number(payload.progressPct || 0)));
+                  const scanned = Number(payload.scanned || 0);
+                  const totalProjects = Number(payload.total || total || 0);
+                  const phase = String(payload.phase || 'running');
+                  const message = String(payload.message || '');
+                  if (totalProjects > 0) total = totalProjects;
+                  setModelAuditLoading({
+                    active: true,
+                    progressPct,
+                    phase,
+                    message: totalProjects > 0
+                      ? `Model audit: ${scanned}/${totalProjects} projects`
+                      : message || 'Model audit running',
+                  });
+                  if (phase !== lastLoggedPhase && message) {
+                    log(`Model audit: ${message}`);
+                    lastLoggedPhase = phase;
+                  }
+                  if (
+                    totalProjects > 0 &&
+                    scanned > 0 &&
+                    (scanned === totalProjects || lastLoggedScanned < 0 || scanned - lastLoggedScanned >= 50)
+                  ) {
+                    lastLoggedScanned = scanned;
+                    log(
+                      `Model audit progress ${scanned}/${totalProjects} refs=${Number(payload.referencesFound || 0)} errors=${Number(payload.errorsCount || 0)}`,
+                    );
+                  }
+                } else if (eventType === 'done') {
+                  currentParsedData = {
+                    ...currentParsedData,
+                    modelAudit: payload as unknown as ModelAuditResult,
+                  };
+                  dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+                  setModelAuditLoading({
+                    active: false,
+                    progressPct: 100,
+                    phase: 'done',
+                    message: 'Model audit completed',
+                  });
+                  recordTiming(auditPath, nowMs() - auditStart);
+                  log(`GET ${auditPath} OK (${fmtMs(auditStart)}) [${auditStartTs}→${new Date().toISOString().slice(11, 19)}]`);
+                  const summary = (payload as unknown as ModelAuditResult).summary;
+                  log(`Loaded model upgrade audit (${summary?.referencesFound || 0} refs, ${summary?.ripoffCount || 0} ripoff models)`);
+                } else if (eventType === 'error') {
+                  throw new Error(String(payload.error || 'Model audit error'));
+                }
+              }
+            }
+          } catch (err) {
+            recordTiming(auditPath, nowMs() - auditStart, 'fail');
+            setModelAuditLoading({
+              active: false,
+              progressPct: 0,
+              phase: 'error',
+              message: 'Model audit failed',
+            });
+            log(`GET ${auditPath} failed (${fmtMs(auditStart)}): ${getErrorMessage(err)}`, 'warn');
+          }
+        };
+        const modelAuditGate = runModelUpgradeAudit();
         log('Phase 1 complete (overview + settings)');
 
         // Phase 2: load secondary data in parallel
@@ -1417,104 +1539,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           }
         };
 
-        const runModelUpgradeAudit = async () => {
-          setModelAuditLoading({
-            active: true,
-            progressPct: 0,
-            phase: 'starting',
-            message: 'Starting model upgrade audit',
-            startedAt: new Date().toISOString(),
-          });
-          try {
-            const url = getBackendUrl('/api/tools/model-upgrade-audit/scan?mode=used_available');
-            const response = await fetch(url, { credentials: 'same-origin' });
-            if (!response.ok || !response.body) {
-              const body = await response.text();
-              throw new Error(`Model audit failed: ${response.status} ${response.statusText} ${body.slice(0, 160)}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let total = 0;
-
-            while (true) {
-              if (cancelled) {
-                reader.cancel();
-                return;
-              }
-              const { done, value } = await reader.read();
-              if (done) break;
-
-              buffer += decoder.decode(value, { stream: true });
-              const parts = buffer.split('\n\n');
-              buffer = parts.pop() || '';
-
-              for (const part of parts) {
-                const eventMatch = part.match(/^event:\s*(\S+)/m);
-                const dataMatch = part.match(/^data:\s*(.*)/m);
-                if (!eventMatch || !dataMatch) continue;
-                const eventType = eventMatch[1];
-                let payload: Record<string, unknown>;
-                try {
-                  payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
-                } catch {
-                  continue;
-                }
-
-                if (eventType === 'init') {
-                  total = Number(payload.total || 0);
-                  setModelAuditLoading({
-                    active: true,
-                    progressPct: 0,
-                    phase: 'catalog',
-                    message: total > 0 ? `Model audit: ${total} projects queued` : 'Model audit: discovering projects',
-                  });
-                } else if (eventType === 'progress') {
-                  const progressPct = Math.max(0, Math.min(100, Number(payload.progressPct || 0)));
-                  const scanned = Number(payload.scanned || 0);
-                  const totalProjects = Number(payload.total || total || 0);
-                  const phase = String(payload.phase || 'running');
-                  setModelAuditLoading({
-                    active: true,
-                    progressPct,
-                    phase,
-                    message: totalProjects > 0
-                      ? `Model audit: ${scanned}/${totalProjects} projects`
-                      : String(payload.message || 'Model audit running'),
-                  });
-                } else if (eventType === 'done') {
-                  currentParsedData = {
-                    ...currentParsedData,
-                    modelAudit: payload as unknown as ModelAuditResult,
-                  };
-                  dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
-                  setModelAuditLoading({
-                    active: false,
-                    progressPct: 100,
-                    phase: 'done',
-                    message: 'Model audit completed',
-                  });
-                  const summary = (payload as unknown as ModelAuditResult).summary;
-                  log(`Loaded model upgrade audit (${summary?.referencesFound || 0} refs, ${summary?.ripoffCount || 0} ripoff models)`);
-                } else if (eventType === 'error') {
-                  throw new Error(String(payload.error || 'Model audit error'));
-                }
-              }
-            }
-          } catch (err) {
-            setModelAuditLoading({
-              active: false,
-              progressPct: 0,
-              phase: 'error',
-              message: 'Model audit failed',
-            });
-            log(`Model upgrade audit failed: ${getErrorMessage(err)}`, 'warn');
-          }
-        };
-
         log(
-          'Phase 3 strategy: launch code-envs + project-footprint + connection-health + model-audit in parallel; defer dir-tree until Directory page is opened',
+          'Phase 3 strategy: launch code-envs + project-footprint + connection-health in parallel; model-audit already started in Phase 1; defer dir-tree until Directory page is opened',
         );
         const phase3Start = nowMs();
         const heavyStart = nowMs();
@@ -1522,7 +1548,6 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         projectFootprintStarted = true;
         const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
         const connectionHealthGate = runConnectionHealth();
-        const modelAuditGate = runModelUpgradeAudit();
         log('Deferred /api/dir-tree until Directory page is opened');
         prefetchInactiveProjects(); // warm cache for Project Cleaner
         const lowGate = Promise.allSettled([runProjects(), runLogs()]);
