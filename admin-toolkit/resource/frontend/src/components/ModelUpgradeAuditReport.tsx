@@ -62,7 +62,6 @@ async function readModelAuditStream(
     onInit: (payload: Record<string, unknown>) => void;
     onProgress: (payload: Record<string, unknown>) => void;
     onDone: (payload: ModelAuditResult) => void;
-    onDebug?: (message: string, level?: 'info' | 'warn' | 'error') => void;
   },
 ) {
   const url = getBackendUrl(`/api/tools/model-upgrade-audit/scan?mode=${mode}`);
@@ -71,19 +70,15 @@ async function readModelAuditStream(
     const body = await response.text();
     throw new Error(`Scan failed: ${response.status} ${response.statusText} ${body.slice(0, 160)}`);
   }
-  handlers.onDebug?.(`stream opened mode=${mode} status=${response.status} contentType=${response.headers.get('content-type') || '-'}`);
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let receivedBytes = 0;
-  let sawDone = false;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
 
-    receivedBytes += value.byteLength;
     buffer += decoder.decode(value, { stream: true });
     const parts = buffer.split('\n\n');
     buffer = parts.pop() || '';
@@ -103,21 +98,14 @@ async function readModelAuditStream(
 
       if (eventType === 'init') handlers.onInit(payload);
       if (eventType === 'progress') handlers.onProgress(payload);
-      if (eventType === 'done') {
-        sawDone = true;
-        handlers.onDebug?.(`done event received mode=${mode} bytes=${receivedBytes}`);
-        handlers.onDone(payload as unknown as ModelAuditResult);
-      }
+      if (eventType === 'done') handlers.onDone(payload as unknown as ModelAuditResult);
       if (eventType === 'error') throw new Error(String(payload.error || 'Scan error'));
     }
-  }
-  if (!sawDone) {
-    throw new Error(`Scan stream ended before done event mode=${mode} bytes=${receivedBytes}`);
   }
 }
 
 export function ModelUpgradeAuditReport() {
-  const { state, setParsedData, addDebugLog } = useDiag();
+  const { state, setParsedData } = useDiag();
   const audit = state.parsedData.modelAudit || null;
   const loading = state.parsedData.modelAuditLoading;
   const isLoading = Boolean(loading?.active);
@@ -128,22 +116,13 @@ export function ModelUpgradeAuditReport() {
   const [sortKey, setSortKey] = useState<SortKey>('status');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const debugAudit = useCallback(
-    (message: string, level: 'info' | 'warn' | 'error' = 'info') => {
-      addDebugLog(`Model audit UI: ${message}`, 'model-audit', level);
-    },
-    [addDebugLog],
-  );
 
   const runScan = useCallback(
     async (mode: ModelAuditMode) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-      let lastProgressKey = '';
-      let sawFullScan = false;
       setError(null);
-      debugAudit(`starting manual scan mode=${mode}`);
       setParsedData({
         modelAuditLoading: {
           active: true,
@@ -157,7 +136,6 @@ export function ModelUpgradeAuditReport() {
 
       try {
         await readModelAuditStream(mode, controller.signal, {
-          onDebug: debugAudit,
           onInit: (payload) => {
             const total = Number(payload.total || 0);
             setParsedData({
@@ -170,19 +148,16 @@ export function ModelUpgradeAuditReport() {
                 updatedAt: new Date().toISOString(),
               },
             });
-            debugAudit(total > 0 ? `manual scan queued mode=${mode} projects=${total}` : `manual scan queued mode=${mode}`);
           },
           onProgress: (payload) => {
             const progressPct = Math.max(0, Math.min(100, Number(payload.progressPct || 0)));
             const scanned = Number(payload.scanned || 0);
             const total = Number(payload.total || 0);
-            const phase = String(payload.phase || mode);
-            const message = String(payload.message || '');
             setParsedData({
               modelAuditLoading: {
                 active: true,
                 progressPct,
-                phase,
+                phase: String(payload.phase || mode),
                 message: total > 0
                   ? `${modeLabel(mode)} scan: ${scanned}/${total} projects`
                   : String(payload.message || `${modeLabel(mode)} scan running`),
@@ -190,15 +165,6 @@ export function ModelUpgradeAuditReport() {
                 updatedAt: new Date().toISOString(),
               },
             });
-            const progressKey = `${phase}:${message}`;
-            if (message && progressKey !== lastProgressKey) {
-              lastProgressKey = progressKey;
-              debugAudit(`manual scan ${mode}: ${message}`);
-            }
-            if (total > 0 && scanned === total && !sawFullScan) {
-              sawFullScan = true;
-              debugAudit(`manual scan ${mode}: scanned all projects; waiting for final report refs=${Number(payload.referencesFound || 0)}`);
-            }
           },
           onDone: (payload) => {
             setParsedData({
@@ -212,16 +178,12 @@ export function ModelUpgradeAuditReport() {
                 updatedAt: new Date().toISOString(),
               },
             });
-            debugAudit(
-              `manual scan ${mode}: done rows=${payload.rows?.length || 0} refsFound=${payload.summary?.referencesFound || 0} refsReturned=${payload.summary?.referencesReturned || payload.references?.length || 0} truncated=${payload.summary?.referencesTruncated || 0}`,
-            );
           },
         });
       } catch (err) {
         if ((err as Error).name === 'AbortError') return;
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
-        debugAudit(`manual scan ${mode}: failed ${message}`, 'warn');
         setParsedData({
           modelAuditLoading: {
             active: false,
@@ -236,12 +198,11 @@ export function ModelUpgradeAuditReport() {
         abortRef.current = null;
       }
     },
-    [debugAudit, loading?.startedAt, setParsedData],
+    [loading?.startedAt, setParsedData],
   );
 
   const abortScan = useCallback(() => {
     abortRef.current?.abort();
-    debugAudit('manual scan aborted', 'warn');
     setParsedData({
       modelAuditLoading: {
         active: false,
@@ -252,7 +213,7 @@ export function ModelUpgradeAuditReport() {
         updatedAt: new Date().toISOString(),
       },
     });
-  }, [debugAudit, loading?.startedAt, setParsedData]);
+  }, [loading?.startedAt, setParsedData]);
 
   const referencesByRow = useMemo(() => {
     const map = new Map<string, ModelAuditReference[]>();
