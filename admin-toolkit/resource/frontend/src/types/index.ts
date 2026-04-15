@@ -429,91 +429,6 @@ export interface ConnectionUsageItem {
   recipeCount?: number;
 }
 
-export type ModelAuditMode = 'used_available' | 'metadata' | 'deep_files';
-export type ModelAuditStatus = 'ripoff' | 'obsolete' | 'current' | 'unknown';
-export type ModelAuditSource = 'used_recipe' | 'available_llm' | 'metadata' | 'file_string';
-
-export interface ModelAuditPrice {
-  input_usd_per_1m_tokens: number;
-  output_usd_per_1m_tokens: number;
-}
-
-export interface ModelAuditSummary {
-  projectsScanned: number;
-  referencesFound: number;
-  matchedModels: number;
-  unknownModels: number;
-  ripoffCount: number;
-  obsoleteCount: number;
-  currentCount: number;
-  usedCount: number;
-  availableOnlyCount: number;
-  metadataCount: number;
-  fileStringCount: number;
-  errorsCount: number;
-  elapsedMs: number;
-}
-
-export interface ModelAuditRow {
-  rowKey: string;
-  canonicalModel: string;
-  provider: string;
-  family: string;
-  status: ModelAuditStatus;
-  currentModel: string;
-  currentPrice: ModelAuditPrice | null;
-  modelPrice: ModelAuditPrice | null;
-  unknownReason: string;
-  referenceCount: number;
-  projectCount: number;
-  usedCount: number;
-  availableOnlyCount: number;
-  metadataCount: number;
-  fileStringCount: number;
-}
-
-export interface ModelAuditReference {
-  rowKey: string;
-  projectKey: string;
-  projectName: string;
-  projectOwner: string;
-  source: ModelAuditSource;
-  rawString: string;
-  modelCandidates: string[];
-  context: string;
-  contextType: string;
-  label: string;
-  confidence: 'high' | 'medium' | 'low';
-  matched: boolean;
-  matchedCandidate: string;
-  canonicalModel: string;
-  provider: string;
-  family: string;
-  status: ModelAuditStatus;
-  currentModel: string;
-  currentPrice: ModelAuditPrice | null;
-  modelPrice: ModelAuditPrice | null;
-  unknownReason: string;
-}
-
-export interface ModelAuditError {
-  projectKey: string;
-  projectName: string;
-  projectOwner: string;
-  scope: string;
-  message: string;
-}
-
-export interface ModelAuditResult {
-  mode: ModelAuditMode;
-  sourceUrl: string;
-  fetchedAt: string;
-  summary: ModelAuditSummary;
-  rows: ModelAuditRow[];
-  references: ModelAuditReference[];
-  errors: ModelAuditError[];
-}
-
 // User stats
 export type UserStats = Record<string, string | number>;
 
@@ -593,8 +508,6 @@ export interface ParsedData {
   connectionLlmUsages?: ConnectionUsageItem[];
   connectionUsageTotal?: number | null;
   connectionUsageScanned?: number | null;
-  modelAudit?: ModelAuditResult | null;
-  modelAuditLoading?: LoadingProgressState;
   userStats?: UserStats;
   usersByProjects?: Record<string, string>;
   users?: User[];

@@ -22,23 +22,6 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-try:
-    from litellm_model_audit import (
-        LITELLM_PRICING_URL,
-        candidate_model_ids,
-        classify_model_reference,
-        extract_model_strings_from_text,
-        fetch_pricing_lookup,
-        iter_structured_model_values,
-    )
-    _model_audit_available = True
-except Exception:
-    LITELLM_PRICING_URL = (
-        "https://raw.githubusercontent.com/BerriAI/litellm/main/"
-        "model_prices_and_context_window.json"
-    )
-    _model_audit_available = False
-
 # Suppress noisy per-request and per-project scan logging
 logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
@@ -85,14 +68,12 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'cache_ttl_plugins': 600,
     'cache_ttl_log_errors': 600,
     'cache_ttl_dir_tree': 600,
-    'cache_ttl_model_audit': 600,
     # Frontend API timeouts (served to frontend for sync)
     'fe_timeout_code_envs': 620000,
     'fe_timeout_project_footprint': 620000,
     'fe_timeout_projects': 45000,
     'fe_timeout_logs': 30000,
     'fe_timeout_llm_analysis': 120000,
-    'fe_timeout_model_audit': 600000,
     # Tracking
     'sqlite_connect_timeout': 30,
     'tracking_issue_page_size': 500,
@@ -2141,8 +2122,6 @@ def _normalize_language(lang_raw: Any) -> str:
 def _safe_get_raw(obj: Any) -> Dict[str, Any]:
     if obj is None:
         return {}
-    if isinstance(obj, dict):
-        return obj
     if hasattr(obj, 'get_raw'):
         try:
             raw = obj.get_raw()
@@ -4541,6 +4520,20 @@ def api_connection_usages():
     - LLM recipe connections (llmId field in recipe payload)
     """
 
+    _LLM_RECIPE_PREFIXES = ('prompt', 'nlp_llm_')
+
+    def _find_llm_ids(d):
+        """Recursively find all llmId values in a dict/list."""
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k == 'llmId' and isinstance(v, str) and v:
+                    yield v
+                else:
+                    yield from _find_llm_ids(v)
+        elif isinstance(d, list):
+            for item in d:
+                yield from _find_llm_ids(item)
+
     def _scan_project(project_key):
         """Scan one project for dataset connections and LLM connections."""
         client = _thread_client()
@@ -4570,16 +4563,24 @@ def api_connection_usages():
 
         # 2. LLM recipe connections
         try:
-            recipes = _model_audit_list_recipes(proj, project_key)
+            recipes = proj.list_recipes()
             llm_recipes = [r for r in recipes
-                           if r.get('type', '').startswith(_MODEL_AUDIT_LLM_RECIPE_PREFIXES)
+                           if r.get('type', '').startswith(_LLM_RECIPE_PREFIXES)
                            or 'llm' in r.get('type', '').lower()]
             for r in llm_recipes:
                 try:
-                    payload = _model_audit_recipe_payload(proj, project_key, r['name'])
+                    recipe = proj.get_recipe(r['name'])
+                    settings = recipe.get_settings()
+                    payload = settings.get_json_payload() if hasattr(settings, 'get_json_payload') else None
+                    if not payload:
+                        raw_str = settings.get_payload() if hasattr(settings, 'get_payload') else ''
+                        try:
+                            payload = json.loads(raw_str) if raw_str else {}
+                        except Exception:
+                            payload = {}
                     if not payload:
                         continue
-                    for llm_id in _find_llm_ids_in_payload(payload):
+                    for llm_id in _find_llm_ids(payload):
                         parts = llm_id.split(':')
                         if len(parts) >= 3:
                             conn_name = parts[1]
@@ -4695,618 +4696,6 @@ def api_connection_usages():
             'datasetUsages': dataset_usages,
             'llmUsages': llm_usages,
         })
-
-    return Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
-
-
-# ── LLM model upgrade audit ─────────────────────────────────────────────────
-
-_MODEL_AUDIT_MODES = {'used_available', 'metadata', 'deep_files'}
-_MODEL_AUDIT_LLM_RECIPE_PREFIXES = ('prompt', 'nlp_llm_')
-_MODEL_AUDIT_TEXT_EXTENSIONS = {
-    '.py', '.r', '.sql', '.scala', '.java', '.js', '.jsx', '.ts', '.tsx',
-    '.json', '.yaml', '.yml', '.txt', '.md', '.sh', '.ipynb', '.html', '.xml',
-    '.properties', '.conf', '.ini', '.toml',
-}
-_MODEL_AUDIT_MAX_FILE_BYTES = 512 * 1024
-_MODEL_AUDIT_MAX_DEEP_REFS_PER_PROJECT = 200
-
-
-def _sse_json(event: str, payload: Dict[str, Any]) -> str:
-    return "event: %s\ndata: %s\n\n" % (event, json.dumps(_json_safe(payload), separators=(',', ':')))
-
-
-def _find_llm_ids_in_payload(payload: Any) -> List[str]:
-    out: List[str] = []
-
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if str(key) == 'llmId' and isinstance(child, str) and child.strip():
-                    out.append(child.strip())
-                else:
-                    visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(payload)
-    return out
-
-
-def _model_audit_pricing() -> Dict[str, Any]:
-    if not _model_audit_available:
-        raise RuntimeError('LiteLLM model audit helper is not available')
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-    return _cache_get('litellm_model_audit_pricing', ttl, lambda: fetch_pricing_lookup(timeout=20))
-
-
-def _model_audit_project_meta(project_entry: Dict[str, Any]) -> Dict[str, str]:
-    key = str(project_entry.get('key') or project_entry.get('projectKey') or '').strip()
-    return {
-        'projectKey': key,
-        'projectName': str(project_entry.get('name') or key),
-        'projectOwner': str(project_entry.get('owner') or 'Unknown'),
-    }
-
-
-def _model_audit_ref(
-    project_meta: Dict[str, str],
-    source: str,
-    raw_string: Any,
-    context: str = '',
-    context_type: str = '',
-    confidence: str = 'high',
-    label: str = '',
-) -> Optional[Dict[str, Any]]:
-    raw = str(raw_string or '').strip()
-    if not raw:
-        return None
-    try:
-        candidates = candidate_model_ids(raw) if _model_audit_available else []
-    except Exception:
-        candidates = []
-    if not candidates:
-        return None
-    return {
-        **project_meta,
-        'source': source,
-        'rawString': raw,
-        'modelCandidates': candidates,
-        'context': context,
-        'contextType': context_type,
-        'label': label,
-        'confidence': confidence,
-    }
-
-
-def _model_audit_recipe_payload(project_obj: Any, project_key: str, recipe_name: str) -> Dict[str, Any]:
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-
-    def loader() -> Dict[str, Any]:
-        recipe = project_obj.get_recipe(recipe_name)
-        settings = recipe.get_settings()
-        payload = None
-        if hasattr(settings, 'get_json_payload'):
-            try:
-                payload = settings.get_json_payload()
-            except Exception:
-                payload = None
-        if not payload and hasattr(settings, 'get_payload'):
-            try:
-                raw_str = settings.get_payload()
-                payload = json.loads(raw_str) if raw_str else {}
-            except Exception:
-                payload = {}
-        if isinstance(payload, dict):
-            return payload
-        return {}
-
-    return _sdk_fetch(f'model_audit:recipe_payload:{project_key}:{recipe_name}', ttl, loader) or {}
-
-
-def _model_audit_list_project_llms(project_obj: Any, project_key: str) -> List[Dict[str, Any]]:
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-
-    def loader() -> List[Dict[str, Any]]:
-        if not hasattr(project_obj, 'list_llms'):
-            return []
-        attempts = (
-            lambda: project_obj.list_llms(purpose='GENERIC_COMPLETION'),
-            lambda: project_obj.list_llms(),
-        )
-        for attempt in attempts:
-            try:
-                rows = attempt() or []
-                return [row for row in rows if isinstance(row, dict)]
-            except TypeError:
-                continue
-            except Exception:
-                continue
-        return []
-
-    return _sdk_fetch(f'model_audit:list_llms:{project_key}', ttl, loader) or []
-
-
-def _model_audit_list_recipes(project_obj: Any, project_key: str) -> List[Dict[str, Any]]:
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-    return _sdk_fetch(f'model_audit:list_recipes:{project_key}', ttl, lambda: project_obj.list_recipes() or []) or []
-
-
-def _model_audit_structured_refs(
-    project_meta: Dict[str, str],
-    source: str,
-    payload: Any,
-    context: str,
-    context_type: str,
-    confidence: str = 'medium',
-) -> List[Dict[str, Any]]:
-    refs: List[Dict[str, Any]] = []
-    if not _model_audit_available:
-        return refs
-    try:
-        for path, raw in iter_structured_model_values(payload):
-            ref = _model_audit_ref(
-                project_meta,
-                source,
-                raw,
-                context=f"{context} {path}".strip(),
-                context_type=context_type,
-                confidence=confidence,
-            )
-            if ref:
-                refs.append(ref)
-    except Exception:
-        pass
-    return refs
-
-
-def _model_audit_scan_default_project(project_entry: Dict[str, Any]) -> Dict[str, Any]:
-    meta = _model_audit_project_meta(project_entry)
-    project_key = meta['projectKey']
-    refs: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-    if not project_key:
-        return {'refs': refs, 'errors': errors}
-
-    client = _thread_client()
-    try:
-        project_obj = client.get_project(project_key)
-    except Exception as exc:
-        return {
-            'refs': refs,
-            'errors': [{**meta, 'scope': 'project', 'message': str(exc)[:300]}],
-        }
-
-    try:
-        recipes = _model_audit_list_recipes(project_obj, project_key)
-        llm_recipes = [
-            recipe for recipe in recipes
-            if str(recipe.get('type') or '').startswith(_MODEL_AUDIT_LLM_RECIPE_PREFIXES)
-            or 'llm' in str(recipe.get('type') or '').lower()
-        ]
-        for recipe in llm_recipes:
-            recipe_name = str(recipe.get('name') or '').strip()
-            if not recipe_name:
-                continue
-            try:
-                payload = _model_audit_recipe_payload(project_obj, project_key, recipe_name)
-                for llm_id in _find_llm_ids_in_payload(payload):
-                    ref = _model_audit_ref(
-                        meta,
-                        'used_recipe',
-                        llm_id,
-                        context=recipe_name,
-                        context_type=str(recipe.get('type') or 'recipe'),
-                        confidence='high',
-                        label=recipe_name,
-                    )
-                    if ref:
-                        refs.append(ref)
-            except Exception as exc:
-                errors.append({**meta, 'scope': f"recipe:{recipe_name}", 'message': str(exc)[:300]})
-    except Exception as exc:
-        errors.append({**meta, 'scope': 'recipes', 'message': str(exc)[:300]})
-
-    try:
-        for llm in _model_audit_list_project_llms(project_obj, project_key):
-            llm_id = llm.get('id') or llm.get('llmId') or llm.get('model') or llm.get('modelId')
-            label = str(llm.get('friendlyName') or llm.get('label') or llm_id or '').strip()
-            ref = _model_audit_ref(
-                meta,
-                'available_llm',
-                llm_id,
-                context=label,
-                context_type=str(llm.get('type') or 'llm'),
-                confidence='medium',
-                label=label,
-            )
-            if ref:
-                refs.append(ref)
-    except Exception as exc:
-        errors.append({**meta, 'scope': 'list_llms', 'message': str(exc)[:300]})
-
-    return {'refs': refs, 'errors': errors}
-
-
-def _model_audit_scan_metadata_project(project_entry: Dict[str, Any]) -> Dict[str, Any]:
-    meta = _model_audit_project_meta(project_entry)
-    project_key = meta['projectKey']
-    refs: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-    if not project_key:
-        return {'refs': refs, 'errors': errors}
-
-    client = _thread_client()
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-    try:
-        project_obj = client.get_project(project_key)
-    except Exception as exc:
-        return {'refs': refs, 'errors': [{**meta, 'scope': 'project', 'message': str(exc)[:300]}]}
-
-    try:
-        recipes = _model_audit_list_recipes(project_obj, project_key)
-        for recipe in recipes:
-            recipe_name = str(recipe.get('name') or '').strip()
-            if not recipe_name:
-                continue
-            try:
-                payload = _model_audit_recipe_payload(project_obj, project_key, recipe_name)
-                refs.extend(_model_audit_structured_refs(
-                    meta,
-                    'metadata',
-                    payload,
-                    context=recipe_name,
-                    context_type=str(recipe.get('type') or 'recipe'),
-                ))
-            except Exception as exc:
-                errors.append({**meta, 'scope': f"recipe-metadata:{recipe_name}", 'message': str(exc)[:300]})
-    except Exception as exc:
-        errors.append({**meta, 'scope': 'recipe-metadata', 'message': str(exc)[:300]})
-
-    metadata_loaders: List[Tuple[str, Callable[[], Any]]] = [
-        ('project_settings', lambda: _safe_get_raw(project_obj.get_settings())),
-    ]
-    if hasattr(project_obj, 'get_variables'):
-        metadata_loaders.append(('project_variables', lambda: project_obj.get_variables()))
-
-    for scope, loader in metadata_loaders:
-        try:
-            payload = _sdk_fetch(f'model_audit:{scope}:{project_key}', ttl, loader) or {}
-            refs.extend(_model_audit_structured_refs(meta, 'metadata', payload, scope, scope))
-        except Exception as exc:
-            errors.append({**meta, 'scope': scope, 'message': str(exc)[:300]})
-
-    try:
-        scenarios = _sdk_fetch(
-            f'model_audit:list_scenarios:{project_key}',
-            ttl,
-            lambda: project_obj.list_scenarios() or [],
-        ) or []
-        for scenario in scenarios:
-            scenario_id = str(
-                scenario.get('id') or scenario.get('name') or scenario.get('scenarioId') or ''
-            ).strip()
-            if not scenario_id or not hasattr(project_obj, 'get_scenario'):
-                continue
-            try:
-                payload = _sdk_fetch(
-                    f'model_audit:scenario:{project_key}:{scenario_id}',
-                    ttl,
-                    lambda sid=scenario_id: _safe_get_raw(project_obj.get_scenario(sid).get_settings()),
-                ) or {}
-                refs.extend(_model_audit_structured_refs(
-                    meta,
-                    'metadata',
-                    payload,
-                    context=scenario_id,
-                    context_type='scenario',
-                ))
-            except Exception as exc:
-                errors.append({**meta, 'scope': f"scenario:{scenario_id}", 'message': str(exc)[:300]})
-    except Exception as exc:
-        errors.append({**meta, 'scope': 'scenarios', 'message': str(exc)[:300]})
-
-    try:
-        if hasattr(project_obj, 'list_webapps'):
-            webapps = _sdk_fetch(
-                f'model_audit:list_webapps:{project_key}',
-                ttl,
-                lambda: project_obj.list_webapps() or [],
-            ) or []
-            for webapp in webapps:
-                refs.extend(_model_audit_structured_refs(
-                    meta,
-                    'metadata',
-                    webapp,
-                    context=str(webapp.get('id') or webapp.get('name') or 'webapp'),
-                    context_type='webapp',
-                    confidence='medium',
-                ))
-    except Exception as exc:
-        errors.append({**meta, 'scope': 'webapps', 'message': str(exc)[:300]})
-
-    return {'refs': refs, 'errors': errors}
-
-
-def _model_audit_is_text_member(name: str, size: int) -> bool:
-    if size <= 0 or size > _MODEL_AUDIT_MAX_FILE_BYTES:
-        return False
-    base = os.path.basename(name)
-    if not base or base.startswith('.'):
-        return False
-    ext = os.path.splitext(base.lower())[1]
-    return ext in _MODEL_AUDIT_TEXT_EXTENSIONS
-
-
-def _model_audit_scan_deep_files_project(project_entry: Dict[str, Any]) -> Dict[str, Any]:
-    meta = _model_audit_project_meta(project_entry)
-    project_key = meta['projectKey']
-    refs: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-    if not project_key:
-        return {'refs': refs, 'errors': errors}
-
-    ttl = max(60, _coerce_int(_BACKEND_SETTINGS.get('cache_ttl_model_audit'), 600))
-
-    def loader() -> Dict[str, Any]:
-        local_refs: List[Dict[str, Any]] = []
-        local_errors: List[Dict[str, Any]] = []
-        tmp_path = ''
-        try:
-            client = _thread_client()
-            project_obj = client.get_project(project_key)
-            fd, tmp_path = tempfile.mkstemp(suffix='.zip')
-            os.close(fd)
-            project_obj.export_to_file(tmp_path)
-            with zipfile.ZipFile(tmp_path) as archive:
-                for info in archive.infolist():
-                    if len(local_refs) >= _MODEL_AUDIT_MAX_DEEP_REFS_PER_PROJECT:
-                        break
-                    if info.is_dir() or not _model_audit_is_text_member(info.filename, int(info.file_size or 0)):
-                        continue
-                    try:
-                        with archive.open(info) as handle:
-                            data = handle.read(_MODEL_AUDIT_MAX_FILE_BYTES + 1)
-                        text = data[:_MODEL_AUDIT_MAX_FILE_BYTES].decode('utf-8', errors='replace')
-                        for raw in extract_model_strings_from_text(text, limit=20):
-                            ref = _model_audit_ref(
-                                meta,
-                                'file_string',
-                                raw,
-                                context=info.filename,
-                                context_type='file',
-                                confidence='low',
-                            )
-                            if ref:
-                                local_refs.append(ref)
-                            if len(local_refs) >= _MODEL_AUDIT_MAX_DEEP_REFS_PER_PROJECT:
-                                break
-                    except Exception as exc:
-                        local_errors.append({**meta, 'scope': f"file:{info.filename}", 'message': str(exc)[:300]})
-        except Exception as exc:
-            local_errors.append({**meta, 'scope': 'project_export', 'message': str(exc)[:300]})
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-        return {'refs': local_refs, 'errors': local_errors}
-
-    return _cache_get(f'model_audit_deep_files:{project_key}', ttl, loader)
-
-
-def _model_audit_dedupe_refs(refs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    seen: set = set()
-    out: List[Dict[str, Any]] = []
-    for ref in refs:
-        key = (
-            str(ref.get('projectKey') or ''),
-            str(ref.get('source') or ''),
-            str(ref.get('context') or ''),
-            str(ref.get('rawString') or ''),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(ref)
-    return out
-
-
-def _model_audit_build_result(
-    mode: str,
-    pricing: Dict[str, Any],
-    refs: List[Dict[str, Any]],
-    errors: List[Dict[str, Any]],
-    elapsed_ms: float,
-) -> Dict[str, Any]:
-    lookup = pricing.get('lookup') or {}
-    deduped = _model_audit_dedupe_refs(refs)
-    enriched_refs: List[Dict[str, Any]] = []
-    row_map: Dict[str, Dict[str, Any]] = {}
-
-    for ref in deduped:
-        classification = classify_model_reference(ref.get('rawString'), lookup)
-        canonical_model = str(classification.get('canonicalModel') or ref.get('rawString') or '').strip()
-        status = str(classification.get('status') or 'unknown')
-        row_key = canonical_model.lower() if status != 'unknown' else f"unknown:{canonical_model.lower()}"
-        enriched = {
-            **ref,
-            'rowKey': row_key,
-            'matched': bool(classification.get('matched')),
-            'matchedCandidate': classification.get('matchedCandidate') or '',
-            'canonicalModel': canonical_model,
-            'provider': classification.get('provider') or '',
-            'family': classification.get('family') or '',
-            'status': status,
-            'currentModel': classification.get('currentModel') or '',
-            'currentPrice': classification.get('currentPrice'),
-            'modelPrice': classification.get('modelPrice'),
-            'unknownReason': classification.get('unknownReason') or '',
-        }
-        enriched_refs.append(enriched)
-
-        row = row_map.get(row_key)
-        if row is None:
-            row = {
-                'rowKey': row_key,
-                'canonicalModel': canonical_model,
-                'provider': enriched.get('provider') or '',
-                'family': enriched.get('family') or '',
-                'status': status,
-                'currentModel': enriched.get('currentModel') or '',
-                'currentPrice': enriched.get('currentPrice'),
-                'modelPrice': enriched.get('modelPrice'),
-                'unknownReason': enriched.get('unknownReason') or '',
-                'referenceCount': 0,
-                'projectCount': 0,
-                'usedCount': 0,
-                'availableOnlyCount': 0,
-                'metadataCount': 0,
-                'fileStringCount': 0,
-                '_projectKeys': set(),
-            }
-            row_map[row_key] = row
-
-        row['referenceCount'] += 1
-        project_key = str(enriched.get('projectKey') or '')
-        if project_key:
-            row['_projectKeys'].add(project_key)
-        source = str(enriched.get('source') or '')
-        if source == 'used_recipe':
-            row['usedCount'] += 1
-        elif source == 'available_llm':
-            row['availableOnlyCount'] += 1
-        elif source == 'metadata':
-            row['metadataCount'] += 1
-        elif source == 'file_string':
-            row['fileStringCount'] += 1
-
-    rows = []
-    for row in row_map.values():
-        row['projectCount'] = len(row.pop('_projectKeys', set()))
-        rows.append(row)
-
-    severity = {'ripoff': 0, 'obsolete': 1, 'unknown': 2, 'current': 3}
-    rows.sort(key=lambda item: (severity.get(str(item.get('status') or ''), 9), -int(item.get('referenceCount') or 0), str(item.get('canonicalModel') or '')))
-
-    summary = {
-        'projectsScanned': len({str(ref.get('projectKey') or '') for ref in deduped if ref.get('projectKey')}),
-        'referencesFound': len(enriched_refs),
-        'matchedModels': sum(1 for row in rows if row.get('status') != 'unknown'),
-        'unknownModels': sum(1 for row in rows if row.get('status') == 'unknown'),
-        'ripoffCount': sum(1 for row in rows if row.get('status') == 'ripoff'),
-        'obsoleteCount': sum(1 for row in rows if row.get('status') == 'obsolete'),
-        'currentCount': sum(1 for row in rows if row.get('status') == 'current'),
-        'usedCount': sum(int(row.get('usedCount') or 0) for row in rows),
-        'availableOnlyCount': sum(int(row.get('availableOnlyCount') or 0) for row in rows),
-        'metadataCount': sum(int(row.get('metadataCount') or 0) for row in rows),
-        'fileStringCount': sum(int(row.get('fileStringCount') or 0) for row in rows),
-        'errorsCount': len(errors),
-        'elapsedMs': round(elapsed_ms, 2),
-    }
-    return {
-        'mode': mode,
-        'sourceUrl': pricing.get('sourceUrl') or LITELLM_PRICING_URL,
-        'fetchedAt': pricing.get('fetchedAt') or '',
-        'summary': summary,
-        'rows': rows,
-        'references': enriched_refs,
-        'errors': errors[:500],
-    }
-
-
-@app.route('/api/tools/model-upgrade-audit/scan')
-def api_model_upgrade_audit_scan():
-    mode = str(request.args.get('mode') or 'used_available').strip()
-    if mode not in _MODEL_AUDIT_MODES:
-        return jsonify({'error': f"Unsupported mode: {mode}"}), 400
-
-    def generate():
-        started = time.time()
-        try:
-            if not _model_audit_available:
-                yield _sse_json('error', {'error': 'LiteLLM model audit helper failed to import'})
-                return
-
-            client = dataiku.api_client()
-            projects = _list_projects_catalog(client)
-            total = len(projects)
-            yield _sse_json('init', {'mode': mode, 'total': total})
-
-            yield _sse_json('progress', {
-                'mode': mode,
-                'phase': 'pricing',
-                'message': 'Fetching LiteLLM pricing catalog',
-                'scanned': 0,
-                'total': total,
-                'progressPct': 0,
-            })
-            pricing = _model_audit_pricing()
-
-            all_refs: List[Dict[str, Any]] = []
-            all_errors: List[Dict[str, Any]] = []
-            scanned = 0
-
-            def scan_one(project_entry: Dict[str, Any]) -> Dict[str, Any]:
-                result = _model_audit_scan_default_project(project_entry)
-                refs = list(result.get('refs') or [])
-                errors = list(result.get('errors') or [])
-                if mode in ('metadata', 'deep_files'):
-                    extra = _model_audit_scan_metadata_project(project_entry)
-                    refs.extend(extra.get('refs') or [])
-                    errors.extend(extra.get('errors') or [])
-                if mode == 'deep_files':
-                    deep = _model_audit_scan_deep_files_project(project_entry)
-                    refs.extend(deep.get('refs') or [])
-                    errors.extend(deep.get('errors') or [])
-                return {'project': project_entry, 'refs': refs, 'errors': errors}
-
-            workers = min(2 if mode == 'deep_files' else 8, max(1, total))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(scan_one, project): project for project in projects}
-                for future in as_completed(futures):
-                    project = futures[future]
-                    try:
-                        result = future.result()
-                        all_refs.extend(result.get('refs') or [])
-                        all_errors.extend(result.get('errors') or [])
-                    except Exception as exc:
-                        all_errors.append({
-                            **_model_audit_project_meta(project),
-                            'scope': 'project_scan',
-                            'message': str(exc)[:300],
-                        })
-                    scanned += 1
-                    yield _sse_json('progress', {
-                        'mode': mode,
-                        'phase': mode,
-                        'message': f"Scanned {scanned}/{total} projects",
-                        'scanned': scanned,
-                        'total': total,
-                        'referencesFound': len(all_refs),
-                        'errorsCount': len(all_errors),
-                        'progressPct': round((scanned / total) * 100, 2) if total else 100,
-                    })
-
-            result = _model_audit_build_result(
-                mode,
-                pricing,
-                all_refs,
-                all_errors,
-                (time.time() - started) * 1000.0,
-            )
-            yield _sse_json('done', result)
-        except GeneratorExit:
-            return
-        except Exception as exc:
-            app.logger.exception("[model-audit] scan failed")
-            yield _sse_json('error', {'error': str(exc)})
 
     return Response(
         generate(),
