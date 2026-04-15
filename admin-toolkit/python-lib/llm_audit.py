@@ -12,7 +12,6 @@ The pricing source is LiteLLM's public pricing JSON. No hardcoded prices.
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import re
 from dataclasses import dataclass, field
@@ -77,6 +76,35 @@ _BEDROCK_VERSION_SUFFIX_RE = re.compile(r"-v\d+(?::\d+)?$")
 # Bedrock region-bracketed path, e.g. "ap-northeast-1/" or "us-gov-east-1/".
 _BEDROCK_REGION_PATH_RE = re.compile(r"^[a-z]{2,5}(?:-[a-z0-9]+){1,3}/")
 
+# Fuzzy patterns used as a last-resort inference for opaque Azure deployment
+# names (e.g. "USNPDGPT35", "prod-gpt4-turbo") that literal / canonicalized
+# candidates fail to match. Ordered most specific to least specific so that
+# "gpt-5.2" wins over "gpt-5" when both could match. Case-insensitive.
+AZURE_FUZZY_PATTERNS = [
+    (re.compile(r"gpt[\W_]?5[\W_]?2", re.I), "gpt-5.2"),
+    (re.compile(r"gpt[\W_]?5[\W_]?1", re.I), "gpt-5.1"),
+    (re.compile(r"gpt[\W_]?5", re.I), "gpt-5"),
+    (re.compile(r"gpt[\W_]?4[\W_]?1", re.I), "gpt-4.1"),
+    (re.compile(r"gpt[\W_]?4[\W_]?o", re.I), "gpt-4o"),
+    (re.compile(r"gpt[\W_]?4[\W_]?turbo", re.I), "gpt-4-turbo"),
+    (re.compile(r"gpt[\W_]?4", re.I), "gpt-4"),
+    (re.compile(r"gpt[\W_]?3[\W_]?5", re.I), "gpt-3.5-turbo"),
+    (re.compile(r"o4[\W_]?mini", re.I), "o4-mini"),
+    (re.compile(r"o3[\W_]?mini", re.I), "o3-mini"),
+    (re.compile(r"o3", re.I), "o3"),
+    (re.compile(r"o1", re.I), "o1"),
+]
+
+
+def azure_fuzzy_infer(raw: str) -> str | None:
+    """Infer a canonical OpenAI model from an opaque Azure deployment name."""
+    if not raw:
+        return None
+    for pattern, canon in AZURE_FUZZY_PATTERNS:
+        if pattern.search(raw):
+            return canon
+    return None
+
 
 @dataclass
 class ModelGroup:
@@ -87,8 +115,6 @@ class ModelGroup:
     output_price: Decimal
     version: tuple[Decimal, ...]
     aliases: set[str] = field(default_factory=set)
-    deprecated: bool = False
-    deprecation_dates: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -238,16 +264,6 @@ def _model_name_has_term(model: str, terms: set[str]) -> bool:
     return any(term in normalized for term in terms)
 
 
-def _is_deprecated(info: dict[str, Any], today: dt.date) -> tuple[bool, str]:
-    deprecation_date = str(info.get("deprecation_date") or "")
-    if not deprecation_date:
-        return False, ""
-    try:
-        return dt.date.fromisoformat(deprecation_date) <= today, deprecation_date
-    except ValueError:
-        return True, deprecation_date
-
-
 def _provider_key_for(info: dict[str, Any]) -> str | None:
     litellm_provider = info.get("litellm_provider")
     for provider_key, rule in PROVIDERS.items():
@@ -330,7 +346,6 @@ def family_for(provider_key: str, model: str) -> tuple[str, tuple[Decimal, ...]]
 
 def collect_groups(raw: dict[str, Any]) -> dict[tuple[str, str], dict[str, ModelGroup]]:
     """Group LiteLLM pricing entries into (provider, family) buckets."""
-    today = dt.datetime.now(dt.timezone.utc).date()
     grouped: dict[tuple[str, str], dict[str, ModelGroup]] = {}
 
     for raw_model, info in raw.items():
@@ -353,8 +368,6 @@ def collect_groups(raw: dict[str, Any]) -> dict[tuple[str, str], dict[str, Model
             continue
         if _model_name_has_term(canonical, SPECIALIZED_NAME_TERMS):
             continue
-
-        deprecated, deprecation_date = _is_deprecated(info, today)
 
         family_info = family_for(provider_key, canonical)
         if family_info is None:
@@ -379,15 +392,10 @@ def collect_groups(raw: dict[str, Any]) -> dict[tuple[str, str], dict[str, Model
                 output_price=output_price,
                 version=version,
                 aliases={raw_model},
-                deprecated=deprecated,
-                deprecation_dates={deprecation_date} if deprecation_date else set(),
             )
             continue
 
         existing.aliases.add(raw_model)
-        existing.deprecated = existing.deprecated or deprecated
-        if deprecation_date:
-            existing.deprecation_dates.add(deprecation_date)
         # When the same canonical name appears under multiple resellers (e.g.
         # claude-3-5-sonnet via Bedrock vs direct Anthropic), prefer the lower
         # input price as the canonical price for the model. This avoids treating
@@ -630,6 +638,17 @@ def classify_llm(
             hit = lookup[c]
             break
 
+    # Azure-only fuzzy fallback: opaque enterprise deployment names like
+    # "USNPDGPT35" never match literal candidates. Apply after literal lookup
+    # so explicit deployments still win. On a fuzzy hit, annotate the
+    # effective model so the UI can show "(inferred from name)".
+    if hit is None and dss_type == "AZURE_OPENAI_DEPLOYMENT":
+        inferred = azure_fuzzy_infer(effective or deployment or "")
+        if inferred and inferred in lookup:
+            matched_key = inferred
+            hit = lookup[inferred]
+            effective = f"{inferred} (inferred from name)"
+
     if hit is None:
         return {
             "status": "unknown",
@@ -661,10 +680,10 @@ def classify_llm(
 def summarize_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     counts: dict[str, int] = {"current": 0, "obsolete": 0, "ripoff": 0, "unknown": 0, "not_applicable": 0}
     distinct: dict[str, set[str]] = {"obsolete": set(), "ripoff": set()}
-    profiles = 0
+    total = 0
     projects: set[str] = set()
     for r in rows:
-        profiles += 1
+        total += 1
         s = r.get("status") or "unknown"
         counts[s] = counts.get(s, 0) + 1
         if s in distinct:
@@ -675,7 +694,7 @@ def summarize_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if pk:
             projects.add(pk)
     return {
-        "llmProfilesTotal": profiles,
+        "llmsTotal": total,
         "projectsScanned": len(projects),
         "countsByStatus": counts,
         "distinctModelsByStatus": {k: len(v) for k, v in distinct.items()},

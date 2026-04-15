@@ -4534,18 +4534,6 @@ def api_connection_usages():
 
     _LLM_RECIPE_PREFIXES = ('prompt', 'nlp_llm_')
 
-    def _find_llm_ids(d):
-        """Recursively find all llmId values in a dict/list."""
-        if isinstance(d, dict):
-            for k, v in d.items():
-                if k == 'llmId' and isinstance(v, str) and v:
-                    yield v
-                else:
-                    yield from _find_llm_ids(v)
-        elif isinstance(d, list):
-            for item in d:
-                yield from _find_llm_ids(item)
-
     def _scan_project(project_key):
         """Scan one project for dataset connections and LLM connections."""
         client = _thread_client()
@@ -9322,6 +9310,128 @@ def api_llms():
         return jsonify({'error': str(e), 'llms': []}), 500
 
 
+def _find_llm_ids(d: Any):
+    """Recursively find all llmId values in a dict/list."""
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if k == 'llmId' and isinstance(v, str) and v:
+                yield v
+            else:
+                yield from _find_llm_ids(v)
+    elif isinstance(d, list):
+        for item in d:
+            yield from _find_llm_ids(item)
+
+
+_LLM_AUDIT_STRUCTURED_RECIPE_PREFIXES = ('prompt', 'nlp_llm_')
+_LLM_AUDIT_CODE_RECIPE_TYPES = frozenset({
+    'python', 'r', 'pyspark', 'spark_scala', 'scala', 'sql_query', 'sql_script',
+})
+
+
+def _llm_audit_scan_project_references(
+    client: Any,
+    project_key: str,
+    llm_id_regex: Optional[Any],
+) -> set:
+    """Return the set of llmIds that are explicitly referenced by assets in one project.
+
+    Scans prompt/LLM recipes, knowledge banks, agents (structured llmId walk), and
+    code recipes (literal substring match against the universe of known llmIds).
+    Per-asset try/except — one bad asset can't take out the project scan.
+    """
+    found: set = set()
+    project = client.get_project(project_key)
+
+    try:
+        recipes = project.list_recipes() or []
+    except Exception as exc:
+        app.logger.debug("[llm_audit_usage] list_recipes failed for %s: %s", project_key, exc)
+        recipes = []
+
+    structured_recipes = []
+    code_recipes = []
+    for r in recipes:
+        if not isinstance(r, dict):
+            continue
+        rtype = r.get('type', '') or ''
+        if rtype.startswith(_LLM_AUDIT_STRUCTURED_RECIPE_PREFIXES) or 'llm' in rtype.lower():
+            structured_recipes.append(r)
+        elif rtype in _LLM_AUDIT_CODE_RECIPE_TYPES:
+            code_recipes.append(r)
+
+    for r in structured_recipes:
+        try:
+            recipe = project.get_recipe(r['name'])
+            settings = recipe.get_settings()
+            payload = settings.get_json_payload() if hasattr(settings, 'get_json_payload') else None
+            if not payload:
+                raw_str = settings.get_payload() if hasattr(settings, 'get_payload') else ''
+                try:
+                    payload = json.loads(raw_str) if raw_str else {}
+                except Exception:
+                    payload = {}
+            if not payload:
+                continue
+            for llm_id in _find_llm_ids(payload):
+                found.add(llm_id)
+        except Exception as exc:
+            app.logger.debug("[llm_audit_usage] recipe %s/%s failed: %s",
+                             project_key, r.get('name'), exc)
+
+    try:
+        kbs = project.list_knowledge_banks() or []
+    except Exception as exc:
+        app.logger.debug("[llm_audit_usage] list_knowledge_banks failed for %s: %s", project_key, exc)
+        kbs = []
+    for kb in kbs:
+        kb_id = kb.get('id') if isinstance(kb, dict) else None
+        if not kb_id:
+            continue
+        try:
+            kb_settings = project.get_knowledge_bank(kb_id).get_settings()
+            raw = kb_settings.get_raw() if hasattr(kb_settings, 'get_raw') else kb_settings
+            for llm_id in _find_llm_ids(raw):
+                found.add(llm_id)
+        except Exception as exc:
+            app.logger.debug("[llm_audit_usage] knowledge_bank %s/%s failed: %s",
+                             project_key, kb_id, exc)
+
+    try:
+        agents = project.list_agents() or []
+    except Exception as exc:
+        app.logger.debug("[llm_audit_usage] list_agents failed for %s: %s", project_key, exc)
+        agents = []
+    for ag in agents:
+        ag_id = ag.get('id') if isinstance(ag, dict) else None
+        if not ag_id:
+            continue
+        try:
+            ag_settings = project.get_agent(ag_id).get_settings()
+            raw = ag_settings.get_raw() if hasattr(ag_settings, 'get_raw') else ag_settings
+            for llm_id in _find_llm_ids(raw):
+                found.add(llm_id)
+        except Exception as exc:
+            app.logger.debug("[llm_audit_usage] agent %s/%s failed: %s",
+                             project_key, ag_id, exc)
+
+    if llm_id_regex is not None:
+        for r in code_recipes:
+            try:
+                recipe = project.get_recipe(r['name'])
+                settings = recipe.get_settings()
+                payload_str = settings.get_payload() if hasattr(settings, 'get_payload') else ''
+                if not payload_str:
+                    continue
+                for match in llm_id_regex.findall(payload_str):
+                    found.add(match)
+            except Exception as exc:
+                app.logger.debug("[llm_audit_usage] code_recipe %s/%s failed: %s",
+                                 project_key, r.get('name'), exc)
+
+    return found
+
+
 def _llm_audit_scan_project(client: Any, project_key: str) -> List[Dict[str, Any]]:
     """List LLMs for one project and tag each row with the project key."""
     project = client.get_project(project_key)
@@ -9438,6 +9548,42 @@ def api_llm_audit():
 
             add_event('scan_done', f'collected {len(llm_rows)} LLM profile rows across {total_projects} project(s)')
 
+            # Phase 4b: per-project asset scan for actual llmId references.
+            set_summary(50, 'usage_scan', projectsTotal=total_projects, projectsDone=0)
+            llm_id_universe = sorted({row.get('llmId') for row in llm_rows if row.get('llmId')})
+            llm_id_regex = None
+            if llm_id_universe:
+                try:
+                    llm_id_regex = re.compile('|'.join(re.escape(i) for i in llm_id_universe))
+                except Exception as exc:
+                    add_event('usage_regex_failed', f'failed to compile llmId regex: {exc}', 'warn')
+
+            projects_using_by_llm_id: Dict[str, set] = {}
+            if total_projects > 0:
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = {
+                        ex.submit(_llm_audit_scan_project_references, client, pk, llm_id_regex): pk
+                        for pk in project_keys
+                    }
+                    done = 0
+                    for fut in as_completed(futures):
+                        pk = futures[fut]
+                        try:
+                            referenced = fut.result()
+                            for llm_id in referenced:
+                                projects_using_by_llm_id.setdefault(llm_id, set()).add(pk)
+                        except Exception as exc:
+                            add_event('usage_scan_project_failed', f'{pk}: {exc}', 'warn', project_key=pk)
+                        done += 1
+                        usage_pct = 50.0 + 35.0 * (done / max(1, total_projects))
+                        set_summary(usage_pct, 'usage_scan',
+                                    projectsTotal=total_projects, projectsDone=done,
+                                    llmRowsTotal=len(llm_rows))
+
+            add_event('usage_scan_done',
+                      f'{sum(len(v) for v in projects_using_by_llm_id.values())} project-references '
+                      f'across {len(projects_using_by_llm_id)} distinct llmId(s)')
+
             # Phase 5: classify and dedupe by (projectKey, llmId).
             set_summary(88, 'classify', llmRowsTotal=len(llm_rows))
             project_names: Dict[str, str] = {}
@@ -9453,6 +9599,9 @@ def api_llm_audit():
                     continue
                 seen.add(key)
                 verdict = llm_audit.classify_llm(row, lookup, connections_by_name=connections_by_name)
+                llm_id = row.get('llmId') or ''
+                using_set = projects_using_by_llm_id.get(llm_id, set())
+                referencing_sorted = sorted(using_set)
                 merged = {
                     'projectKey': row.get('projectKey'),
                     'projectName': project_names.get(row.get('projectKey') or '', row.get('projectKey') or ''),
@@ -9464,6 +9613,8 @@ def api_llm_audit():
                     'rawModel': row.get('rawModel'),
                 }
                 merged.update(verdict)
+                merged['projectsUsing'] = len(using_set)
+                merged['referencingProjects'] = referencing_sorted[:50]
                 classified_rows.append(merged)
 
             summary = llm_audit.summarize_rows(classified_rows)
@@ -9473,7 +9624,7 @@ def api_llm_audit():
             set_summary(100, 'done',
                         projectsTotal=total_projects,
                         projectsDone=total_projects,
-                        llmProfilesTotal=summary.get('llmProfilesTotal', 0),
+                        llmsTotal=summary.get('llmsTotal', 0),
                         countsByStatus=summary.get('countsByStatus', {}),
                         distinctModelsByStatus=summary.get('distinctModelsByStatus', {}))
             _finish_progress('llm_audit', run_id, status='ok', summary=None)

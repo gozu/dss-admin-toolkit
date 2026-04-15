@@ -30,6 +30,16 @@ const STATUS_LABEL: Record<LlmAuditStatus, string> = {
   not_applicable: 'N/A',
 };
 
+const STATUS_TOOLTIP: Record<LlmAuditStatus, string> = {
+  ripoff:
+    'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
+  obsolete:
+    'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
+  current: 'Current: this is the latest model in its family.',
+  unknown: 'Unknown: no matching model family in the LiteLLM catalog.',
+  not_applicable: 'Not applicable: wrapper LLMs (saved model agent, retrieval-augmented).',
+};
+
 function statusBadgeClass(status: LlmAuditStatus): string {
   switch (status) {
     case 'ripoff':
@@ -89,7 +99,7 @@ interface GroupedRow {
   provider: string;
   family: string;
   projectsUsing: number;
-  sampleProjects: string[];
+  referencingProjects: string[];
 }
 
 export function LlmAuditTable() {
@@ -101,18 +111,13 @@ export function LlmAuditTable() {
 
   const [statusFilter, setStatusFilter] = useState<Set<LlmAuditStatus>>(new Set());
   const [search, setSearch] = useState('');
-  const [openProjectsFor, setOpenProjectsFor] = useState<string | null>(null);
+  const [modalLlm, setModalLlm] = useState<GroupedRow | null>(null);
 
   const grouped: GroupedRow[] = useMemo(() => {
     const map = new Map<string, GroupedRow>();
     for (const r of rows) {
       const key = r.llmId || `${r.connection || '-'}::${r.rawModel || r.effectiveModel || '-'}`;
-      const existing = map.get(key);
-      if (existing) {
-        existing.projectsUsing += 1;
-        if (existing.sampleProjects.length < 50) existing.sampleProjects.push(r.projectKey);
-        continue;
-      }
+      if (map.has(key)) continue;
       map.set(key, {
         llmId: r.llmId || key,
         status: r.status,
@@ -129,8 +134,8 @@ export function LlmAuditTable() {
         currentOutputPrice: r.currentOutputPrice ?? null,
         provider: r.provider || '',
         family: r.family || '',
-        projectsUsing: 1,
-        sampleProjects: [r.projectKey],
+        projectsUsing: r.projectsUsing ?? 0,
+        referencingProjects: r.referencingProjects ?? [],
       });
     }
     return Array.from(map.values());
@@ -229,8 +234,6 @@ export function LlmAuditTable() {
     });
   };
 
-  const openRow = sorted.find((r) => r.llmId === openProjectsFor) || null;
-
   return (
     <div className="space-y-4">
       <SummaryCard
@@ -250,9 +253,9 @@ export function LlmAuditTable() {
             <h4 className="text-lg font-semibold text-[var(--text-primary)]">
               {grouped.length > 0
                 ? statusFilter.size > 0 || search
-                  ? `${sorted.length} of ${grouped.length} LLM profiles`
-                  : `${grouped.length} LLM profiles`
-                : 'LLM profiles'}
+                  ? `${sorted.length} of ${grouped.length} LLMs`
+                  : `${grouped.length} LLMs`
+                : 'LLMs'}
             </h4>
             <div className="flex flex-wrap items-center gap-2">
               {(['ripoff', 'obsolete', 'unknown', 'current', 'not_applicable'] as LlmAuditStatus[]).map(
@@ -263,6 +266,7 @@ export function LlmAuditTable() {
                     <button
                       key={s}
                       type="button"
+                      title={STATUS_TOOLTIP[s]}
                       onClick={() => toggleStatusFilter(s)}
                       className={`px-2 py-0.5 text-xs font-semibold rounded transition-all ${statusBadgeClass(s)} ${active ? 'ring-2 ring-[var(--neon-cyan)]/60' : 'opacity-70 hover:opacity-100'}`}
                     >
@@ -303,7 +307,7 @@ export function LlmAuditTable() {
 
         {grouped.length === 0 && !isLoading ? (
           <div className="p-6 text-sm text-[var(--text-secondary)]">
-            No LLM profiles found. Either this instance has no LLM Mesh connections configured, or the
+            No LLMs found. Either this instance has no LLM Mesh connections configured, or the
             scan failed — see the page logs for details.
           </div>
         ) : (
@@ -357,6 +361,7 @@ export function LlmAuditTable() {
                   <tr key={r.llmId} className="hover:bg-[var(--bg-glass-hover)] transition-colors">
                     <td className="px-4 py-3 align-top">
                       <span
+                        title={STATUS_TOOLTIP[r.status]}
                         className={`px-2 py-0.5 text-xs font-semibold rounded ${statusBadgeClass(r.status)}`}
                       >
                         {STATUS_LABEL[r.status]}
@@ -407,30 +412,44 @@ export function LlmAuditTable() {
                       className={`px-4 py-3 align-top text-right font-mono text-sm ${priceDeltaClass(r.modelInputPrice, r.currentInputPrice)}`}
                     >
                       {formatPrice(r.modelInputPrice)}
-                      {r.currentInputPrice != null && r.modelInputPrice != null && (
-                        <div className="text-[11px] text-[var(--text-tertiary)]">
-                          vs {formatPrice(r.currentInputPrice)}
-                        </div>
-                      )}
+                      {r.currentInputPrice != null &&
+                        r.modelInputPrice != null &&
+                        Math.abs(r.currentInputPrice - r.modelInputPrice) > 0.0001 && (
+                          <div className="text-[11px] text-[var(--text-tertiary)]">
+                            vs {formatPrice(r.currentInputPrice)}
+                          </div>
+                        )}
                     </td>
                     <td
                       className={`px-4 py-3 align-top text-right font-mono text-sm ${priceDeltaClass(r.modelOutputPrice, r.currentOutputPrice)}`}
                     >
                       {formatPrice(r.modelOutputPrice)}
-                      {r.currentOutputPrice != null && r.modelOutputPrice != null && (
-                        <div className="text-[11px] text-[var(--text-tertiary)]">
-                          vs {formatPrice(r.currentOutputPrice)}
-                        </div>
-                      )}
+                      {r.currentOutputPrice != null &&
+                        r.modelOutputPrice != null &&
+                        Math.abs(r.currentOutputPrice - r.modelOutputPrice) > 0.0001 && (
+                          <div className="text-[11px] text-[var(--text-tertiary)]">
+                            vs {formatPrice(r.currentOutputPrice)}
+                          </div>
+                        )}
                     </td>
                     <td className="px-4 py-3 align-top text-right">
-                      <button
-                        type="button"
-                        onClick={() => setOpenProjectsFor(r.llmId)}
-                        className={`font-mono text-sm hover:underline ${r.projectsUsing >= 50 ? 'text-[var(--neon-amber)]' : 'text-[var(--neon-cyan)]'}`}
-                      >
-                        {r.projectsUsing}
-                      </button>
+                      {r.projectsUsing > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setModalLlm(r)}
+                          className="font-mono text-sm text-[var(--neon-cyan)] hover:underline focus:outline-none"
+                          title="Show projects referencing this LLM"
+                        >
+                          {r.projectsUsing} {r.projectsUsing === 1 ? 'project' : 'projects'}
+                        </button>
+                      ) : (
+                        <span
+                          className="font-mono text-sm text-[var(--text-tertiary)]"
+                          title="No scanned asset references this LLM — candidate for retirement."
+                        >
+                          0 projects
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -440,12 +459,66 @@ export function LlmAuditTable() {
         )}
       </div>
 
-      {openRow && (
-        <ProjectsModal
-          row={openRow}
-          onClose={() => setOpenProjectsFor(null)}
-        />
+      {modalLlm && (
+        <ProjectsModal row={modalLlm} onClose={() => setModalLlm(null)} />
       )}
+    </div>
+  );
+}
+
+function ProjectsModal({ row, onClose }: { row: GroupedRow; onClose: () => void }) {
+  const projects = row.referencingProjects;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="bg-[var(--bg-surface)] rounded-xl shadow-2xl border border-[var(--border-glass)] max-w-2xl w-full max-h-[80vh] flex flex-col mx-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 py-3 border-b border-[var(--border-glass)] flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-[var(--text-primary)]">
+              Projects referencing{' '}
+              <span className="font-mono text-[var(--neon-cyan)] break-all">{row.llmId}</span>
+            </h3>
+            <p className="text-[11px] text-[var(--text-tertiary)] mt-1">
+              {row.projectsUsing} {row.projectsUsing === 1 ? 'project' : 'projects'}
+              {projects.length < row.projectsUsing ? ` (showing first ${projects.length})` : ''}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-lg leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="px-4 py-3 overflow-y-auto flex-1">
+          {projects.length === 0 ? (
+            <div className="text-sm text-[var(--text-secondary)]">No referencing projects.</div>
+          ) : (
+            <ul className="space-y-1">
+              {projects.map((pk) => (
+                <li
+                  key={pk}
+                  className="font-mono text-sm text-[var(--text-primary)] px-2 py-1 rounded hover:bg-[var(--bg-glass-hover)]"
+                >
+                  {pk}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="px-4 py-2 border-t border-[var(--border-glass)] text-[11px] text-[var(--text-tertiary)]">
+          References found in prompt/LLM recipes, knowledge banks, agents, and code recipes
+          (Python / R / Scala / PySpark / SparkScala). Notebooks and dynamically-built llmIds
+          are not scanned.
+        </div>
+      </div>
     </div>
   );
 }
@@ -489,7 +562,7 @@ function SummaryCard({
 }) {
   const tiles: Array<{ label: string; value: number; sub?: string; color: string }> = [
     {
-      label: 'Profiles',
+      label: 'LLMs',
       value: total,
       color: 'text-[var(--text-primary)]',
     },
@@ -550,47 +623,3 @@ function SummaryCard({
   );
 }
 
-function ProjectsModal({ row, onClose }: { row: GroupedRow; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-[var(--bg-surface)] rounded-xl shadow-xl border border-[var(--border-glass)] max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-4 py-3 border-b border-[var(--border-glass)] flex items-center justify-between">
-          <div>
-            <h4 className="text-base font-semibold text-[var(--text-primary)]">
-              Projects using {row.friendlyNameShort}
-            </h4>
-            <p className="text-[11px] font-mono text-[var(--text-tertiary)] mt-0.5">{row.llmId}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-2 py-1 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-glass-hover)] rounded"
-          >
-            Close
-          </button>
-        </div>
-        <div className="overflow-y-auto p-4 text-sm">
-          <p className="text-xs text-[var(--text-tertiary)] mb-2">
-            {row.projectsUsing} project(s) total
-            {row.sampleProjects.length < row.projectsUsing
-              ? ` (showing first ${row.sampleProjects.length})`
-              : ''}
-          </p>
-          <ul className="space-y-1 font-mono text-xs">
-            {row.sampleProjects.map((pk) => (
-              <li key={pk} className="text-[var(--text-secondary)]">
-                {pk}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}

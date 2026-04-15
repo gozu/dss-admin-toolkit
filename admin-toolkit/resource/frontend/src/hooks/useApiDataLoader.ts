@@ -1412,7 +1412,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             const summary = llmAuditRes.value.summary || {
               countsByStatus: {},
               distinctModelsByStatus: { obsolete: 0, ripoff: 0 },
-              llmProfilesTotal: 0,
+              llmsTotal: 0,
               projectsScanned: 0,
             };
             const c = (summary as { countsByStatus?: Record<string, number> }).countsByStatus || {};

@@ -766,10 +766,12 @@ export interface LlmAuditRow {
   modelOutputPrice?: number | null;
   currentInputPrice?: number | null;
   currentOutputPrice?: number | null;
+  projectsUsing?: number;
+  referencingProjects?: string[];
 }
 
 export interface LlmAuditSummary {
-  llmProfilesTotal: number;
+  llmsTotal: number;
   projectsScanned: number;
   countsByStatus: Record<LlmAuditStatus, number>;
   distinctModelsByStatus: { obsolete: number; ripoff: number };
