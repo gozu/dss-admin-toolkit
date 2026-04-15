@@ -199,6 +199,11 @@ def canonical_model(provider_key: str, model: str) -> str:
     model = _strip_date_suffix(model)
 
     if provider_key == "openai":
+        # Azure naming quirk: "gpt-35-turbo" / "gpt-35-turbo-16k" / etc. should
+        # map to the canonical "gpt-3.5-turbo" form so version parsing yields
+        # (3, 5) instead of (35,) — otherwise this fake "version 35" wins the
+        # GPT flagship family as "current".
+        model = re.sub(r"^gpt-35-turbo\b", "gpt-3.5-turbo", model)
         model = re.sub(r"^gpt-(5(?:\.\d+)?)-chat(?:-latest)?$", r"gpt-\1", model)
         model = re.sub(r"^gpt-(3\.5-turbo)-instruct(?:-preview)?$", r"gpt-\1-instruct", model)
         model = re.sub(r"^gpt-(3\.5-turbo)(?:-preview)?$", r"gpt-\1", model)
