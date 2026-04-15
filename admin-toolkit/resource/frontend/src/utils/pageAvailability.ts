@@ -82,6 +82,10 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
       if (!outreachReady) return 'loading';
       return d.outreachApiLoaded ? 'ready' : 'partial';
 
+    case 'llm-audit':
+      if (d.llmAuditLoading?.active) return 'loading';
+      return d.llmAudit && Array.isArray(d.llmAudit.rows) ? 'ready' : 'loading';
+
     default:
       return 'independent';
   }

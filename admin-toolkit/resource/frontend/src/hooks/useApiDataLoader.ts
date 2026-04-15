@@ -15,6 +15,7 @@ import type {
   PluginInfo,
   OutreachData,
   ConnectionHealthResult,
+  LlmAuditResponse,
 } from '../types';
 import { fetchJson, fetchText, getBackendUrl } from '../utils/api';
 import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
@@ -377,6 +378,21 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           setProjectFootprintLoading({
             progressPct: Math.max(0, Math.min(100, displayValue)),
           });
+        };
+        const setLlmAuditLoading = (
+          patch: Partial<NonNullable<ParsedData['llmAuditLoading']>>,
+        ) => {
+          currentParsedData = {
+            ...currentParsedData,
+            llmAuditLoading: {
+              active: false,
+              progressPct: 0,
+              ...(currentParsedData.llmAuditLoading || {}),
+              ...patch,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+          dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
         };
         const updateAnalysisLoading = () => {
           const ce = currentParsedData.codeEnvsLoading;
@@ -1299,6 +1315,122 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           }
         };
 
+        const runLlmAudit = async () => {
+          let llmAuditProgressActive = true;
+          let llmAuditProgressRunId: string | undefined = '__pending__';
+          let llmAuditProgressCursor = 0;
+          let llmAuditProgressAbortController: AbortController | null = null;
+          let llmAuditProgressWarned = false;
+          const llmAuditProgressPath = '/api/llm-audit/progress';
+          setLlmAuditLoading({
+            active: true,
+            progressPct: 0,
+            phase: 'starting',
+            message: 'Starting LLM model audit',
+            startedAt: new Date().toISOString(),
+          });
+
+          const pollLlmAuditProgress = async () => {
+            while (!cancelled && llmAuditProgressActive) {
+              try {
+                const query = new URLSearchParams();
+                query.set('since', String(llmAuditProgressCursor));
+                if (llmAuditProgressRunId) query.set('runId', llmAuditProgressRunId);
+                llmAuditProgressAbortController = new AbortController();
+                const payload = await withTimeout(
+                  fetchJson<{
+                    runId?: string;
+                    status?: string;
+                    next?: number;
+                    summary?: Record<string, unknown> | null;
+                  }>(`${llmAuditProgressPath}?${query.toString()}`, {
+                    signal: llmAuditProgressAbortController.signal,
+                  }),
+                  llmAuditProgressPath,
+                  LIVE_PROGRESS_TIMEOUT_MS,
+                );
+                if (payload.runId && payload.runId !== llmAuditProgressRunId) {
+                  llmAuditProgressRunId = payload.runId;
+                  llmAuditProgressCursor = 0;
+                  continue;
+                }
+                if (typeof payload.next === 'number') llmAuditProgressCursor = payload.next;
+                const summary = (payload.summary || {}) as Record<string, unknown>;
+                const progressPct = Math.max(
+                  0,
+                  Math.min(
+                    100,
+                    Number.isFinite(summary.progressPct as number)
+                      ? Number(summary.progressPct)
+                      : 0,
+                  ),
+                );
+                const phase = String(summary.phase || 'running');
+                const projectsTotal = Number(summary.projectsTotal || 0);
+                const projectsDone = Number(summary.projectsDone || 0);
+                const detail =
+                  projectsTotal > 0 ? `${projectsDone}/${projectsTotal} projects` : '';
+                setLlmAuditLoading({
+                  active: true,
+                  progressPct,
+                  phase,
+                  message: detail
+                    ? `LLM audit: ${phase.replace(/_/g, ' ')} (${detail})`
+                    : `LLM audit: ${phase.replace(/_/g, ' ')}`,
+                });
+              } catch (err) {
+                if ((!llmAuditProgressActive || cancelled) && isAbortError(err)) break;
+                if (!llmAuditProgressWarned) {
+                  llmAuditProgressWarned = true;
+                  log(`LLM audit live progress polling unavailable: ${getErrorMessage(err)}`, 'warn');
+                }
+              } finally {
+                llmAuditProgressAbortController = null;
+              }
+              if (!llmAuditProgressActive) break;
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+            }
+          };
+
+          const llmAuditProgressPromise = pollLlmAuditProgress();
+          const llmAuditRes = await settle(
+            timed<LlmAuditResponse>('/api/llm-audit', beSettings.fe_timeout_llm_audit ?? 620000),
+          );
+          llmAuditProgressActive = false;
+          abortPendingRequest(llmAuditProgressAbortController);
+          await llmAuditProgressPromise;
+          if (cancelled) return;
+          if (llmAuditRes.status === 'fulfilled' && llmAuditRes.value) {
+            currentParsedData = { ...currentParsedData, llmAudit: llmAuditRes.value };
+            dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+            setLlmAuditLoading({
+              active: false,
+              progressPct: 100,
+              phase: 'done',
+              message: `LLM audit complete (${llmAuditRes.value.rows?.length || 0} profiles)`,
+            });
+            const summary = llmAuditRes.value.summary || {
+              countsByStatus: {},
+              distinctModelsByStatus: { obsolete: 0, ripoff: 0 },
+              llmProfilesTotal: 0,
+              projectsScanned: 0,
+            };
+            const c = (summary as { countsByStatus?: Record<string, number> }).countsByStatus || {};
+            log(
+              `Loaded LLM audit: ${llmAuditRes.value.rows?.length || 0} profile(s) — ` +
+                `${c.ripoff || 0} ripoff, ${c.obsolete || 0} obsolete, ${c.unknown || 0} unknown`,
+            );
+          } else {
+            setLlmAuditLoading({
+              active: false,
+              progressPct: 0,
+              phase: 'error',
+              message: 'LLM audit failed',
+            });
+            log(`Failed /api/llm-audit: ${settledError(llmAuditRes)}`, 'warn');
+          }
+        };
+
         const runProjects = async () => {
           const projectsRes: PromiseSettledResult<ProjectsResponse | null> = basicProjectsEnabled
             ? await settle(timed<ProjectsResponse>('/api/projects', beSettings.fe_timeout_projects ?? 45000))
@@ -1408,7 +1540,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         const heavyStart = nowMs();
         const lowStart = nowMs();
         projectFootprintStarted = true;
-        const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint()]);
+        const heavyGate = Promise.allSettled([runCodeEnvs(), runProjectFootprint(), runLlmAudit()]);
         const connectionHealthGate = runConnectionHealth();
         log('Deferred /api/dir-tree until Directory page is opened');
         prefetchInactiveProjects(); // warm cache for Project Cleaner

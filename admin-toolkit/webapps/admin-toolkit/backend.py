@@ -68,12 +68,18 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'cache_ttl_plugins': 600,
     'cache_ttl_log_errors': 600,
     'cache_ttl_dir_tree': 600,
+    'cache_ttl_llm_audit': 600,
+    'cache_ttl_llm_pricing': 21600,
+    # LLM audit
+    'llm_audit_timeout_ms': 600000,
+    'llm_audit_pricing_timeout_sec': 30,
     # Frontend API timeouts (served to frontend for sync)
     'fe_timeout_code_envs': 620000,
     'fe_timeout_project_footprint': 620000,
     'fe_timeout_projects': 45000,
     'fe_timeout_logs': 30000,
     'fe_timeout_llm_analysis': 120000,
+    'fe_timeout_llm_audit': 620000,
     # Tracking
     'sqlite_connect_timeout': 30,
     'tracking_issue_page_size': 500,
@@ -112,6 +118,12 @@ try:
     _db_adapter_available = True
 except Exception:
     _db_adapter_available = False
+
+try:
+    import llm_audit
+    _llm_audit_available = True
+except Exception:
+    _llm_audit_available = False
 
 _tracking_db_instance: Optional[Any] = None
 _tracking_db_lock = threading.Lock()
@@ -9308,6 +9320,197 @@ def api_llms():
         return jsonify({'llms': completion_llms})
     except Exception as e:
         return jsonify({'error': str(e), 'llms': []}), 500
+
+
+def _llm_audit_scan_project(client: Any, project_key: str) -> List[Dict[str, Any]]:
+    """List LLMs for one project and tag each row with the project key."""
+    project = client.get_project(project_key)
+    out: List[Dict[str, Any]] = []
+    for llm in project.list_llms() or []:
+        if not isinstance(llm, dict):
+            continue
+        out.append({
+            'projectKey': project_key,
+            'llmId': llm.get('id'),
+            'type': llm.get('type'),
+            'connection': llm.get('connection'),
+            'rawModel': llm.get('model') or llm.get('deployment'),
+            'model': llm.get('model'),
+            'deployment': llm.get('deployment'),
+            'friendlyName': llm.get('friendlyName'),
+            'friendlyNameShort': llm.get('friendlyNameShort'),
+        })
+    return out
+
+
+@app.route('/api/llm-audit')
+def api_llm_audit():
+    if not _llm_audit_available:
+        return jsonify({'error': 'llm_audit module unavailable',
+                        'rows': [], 'summary': {}, 'pricingFetchedAt': None}), 500
+
+    def loader():
+        client = dataiku.api_client()
+        started = time.time()
+        run_id = _start_progress('llm_audit')
+        events: List[Dict[str, Any]] = []
+
+        def add_event(step: str, message: str, level: str = 'info', project_key: Optional[str] = None) -> None:
+            ev: Dict[str, Any] = {
+                'tMs': round((time.time() - started) * 1000.0, 2),
+                'level': level,
+                'step': step,
+                'message': message,
+            }
+            if project_key:
+                ev['projectKey'] = project_key
+            events.append(ev)
+            _append_progress_event('llm_audit', run_id, ev)
+
+        def set_summary(progress_pct: float, phase: str, **extra: Any) -> None:
+            payload: Dict[str, Any] = {
+                'progressPct': int(max(0, min(100, round(progress_pct)))),
+                'phase': phase,
+                'totalElapsedMs': round((time.time() - started) * 1000.0, 2),
+            }
+            payload.update(extra)
+            _set_progress_summary('llm_audit', run_id, payload)
+
+        try:
+            # Phase 1: pricing catalog (cached separately so multiple runs share it).
+            set_summary(2, 'pricing')
+            add_event('pricing_fetch', 'fetching LiteLLM pricing catalog')
+            pricing_timeout = int(_BACKEND_SETTINGS.get('llm_audit_pricing_timeout_sec', 30))
+            pricing_ttl = int(_BACKEND_SETTINGS.get('cache_ttl_llm_pricing', 21600))
+            pricing_fetched_at: List[Optional[str]] = [None]
+
+            def _pricing_loader() -> Dict[str, Any]:
+                lookup = llm_audit.build_lookup(timeout=pricing_timeout)
+                pricing_fetched_at[0] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+                return {'lookup': lookup, 'fetchedAt': pricing_fetched_at[0]}
+
+            try:
+                pricing_blob = _cache_get('llm_audit_pricing', pricing_ttl, _pricing_loader)
+            except llm_audit.PricingFetchError as exc:
+                add_event('pricing_fetch_failed', f'pricing fetch failed: {exc}', 'error')
+                raise
+            lookup = pricing_blob['lookup']
+            pricing_fetched_at_iso = pricing_blob.get('fetchedAt')
+            add_event('pricing_ready', f'pricing lookup has {len(lookup)} entries')
+
+            # Phase 2: instance connections (for CustomLLM unwrap).
+            set_summary(8, 'connections')
+            add_event('connections_fetch', 'fetching instance connections')
+            try:
+                connections_by_name = client.list_connections() or {}
+            except Exception as exc:
+                connections_by_name = {}
+                add_event('connections_failed', f'list_connections failed: {exc}', 'warn')
+
+            # Phase 3: project catalog.
+            set_summary(12, 'catalog')
+            projects = client.list_projects() or []
+            project_keys = [p.get('projectKey') for p in projects if isinstance(p, dict) and p.get('projectKey')]
+            total_projects = len(project_keys)
+            add_event('catalog_ready', f'found {total_projects} project(s)')
+
+            # Phase 4: parallel per-project list_llms().
+            set_summary(15, 'scan', projectsTotal=total_projects, projectsDone=0)
+            llm_rows: List[Dict[str, Any]] = []
+            workers = max(1, int(_BACKEND_SETTINGS.get('parallel_workers_default', 8) or 8))
+            if total_projects > 0:
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = {ex.submit(_llm_audit_scan_project, client, pk): pk for pk in project_keys}
+                    done = 0
+                    for fut in as_completed(futures):
+                        pk = futures[fut]
+                        try:
+                            project_rows = fut.result()
+                            llm_rows.extend(project_rows)
+                        except Exception as exc:
+                            add_event('scan_project_failed', f'{pk}: {exc}', 'warn', project_key=pk)
+                        done += 1
+                        # Throttle progress updates every project (lightweight).
+                        scan_pct = 15.0 + 70.0 * (done / max(1, total_projects))
+                        set_summary(scan_pct, 'scan',
+                                    projectsTotal=total_projects, projectsDone=done,
+                                    llmRowsTotal=len(llm_rows))
+
+            add_event('scan_done', f'collected {len(llm_rows)} LLM profile rows across {total_projects} project(s)')
+
+            # Phase 5: classify and dedupe by (projectKey, llmId).
+            set_summary(88, 'classify', llmRowsTotal=len(llm_rows))
+            project_names: Dict[str, str] = {}
+            for p in projects:
+                if isinstance(p, dict) and p.get('projectKey'):
+                    project_names[p['projectKey']] = p.get('name') or p['projectKey']
+
+            seen: set = set()
+            classified_rows: List[Dict[str, Any]] = []
+            for row in llm_rows:
+                key = (row.get('projectKey'), row.get('llmId'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                verdict = llm_audit.classify_llm(row, lookup, connections_by_name=connections_by_name)
+                merged = {
+                    'projectKey': row.get('projectKey'),
+                    'projectName': project_names.get(row.get('projectKey') or '', row.get('projectKey') or ''),
+                    'llmId': row.get('llmId'),
+                    'friendlyName': row.get('friendlyName'),
+                    'friendlyNameShort': row.get('friendlyNameShort'),
+                    'type': row.get('type'),
+                    'connection': row.get('connection'),
+                    'rawModel': row.get('rawModel'),
+                }
+                merged.update(verdict)
+                classified_rows.append(merged)
+
+            summary = llm_audit.summarize_rows(classified_rows)
+            summary['pricingFetchedAt'] = pricing_fetched_at_iso
+            summary['totalElapsedMs'] = round((time.time() - started) * 1000.0, 2)
+
+            set_summary(100, 'done',
+                        projectsTotal=total_projects,
+                        projectsDone=total_projects,
+                        llmProfilesTotal=summary.get('llmProfilesTotal', 0),
+                        countsByStatus=summary.get('countsByStatus', {}),
+                        distinctModelsByStatus=summary.get('distinctModelsByStatus', {}))
+            _finish_progress('llm_audit', run_id, status='ok', summary=None)
+
+            return {
+                'rows': classified_rows,
+                'summary': summary,
+                'pricingFetchedAt': pricing_fetched_at_iso,
+                'events': events,
+            }
+        except Exception as exc:
+            _finish_progress('llm_audit', run_id, status='error', error=str(exc))
+            raise
+
+    try:
+        ttl = int(_BACKEND_SETTINGS.get('cache_ttl_llm_audit', 600))
+        data = _cache_get('llm_audit', ttl, loader)
+        return jsonify(data)
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'rows': [], 'summary': {}, 'pricingFetchedAt': None}), 500
+
+
+@app.route('/api/llm-audit/progress')
+def api_llm_audit_progress():
+    since_raw = request.args.get('since', '0')
+    run_id = request.args.get('runId')
+    rows_since_raw = request.args.get('rowsSince', '0')
+    try:
+        since = max(0, int(str(since_raw or '0')))
+    except Exception:
+        since = 0
+    try:
+        rows_since = max(0, int(str(rows_since_raw or '0')))
+    except Exception:
+        rows_since = 0
+    payload = _read_progress('llm_audit', since=since, run_id=run_id, rows_since=rows_since)
+    return jsonify(payload)
 
 
 @app.route('/api/debug/perf')

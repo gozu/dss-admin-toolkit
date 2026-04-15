@@ -153,6 +153,13 @@ const icons: Record<string, ReactNode> = {
       <polyline points="16 7 22 7 22 13" />
     </svg>
   ),
+  'llm-audit': (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+      <path d="M9 9h6M9 12h6M9 15h4" />
+      <path d="M3 9h2M3 15h2M19 9h2M19 15h2M9 3v2M15 3v2M9 19v2M15 19v2" />
+    </svg>
+  ),
 };
 
 /* ------------------------------------------------------------------ */
@@ -224,6 +231,12 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'TRENDS',
     items: [
       { id: 'trends', label: 'Trends' },
+    ],
+  },
+  {
+    title: 'LLM',
+    items: [
+      { id: 'llm-audit', label: 'Model Audit' },
     ],
   },
 ];

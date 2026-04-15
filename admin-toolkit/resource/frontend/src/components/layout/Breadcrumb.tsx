@@ -27,6 +27,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   report: { label: 'Tools', firstPage: 'outreach' },
   trends: { label: 'Trends', firstPage: 'trends' },
   'ecr-image-cleaner': { label: 'Code Environments', firstPage: 'code-envs' },
+  'llm-audit': { label: 'LLM', firstPage: 'llm-audit' },
 };
 
 const PAGE_LABELS: Record<PageId, string> = {
@@ -50,6 +51,7 @@ const PAGE_LABELS: Record<PageId, string> = {
   'db-health': 'DB Health',
   trends: 'Trends',
   'ecr-image-cleaner': 'Docker Images',
+  'llm-audit': 'Model Audit',
 };
 
 export function Breadcrumb() {

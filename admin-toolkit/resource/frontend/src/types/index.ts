@@ -524,6 +524,8 @@ export interface ParsedData {
   provisionalCodeEnvs?: ProvisionalCodeEnv[];
   codeEnvsLoading?: LoadingProgressState;
   codeEnvsCompare?: CodeEnvCompareResult | null;
+  llmAudit?: LlmAuditResponse;
+  llmAuditLoading?: LoadingProgressState;
   analysisLoading?: LoadingProgressState;
   pythonVersionCounts?: Record<string, number>;
   rVersionCounts?: Record<string, number>;
@@ -743,6 +745,45 @@ export interface CodeEnvCompareResult {
 
 export type ToolsTab = 'outreach' | 'project-cleaner' | 'plugins';
 
+export type LlmAuditStatus = 'current' | 'obsolete' | 'ripoff' | 'unknown' | 'not_applicable';
+
+export interface LlmAuditRow {
+  projectKey: string;
+  projectName?: string;
+  llmId: string;
+  friendlyName?: string;
+  friendlyNameShort?: string;
+  type?: string;
+  connection?: string | null;
+  rawModel?: string | null;
+  effectiveModel?: string | null;
+  matchedKey?: string | null;
+  status: LlmAuditStatus;
+  provider?: string | null;
+  family?: string | null;
+  currentModel?: string | null;
+  modelInputPrice?: number | null;
+  modelOutputPrice?: number | null;
+  currentInputPrice?: number | null;
+  currentOutputPrice?: number | null;
+}
+
+export interface LlmAuditSummary {
+  llmProfilesTotal: number;
+  projectsScanned: number;
+  countsByStatus: Record<LlmAuditStatus, number>;
+  distinctModelsByStatus: { obsolete: number; ripoff: number };
+  pricingFetchedAt?: string | null;
+  totalElapsedMs?: number;
+}
+
+export interface LlmAuditResponse {
+  rows: LlmAuditRow[];
+  summary: LlmAuditSummary;
+  pricingFetchedAt?: string | null;
+  events?: Array<{ tMs: number; level: string; step: string; message: string; projectKey?: string }>;
+}
+
 export interface PluginCompareRow {
   id: string;
   label: string;
@@ -771,7 +812,8 @@ export type PageId =
   | 'report'
   | 'db-health'
   | 'trends'
-  | 'ecr-image-cleaner';
+  | 'ecr-image-cleaner'
+  | 'llm-audit';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
 export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';

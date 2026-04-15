@@ -36,6 +36,9 @@ const EcrImageCleanerLazy = lazy(() =>
 const TrendsPage = lazy(() =>
   import('../pages/TrendsPage').then((m) => ({ default: m.TrendsPage })),
 );
+const LlmAuditPage = lazy(() =>
+  import('../pages/LlmAuditPage').then((m) => ({ default: m.LlmAuditPage })),
+);
 
 function LoadingSpinner() {
   return (
@@ -96,6 +99,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <DbHealthPage />;
     case 'trends':
       return <TrendsPage />;
+    case 'llm-audit':
+      return <LlmAuditPage />;
     default:
       return <SummaryPage />;
   }
