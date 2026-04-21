@@ -29,7 +29,7 @@ export function getPageAvailability(d: ParsedData, pageId: PageId): PageAvailabi
     case 'plugins': // PluginComparator fetches its own data
     case 'directory': // manual-only, loads on user action
     case 'db-health': // self-fetching, queries PG directly
-    case 'ecr-image-cleaner': // self-fetching, queries ECR
+    case 'image-cleaner': // self-fetching, queries the selected registry
       return 'independent';
 
     // Trends depends on outreach data being loaded (for "now" values from DiagContext)

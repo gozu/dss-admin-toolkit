@@ -30,8 +30,8 @@ const ReportPage = lazy(() =>
 const DbHealthPage = lazy(() =>
   import('../pages/DbHealthPage').then((m) => ({ default: m.DbHealthPage })),
 );
-const EcrImageCleanerLazy = lazy(() =>
-  import('../EcrImageCleaner').then((m) => ({ default: m.EcrImageCleaner })),
+const ImageCleanerLazy = lazy(() =>
+  import('../ImageCleaner').then((m) => ({ default: m.ImageCleaner })),
 );
 const TrendsPage = lazy(() =>
   import('../pages/TrendsPage').then((m) => ({ default: m.TrendsPage })),
@@ -85,8 +85,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <LogsPage />;
     case 'code-env-cleaner':
       return <CodeEnvCleanerLazy />;
-    case 'ecr-image-cleaner':
-      return <EcrImageCleanerLazy />;
+    case 'image-cleaner':
+      return <ImageCleanerLazy />;
     case 'outreach':
     case 'project-cleaner':
     case 'plugins':

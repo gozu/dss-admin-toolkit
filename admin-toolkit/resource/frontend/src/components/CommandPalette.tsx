@@ -34,7 +34,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
   { id: 'db-health', label: 'DB Health', section: 'Tools', keywords: ['postgres', 'database', 'vacuum', 'tables', 'runtimedb', 'bloat'] },
   { id: 'trends', label: 'Trends', section: 'Trends', keywords: ['trends', 'compare', 'history', 'then', 'now', 'delta', 'change'] },
-  { id: 'ecr-image-cleaner', label: 'Docker Images', section: 'Code Environments', keywords: ['ecr', 'docker', 'image', 'container', 'cleanup', 'aws', 'registry'] },
+  { id: 'image-cleaner', label: 'Docker Images', section: 'Code Environments', keywords: ['ecr', 'acr', 'gar', 'docker', 'image', 'container', 'cleanup', 'aws', 'azure', 'gcp', 'registry'] },
 ];
 
 const SECTION_ICONS: Record<string, string> = {

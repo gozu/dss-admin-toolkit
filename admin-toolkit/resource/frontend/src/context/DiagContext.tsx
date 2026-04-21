@@ -63,6 +63,7 @@ function buildInitialState(layoutMode: LayoutMode): DiagStateWithComparison {
     dataSource: 'api',
     debugLogs: [],
     apiDirTree: initialApiDirTreeState,
+    focusedConnection: null,
     // New comparison state
     mode: 'single',
     activePage: 'summary' as PageId,
@@ -206,6 +207,8 @@ function diagReducer(
       next.set(action.payload.path, action.payload.node);
       return { ...state, apiDirTree: { ...state.apiDirTree, expandedNodes: next, isExpanding: false } };
     }
+    case 'SET_FOCUSED_CONNECTION':
+      return { ...state, focusedConnection: action.payload };
     case 'RESET':
       return buildInitialState(state.layoutMode);
 
@@ -284,6 +287,7 @@ interface DiagContextValue {
   setDataSource: (source: DataSource) => void;
   addDebugLog: (message: string, scope?: string, level?: DebugLevel) => void;
   clearDebugLogs: () => void;
+  setFocusedConnection: (name: string | null) => void;
   reset: () => void;
   // New comparison convenience methods
   setMode: (mode: AppMode) => void;
@@ -324,6 +328,8 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   const addDebugLog = useCallback((message: string, scope?: string, level: DebugLevel = 'info') =>
     dispatch({ type: 'ADD_DEBUG_LOG', payload: { message, scope, level } }), [dispatch]);
   const clearDebugLogs = useCallback(() => dispatch({ type: 'CLEAR_DEBUG_LOGS' }), [dispatch]);
+  const setFocusedConnection = useCallback((name: string | null) =>
+    dispatch({ type: 'SET_FOCUSED_CONNECTION', payload: name }), [dispatch]);
   const reset = useCallback(() => dispatch({ type: 'RESET' }), [dispatch]);
   const setMode = useCallback((mode: AppMode) => dispatch({ type: 'SET_MODE', payload: mode }), [dispatch]);
   const setActivePage = useCallback((page: PageId) => dispatch({ type: 'SET_ACTIVE_PAGE', payload: page }), [dispatch]);
@@ -340,14 +346,14 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     state, dispatch,
     setLoading, setError, setExtractedFiles, setParsedData, setActiveFilter, setLayoutMode,
     setDiagType, setRootFiles, setProjectFiles, setDsshome, setOriginalFile, setDataSource,
-    addDebugLog, clearDebugLogs, reset,
+    addDebugLog, clearDebugLogs, setFocusedConnection, reset,
     setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
     setComparisonViewMode, setComparisonProcessing, resetComparison,
   }), [
     state, dispatch,
     setLoading, setError, setExtractedFiles, setParsedData, setActiveFilter, setLayoutMode,
     setDiagType, setRootFiles, setProjectFiles, setDsshome, setOriginalFile, setDataSource,
-    addDebugLog, clearDebugLogs, reset,
+    addDebugLog, clearDebugLogs, setFocusedConnection, reset,
     setMode, setActivePage, setComparisonFile, clearComparisonFile, setComparisonResult,
     setComparisonViewMode, setComparisonProcessing, resetComparison,
   ]);

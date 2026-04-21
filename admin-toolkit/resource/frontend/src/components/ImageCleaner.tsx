@@ -1,9 +1,11 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { useModal } from '../hooks/useModal';
 import { fetchJson, getBackendUrl } from '../utils/api';
 
 // ── Types ──
+
+type Provider = 'ecr' | 'acr' | 'gar';
 
 interface ReleaseInfo {
   version: string;
@@ -11,18 +13,35 @@ interface ReleaseInfo {
   maxCutoffDate: string;
 }
 
-interface EcrImage {
+interface DetectResult {
+  provider: Provider | null;
+  registryUrl: string | null;
+  source: 'dss-config' | 'imds' | 'ipnet' | 'none';
+}
+
+interface RegistryImage {
   digest: string;
   tags: string[];
   pushedAt: string;
   deletable: boolean;
 }
 
-interface EcrRepo {
+interface RegistryRepo {
   name: string;
-  images: EcrImage[];
+  images: RegistryImage[];
   error?: string;
 }
+
+interface ErrorWithHint {
+  message: string;
+  hint?: string;
+}
+
+const PROVIDER_LABELS: Record<Provider, string> = {
+  ecr: 'AWS ECR',
+  acr: 'Azure ACR (beta)',
+  gar: 'Google Artifact Registry (beta)',
+};
 
 // ── Sort helpers ──
 
@@ -31,7 +50,7 @@ type SortDir = 'asc' | 'desc';
 
 interface FlatRow {
   repo: string;
-  image: EcrImage;
+  image: RegistryImage;
   key: string;
 }
 
@@ -54,63 +73,104 @@ function sortRows(rows: FlatRow[], field: SortField, dir: SortDir): FlatRow[] {
   });
 }
 
+async function fetchWithHint<T>(url: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(getBackendUrl(url), { credentials: 'same-origin', ...init });
+  const text = await resp.text();
+  if (!resp.ok) {
+    let parsed: { error?: string; hint?: string } = {};
+    try {
+      parsed = JSON.parse(text) as { error?: string; hint?: string };
+    } catch {
+      /* not JSON */
+    }
+    const err = new Error(parsed.error || `${resp.status} ${resp.statusText}`) as Error & { hint?: string };
+    if (parsed.hint) err.hint = parsed.hint;
+    throw err;
+  }
+  return JSON.parse(text) as T;
+}
+
 // ── Component ──
 
-export function EcrImageCleaner() {
-  // Phase 1: release date
+export function ImageCleaner() {
+  const [provider, setProvider] = useState<Provider>('ecr');
+  const [registryUrl, setRegistryUrl] = useState<string | null>(null);
+  const [detectSource, setDetectSource] = useState<DetectResult['source']>('none');
+  const [detectDone, setDetectDone] = useState(false);
+
   const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
   const [releaseLoading, setReleaseLoading] = useState(false);
-  const [releaseError, setReleaseError] = useState<string | null>(null);
+  const [releaseError, setReleaseError] = useState<ErrorWithHint | null>(null);
   const [cutoffDate, setCutoffDate] = useState('');
 
-  // Phase 2: scan (streaming)
-  const [scanRepos, setScanRepos] = useState<EcrRepo[]>([]);
+  const [scanRepos, setScanRepos] = useState<RegistryRepo[]>([]);
   const [scanTotal, setScanTotal] = useState<number | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
-  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<ErrorWithHint | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Sort
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
-  // Deletion mode
   const [deletionEnabled, setDeletionEnabled] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [deletedKeys, setDeletedKeys] = useState<Set<string>>(new Set());
 
-  // Delete modal
   const deleteModal = useModal();
   const [deleteInput, setDeleteInput] = useState('');
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteProgress, setDeleteProgress] = useState('');
 
-  // ── Phase 1: Load release date ──
+  // Phase 0: detect provider (runs once before release-date)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await fetchJson<DetectResult>('/api/tools/image-cleaner/detect-provider');
+        if (cancelled) return;
+        if (d.provider) setProvider(d.provider);
+        setRegistryUrl(d.registryUrl);
+        setDetectSource(d.source);
+      } catch {
+        /* best-effort; default ecr stays */
+      } finally {
+        if (!cancelled) setDetectDone(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const loadReleaseDate = useCallback(async () => {
+  // Phase 1: release date (re-fires when provider changes)
+  const loadReleaseDate = useCallback(async (p: Provider) => {
     setReleaseLoading(true);
     setReleaseError(null);
     try {
-      const info = await fetchJson<ReleaseInfo>('/api/tools/ecr-image-cleaner/release-date');
+      const info = await fetchWithHint<ReleaseInfo>(`/api/tools/image-cleaner/release-date?provider=${p}`);
       setReleaseInfo(info);
       setCutoffDate(info.maxCutoffDate);
     } catch (err) {
-      setReleaseError(err instanceof Error ? err.message : String(err));
+      const e = err as Error & { hint?: string };
+      setReleaseError({ message: e.message, hint: e.hint });
     } finally {
       setReleaseLoading(false);
     }
   }, []);
 
-  // Auto-load on first render
-  const [didLoad, setDidLoad] = useState(false);
-  if (!didLoad) {
-    setDidLoad(true);
-    loadReleaseDate();
-  }
+  useEffect(() => {
+    if (!detectDone) return;
+    void loadReleaseDate(provider);
+    setScanRepos([]);
+    setScanTotal(null);
+    setScanError(null);
+    setSelectedKeys(new Set());
+    setDeletedKeys(new Set());
+    setDeletionEnabled(false);
+  }, [detectDone, provider, loadReleaseDate]);
 
-  // ── Phase 2: Scan (SSE streaming) ──
-
+  // Phase 2: Scan (SSE streaming)
   const runScan = useCallback(async () => {
     if (!cutoffDate) return;
 
@@ -127,16 +187,25 @@ export function EcrImageCleaner() {
     setDeletionEnabled(false);
 
     try {
-      const url = getBackendUrl(`/api/tools/ecr-image-cleaner/scan?cutoff=${cutoffDate}`);
+      const url = getBackendUrl(
+        `/api/tools/image-cleaner/scan?provider=${provider}&cutoff=${cutoffDate}`,
+      );
       const response = await fetch(url, { credentials: 'same-origin', signal: controller.signal });
 
       if (!response.ok || !response.body) {
         const body = await response.text();
         let msg = `Scan failed: ${response.status} ${response.statusText}`;
+        let hint: string | undefined;
         try {
-          msg = (JSON.parse(body) as { error?: string }).error || msg;
-        } catch {}
-        throw new Error(msg);
+          const parsed = JSON.parse(body) as { error?: string; hint?: string };
+          msg = parsed.error || msg;
+          hint = parsed.hint;
+        } catch {
+          /* not JSON */
+        }
+        const e = new Error(msg) as Error & { hint?: string };
+        e.hint = hint;
+        throw e;
       }
 
       const reader = response.body.getReader();
@@ -165,29 +234,30 @@ export function EcrImageCleaner() {
           }
 
           if (eventType === 'error') {
-            throw new Error(String(payload.error || 'Scan error'));
+            const e = new Error(String(payload.error || 'Scan error')) as Error & { hint?: string };
+            if (typeof payload.hint === 'string') e.hint = payload.hint;
+            throw e;
           } else if (eventType === 'init') {
             setScanTotal(Number(payload.total));
           } else if (eventType === 'repo') {
-            setScanRepos((prev) => [...prev, payload as unknown as EcrRepo]);
+            setScanRepos((prev) => [...prev, payload as unknown as RegistryRepo]);
           }
-          // 'done' event — nothing extra needed, loop exits naturally
         }
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') return;
-      setScanError(err instanceof Error ? err.message : String(err));
+      const e = err as Error & { hint?: string };
+      setScanError({ message: e.message, hint: e.hint });
     } finally {
       setScanLoading(false);
       abortRef.current = null;
     }
-  }, [cutoffDate]);
+  }, [cutoffDate, provider]);
 
   const abortScan = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
-  // Flatten repos into rows
   const allRows = useMemo(() => {
     const rows: FlatRow[] = [];
     for (const repo of scanRepos) {
@@ -216,7 +286,6 @@ export function EcrImageCleaner() {
     [deletableRows, selectedKeys],
   );
 
-  // Sort helpers
   const toggleSort = useCallback(
     (field: SortField) => {
       if (sortField === field) {
@@ -231,10 +300,9 @@ export function EcrImageCleaner() {
 
   const sortIndicator = (field: SortField) => {
     if (sortField !== field) return '';
-    return sortDir === 'asc' ? ' \u25B2' : ' \u25BC';
+    return sortDir === 'asc' ? ' ▲' : ' ▼';
   };
 
-  // Selection
   const toggleSelect = useCallback((key: string) => {
     setSelectedKeys((prev) => {
       const next = new Set(prev);
@@ -251,8 +319,6 @@ export function EcrImageCleaner() {
       return allSelected ? new Set() : new Set(allKeys);
     });
   }, [deletableRows]);
-
-  // ── Phase 3: Delete ──
 
   const openDeleteConfirm = useCallback(() => {
     setDeleteInput('');
@@ -272,23 +338,29 @@ export function EcrImageCleaner() {
     setDeleteProgress('Sending delete request...');
     try {
       const body = {
+        provider,
         cutoff: cutoffDate,
         images: selectedDeletableRows.map((r) => ({
           repositoryName: r.repo,
           imageDigest: r.image.digest,
         })),
       };
-      const resp = await fetchJson<{ deleted: { repo: string; digest: string }[]; failed: { repo: string; digest: string; reason: string }[] }>(
-        '/api/tools/ecr-image-cleaner/delete',
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
-      );
-      // Mark deleted
+      const resp = await fetchJson<{
+        deleted: { repo: string; digest: string }[];
+        failed: { repo: string; digest: string; reason: string }[];
+      }>('/api/tools/image-cleaner/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       const deletedDigests = new Set(resp.deleted.map((d) => `${d.repo}:${d.digest}`));
       setDeletedKeys((prev) => new Set([...prev, ...deletedDigests]));
       setSelectedKeys(new Set());
 
       if (resp.failed.length > 0) {
-        setDeleteProgress(`Deleted ${resp.deleted.length}, failed ${resp.failed.length}: ${resp.failed.map((f) => f.reason).join('; ')}`);
+        setDeleteProgress(
+          `Deleted ${resp.deleted.length}, failed ${resp.failed.length}: ${resp.failed.map((f) => f.reason).join('; ')}`,
+        );
       } else {
         deleteModal.close();
       }
@@ -297,7 +369,7 @@ export function EcrImageCleaner() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [selectedDeletableRows, deleteInput, cutoffDate, deleteModal]);
+  }, [selectedDeletableRows, deleteInput, cutoffDate, provider, deleteModal]);
 
   const shortDigest = (d: string) => d.replace('sha256:', '').slice(0, 12);
 
@@ -306,16 +378,42 @@ export function EcrImageCleaner() {
   return (
     <>
       <div className="space-y-4 p-6">
-        {/* Header */}
         <section className="glass-card p-4">
           <h3 className="text-lg font-semibold text-[var(--text-primary)]">Docker Image Cleanup</h3>
           <p className="text-sm text-[var(--text-muted)] mt-1">
-            Find and remove stale ECR container images pushed before the current DSS version was released.
+            Find and remove stale container images pushed before the current DSS version was released.
           </p>
+          {registryUrl && (
+            <p className="text-xs text-[var(--text-muted)] mt-1 font-mono">
+              Registry: {registryUrl}{' '}
+              <span className="text-[var(--text-tertiary)]">(detected via {detectSource})</span>
+            </p>
+          )}
         </section>
 
-        {/* Phase 1: Release info */}
         <section className="glass-card p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <label
+              className="text-sm text-[var(--text-secondary)] whitespace-nowrap"
+              htmlFor="image-cleaner-provider"
+            >
+              Registry
+            </label>
+            <select
+              id="image-cleaner-provider"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value as Provider)}
+              className="input-glass text-sm py-1 px-2 rounded font-mono"
+              disabled={scanLoading}
+            >
+              {(Object.keys(PROVIDER_LABELS) as Provider[]).map((p) => (
+                <option key={p} value={p}>
+                  {PROVIDER_LABELS[p]}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {releaseLoading && (
             <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
@@ -324,7 +422,10 @@ export function EcrImageCleaner() {
           )}
           {releaseError && (
             <div className="text-sm text-[var(--neon-red)]">
-              <span className="font-medium">Error:</span> {releaseError}
+              <span className="font-medium">Error:</span> {releaseError.message}
+              {releaseError.hint && (
+                <div className="mt-1 text-xs text-[var(--text-muted)]">{releaseError.hint}</div>
+              )}
             </div>
           )}
           {releaseInfo && (
@@ -344,11 +445,14 @@ export function EcrImageCleaner() {
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <label className="text-sm text-[var(--text-secondary)] whitespace-nowrap" htmlFor="ecr-cutoff">
+                <label
+                  className="text-sm text-[var(--text-secondary)] whitespace-nowrap"
+                  htmlFor="image-cleaner-cutoff"
+                >
                   Delete images pushed before
                 </label>
                 <input
-                  id="ecr-cutoff"
+                  id="image-cleaner-cutoff"
                   type="date"
                   value={cutoffDate}
                   max={releaseInfo.maxCutoffDate}
@@ -360,22 +464,21 @@ export function EcrImageCleaner() {
                   disabled={!cutoffDate || scanLoading}
                   className="px-4 py-1.5 rounded-md text-sm font-medium bg-[var(--accent)] text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {scanLoading ? 'Scanning...' : 'Scan ECR'}
+                  {scanLoading ? 'Scanning...' : `Scan ${PROVIDER_LABELS[provider]}`}
                 </button>
               </div>
             </>
           )}
         </section>
 
-        {/* Phase 2: Scan progress */}
         {scanLoading && (
           <section className="glass-card p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
                 <span className="inline-block w-4 h-4 border-2 border-[var(--text-tertiary)] border-t-transparent rounded-full animate-spin" />
                 {scanTotal !== null
-                  ? `Scanning ECR repositories... ${scanRepos.length} / ${scanTotal}`
-                  : 'Discovering ECR repositories...'}
+                  ? `Scanning repositories... ${scanRepos.length} / ${scanTotal}`
+                  : 'Discovering repositories...'}
               </div>
               <button
                 onClick={abortScan}
@@ -389,15 +492,16 @@ export function EcrImageCleaner() {
         {scanError && (
           <section className="glass-card p-4">
             <div className="text-sm text-[var(--neon-red)]">
-              <span className="font-medium">Scan error:</span> {scanError}
+              <span className="font-medium">Scan error:</span> {scanError.message}
+              {scanError.hint && (
+                <div className="mt-1 text-xs text-[var(--text-muted)]">{scanError.hint}</div>
+              )}
             </div>
           </section>
         )}
 
-        {/* Phase 2: Scan results (shown during and after streaming) */}
         {hasResults && (
           <>
-            {/* Stats */}
             <section className="glass-card p-4">
               <div className="grid grid-cols-4 gap-4">
                 <div className="text-center">
@@ -419,7 +523,6 @@ export function EcrImageCleaner() {
               </div>
             </section>
 
-            {/* Deletion mode toggle */}
             {!scanLoading && (
               <section className="glass-card p-3 flex items-center justify-between">
                 <label className="flex items-center gap-2 text-sm text-[var(--text-secondary)] cursor-pointer select-none">
@@ -456,7 +559,6 @@ export function EcrImageCleaner() {
               </section>
             )}
 
-            {/* Image table */}
             <section className="glass-card p-4">
               <div className="overflow-auto max-h-[60vh]">
                 <table className="table-dark w-full">
@@ -491,8 +593,11 @@ export function EcrImageCleaner() {
                   <tbody>
                     {sortedRows.length === 0 && (
                       <tr>
-                        <td colSpan={deletionEnabled && !scanLoading ? 6 : 5} className="py-6 text-center text-sm text-[var(--text-muted)]">
-                          No matching images found in ECR.
+                        <td
+                          colSpan={deletionEnabled && !scanLoading ? 6 : 5}
+                          className="py-6 text-center text-sm text-[var(--text-muted)]"
+                        >
+                          No matching images found.
                         </td>
                       </tr>
                     )}
@@ -513,13 +618,18 @@ export function EcrImageCleaner() {
                         <td className="text-[var(--text-primary)] font-mono text-xs">{row.repo}</td>
                         <td>
                           <div className="flex flex-wrap gap-1">
-                            {row.image.tags.length > 0
-                              ? row.image.tags.map((t) => (
-                                  <span key={t} className="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--bg-glass)] text-[var(--text-secondary)]">
-                                    {t}
-                                  </span>
-                                ))
-                              : <span className="text-xs text-[var(--text-muted)]">&lt;untagged&gt;</span>}
+                            {row.image.tags.length > 0 ? (
+                              row.image.tags.map((t) => (
+                                <span
+                                  key={t}
+                                  className="inline-block px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--bg-glass)] text-[var(--text-secondary)]"
+                                >
+                                  {t}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-[var(--text-muted)]">&lt;untagged&gt;</span>
+                            )}
                           </div>
                         </td>
                         <td className="font-mono text-xs text-[var(--text-muted)]">{shortDigest(row.image.digest)}</td>
@@ -555,7 +665,6 @@ export function EcrImageCleaner() {
         )}
       </div>
 
-      {/* Delete Confirmation Modal */}
       <Modal
         isOpen={deleteModal.isOpen}
         onClose={deleteModal.close}
@@ -580,8 +689,8 @@ export function EcrImageCleaner() {
       >
         <div className="space-y-4">
           <p className="text-[var(--text-secondary)]">
-            Are you sure you want to delete {selectedDeletableRows.length} image{selectedDeletableRows.length !== 1 ? 's' : ''}?
-            This action cannot be undone.
+            Are you sure you want to delete {selectedDeletableRows.length} image
+            {selectedDeletableRows.length !== 1 ? 's' : ''}? This action cannot be undone.
           </p>
           <div className="max-h-40 overflow-y-auto rounded bg-[var(--bg-glass)] p-2 space-y-1">
             {selectedDeletableRows.map((r) => (
@@ -611,9 +720,7 @@ export function EcrImageCleaner() {
           {deleteProgress && !deleteError && (
             <div className="text-sm text-[var(--text-secondary)]">{deleteProgress}</div>
           )}
-          {deleteError && (
-            <div className="text-sm text-[var(--neon-red)]">{deleteError}</div>
-          )}
+          {deleteError && <div className="text-sm text-[var(--neon-red)]">{deleteError}</div>}
         </div>
       </Modal>
     </>

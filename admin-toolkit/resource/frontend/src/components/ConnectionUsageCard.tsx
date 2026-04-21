@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import type { ConnectionUsageItem, ConnectionDatasetUsage, ConnectionLlmUsage } from '../types';
@@ -251,11 +251,26 @@ function ConnectionUsageTable({
   items: ConnectionUsageItem[];
   mode: 'dataset' | 'llm';
 }) {
+  const { state, setFocusedConnection } = useDiag();
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('projectCount');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [expandedConn, setExpandedConn] = useState<string | null>(null);
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+  const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
+
+  useEffect(() => {
+    const target = state.focusedConnection;
+    if (!target) return;
+    if (!items.some((c) => c.name === target)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing context signal to local UI state
+    setSearch(target);
+    setExpandedConn(target);
+    setFocusedConnection(null);
+    requestAnimationFrame(() => {
+      rowRefs.current.get(target)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [state.focusedConnection, items, setFocusedConnection]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -333,7 +348,14 @@ function ConnectionUsageTable({
               const hiddenCount = projects.length - INITIAL_PROJECT_LIMIT;
 
               return (
-                <tr key={conn.name} className="align-top">
+                <tr
+                  key={conn.name}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(conn.name, el);
+                    else rowRefs.current.delete(conn.name);
+                  }}
+                  className="align-top"
+                >
                   <td colSpan={4} className="!p-0">
                     {/* Main row */}
                     <div

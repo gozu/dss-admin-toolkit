@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
+import { getBackendUrl } from '../utils/api';
 import { useTableSort } from '../hooks/useTableSort';
 import type { LlmAuditRow, LlmAuditStatus } from '../types';
 
@@ -14,33 +15,37 @@ type SortKey =
   | 'modelOutputPrice'
   | 'projectsUsing';
 
-const STATUS_ORDER: Record<LlmAuditStatus, number> = {
+// Wrapper LLMs (SAVED_MODEL_AGENT, RETRIEVAL_AUGMENTED) are filtered out in the backend,
+// so 'not_applicable' never reaches this table even though the type is still part of the
+// shared classifier vocabulary in python-lib/llm_audit.py.
+type DisplayStatus = Exclude<LlmAuditStatus, 'not_applicable'>;
+
+const STATUS_ORDER: Record<DisplayStatus, number> = {
   ripoff: 0,
   obsolete: 1,
   unknown: 2,
   current: 3,
-  not_applicable: 4,
 };
 
-const STATUS_LABEL: Record<LlmAuditStatus, string> = {
+const STATUS_LABEL: Record<DisplayStatus, string> = {
   ripoff: 'Ripoff',
   obsolete: 'Obsolete',
   unknown: 'Unknown',
   current: 'Current',
-  not_applicable: 'N/A',
 };
 
-const STATUS_TOOLTIP: Record<LlmAuditStatus, string> = {
+const STATUS_TOOLTIP: Record<DisplayStatus, string> = {
   ripoff:
     'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
   obsolete:
     'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
   current: 'Current: this is the latest model in its family.',
   unknown: 'Unknown: no matching model family in the LiteLLM catalog.',
-  not_applicable: 'Not applicable: wrapper LLMs (saved model agent, retrieval-augmented).',
 };
 
-function statusBadgeClass(status: LlmAuditStatus): string {
+const FILTER_STATUSES: DisplayStatus[] = ['ripoff', 'obsolete', 'unknown', 'current'];
+
+function statusBadgeClass(status: DisplayStatus): string {
   switch (status) {
     case 'ripoff':
       return 'bg-[var(--neon-red)]/20 text-[var(--neon-red)] border border-[var(--neon-red)]/40 pulse-glow';
@@ -49,10 +54,8 @@ function statusBadgeClass(status: LlmAuditStatus): string {
     case 'current':
       return 'bg-[var(--neon-green)]/20 text-[var(--neon-green)] border border-[var(--neon-green)]/40';
     case 'unknown':
-      return 'bg-[var(--text-tertiary)]/15 text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30';
-    case 'not_applicable':
     default:
-      return 'bg-[var(--text-tertiary)]/10 text-[var(--text-tertiary)] italic border border-[var(--text-tertiary)]/20';
+      return 'bg-[var(--text-tertiary)]/15 text-[var(--text-secondary)] border border-[var(--text-tertiary)]/30';
   }
 }
 
@@ -84,7 +87,7 @@ function formatRelative(iso: string | null | undefined): string {
 
 interface GroupedRow {
   llmId: string;
-  status: LlmAuditStatus;
+  status: DisplayStatus;
   friendlyName: string;
   friendlyNameShort: string;
   type: string;
@@ -103,24 +106,25 @@ interface GroupedRow {
 }
 
 export function LlmAuditTable() {
-  const { state } = useDiag();
+  const { state, setActivePage, setFocusedConnection } = useDiag();
   const audit = state.parsedData.llmAudit;
   const loading = state.parsedData.llmAuditLoading;
   const isLoading = Boolean(loading?.active);
   const rows: LlmAuditRow[] = useMemo(() => audit?.rows || [], [audit]);
 
-  const [statusFilter, setStatusFilter] = useState<Set<LlmAuditStatus>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<Set<DisplayStatus>>(new Set());
   const [search, setSearch] = useState('');
   const [modalLlm, setModalLlm] = useState<GroupedRow | null>(null);
 
   const grouped: GroupedRow[] = useMemo(() => {
     const map = new Map<string, GroupedRow>();
     for (const r of rows) {
+      if (r.status === 'not_applicable') continue;
       const key = r.llmId || `${r.connection || '-'}::${r.rawModel || r.effectiveModel || '-'}`;
       if (map.has(key)) continue;
       map.set(key, {
         llmId: r.llmId || key,
-        status: r.status,
+        status: r.status as DisplayStatus,
         friendlyName: r.friendlyName || r.llmId || '',
         friendlyNameShort: r.friendlyNameShort || r.friendlyName || r.llmId || '',
         type: r.type || '',
@@ -158,12 +162,11 @@ export function LlmAuditTable() {
   }, [grouped, statusFilter, search]);
 
   const counts = useMemo(() => {
-    const c: Record<LlmAuditStatus, number> = {
+    const c: Record<DisplayStatus, number> = {
       ripoff: 0,
       obsolete: 0,
       current: 0,
       unknown: 0,
-      not_applicable: 0,
     };
     for (const r of grouped) c[r.status] += 1;
     return c;
@@ -180,6 +183,16 @@ export function LlmAuditTable() {
     }
     return { ripoff: r.size, obsolete: o.size };
   }, [grouped]);
+
+  const dssBaseUrl = useMemo(() => {
+    const bUrl = getBackendUrl('/');
+    try {
+      const u = new URL(bUrl, window.location.origin);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      return '';
+    }
+  }, []);
 
   const { sortKey, sortDir, handleSort, sortIndicator } = useTableSort<SortKey>({
     defaultKey: 'status',
@@ -225,7 +238,7 @@ export function LlmAuditTable() {
     return clone;
   }, [filtered, sortKey, sortDir]);
 
-  const toggleStatusFilter = (s: LlmAuditStatus) => {
+  const toggleStatusFilter = (s: DisplayStatus) => {
     setStatusFilter((prev) => {
       const next = new Set(prev);
       if (next.has(s)) next.delete(s);
@@ -258,7 +271,7 @@ export function LlmAuditTable() {
                 : 'LLMs'}
             </h4>
             <div className="flex flex-wrap items-center gap-2">
-              {(['ripoff', 'obsolete', 'unknown', 'current', 'not_applicable'] as LlmAuditStatus[]).map(
+              {FILTER_STATUSES.map(
                 (s) => {
                   const active = statusFilter.has(s);
                   const c = counts[s];
@@ -368,13 +381,39 @@ export function LlmAuditTable() {
                       </span>
                     </td>
                     <td className="px-4 py-3 align-top">
-                      <div className="text-[var(--text-primary)] text-sm">{r.friendlyNameShort}</div>
-                      <div className="font-mono text-[11px] text-[var(--text-tertiary)] break-all">
-                        {r.llmId}
-                      </div>
-                      {r.provider && r.family && (
-                        <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
-                          {r.provider} · {r.family}
+                      {r.connection ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFocusedConnection(r.connection);
+                            setActivePage('connections');
+                          }}
+                          title={`Focus connection "${r.connection}" on the Connections tab`}
+                          className="text-left focus:outline-none group"
+                        >
+                          <div className="text-sm text-[var(--neon-cyan)] group-hover:underline">
+                            {r.friendlyNameShort}
+                          </div>
+                          <div className="font-mono text-[11px] text-[var(--text-tertiary)] break-all">
+                            {r.llmId}
+                          </div>
+                          {r.provider && r.family && (
+                            <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
+                              {r.provider} · {r.family}
+                            </div>
+                          )}
+                        </button>
+                      ) : (
+                        <div>
+                          <div className="text-[var(--text-primary)] text-sm">{r.friendlyNameShort}</div>
+                          <div className="font-mono text-[11px] text-[var(--text-tertiary)] break-all">
+                            {r.llmId}
+                          </div>
+                          {r.provider && r.family && (
+                            <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
+                              {r.provider} · {r.family}
+                            </div>
+                          )}
                         </div>
                       )}
                     </td>
@@ -383,8 +422,19 @@ export function LlmAuditTable() {
                         {r.type}
                       </span>
                     </td>
-                    <td className="px-4 py-3 align-top text-sm text-[var(--text-secondary)]">
-                      {r.connection || '\u2014'}
+                    <td className="px-4 py-3 align-top text-sm">
+                      {r.connection ? (
+                        <a
+                          href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(r.connection)}/`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--neon-cyan)] hover:underline"
+                        >
+                          {r.connection}
+                        </a>
+                      ) : (
+                        <span className="text-[var(--text-secondary)]">{'\u2014'}</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 align-top">
                       <div className="font-mono text-sm text-[var(--text-primary)] break-all">
@@ -460,13 +510,13 @@ export function LlmAuditTable() {
       </div>
 
       {modalLlm && (
-        <ProjectsModal row={modalLlm} onClose={() => setModalLlm(null)} />
+        <ProjectsModal row={modalLlm} onClose={() => setModalLlm(null)} dssBaseUrl={dssBaseUrl} />
       )}
     </div>
   );
 }
 
-function ProjectsModal({ row, onClose }: { row: GroupedRow; onClose: () => void }) {
+function ProjectsModal({ row, onClose, dssBaseUrl }: { row: GroupedRow; onClose: () => void; dssBaseUrl: string }) {
   const projects = row.referencingProjects;
   return (
     <div
@@ -505,9 +555,16 @@ function ProjectsModal({ row, onClose }: { row: GroupedRow; onClose: () => void 
               {projects.map((pk) => (
                 <li
                   key={pk}
-                  className="font-mono text-sm text-[var(--text-primary)] px-2 py-1 rounded hover:bg-[var(--bg-glass-hover)]"
+                  className="font-mono text-sm px-2 py-1 rounded hover:bg-[var(--bg-glass-hover)]"
                 >
-                  {pk}
+                  <a
+                    href={`${dssBaseUrl}/projects/${pk}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[var(--neon-cyan)] hover:underline"
+                  >
+                    {pk}
+                  </a>
                 </li>
               ))}
             </ul>
@@ -555,7 +612,7 @@ function SummaryCard({
   loading,
 }: {
   total: number;
-  counts: Record<LlmAuditStatus, number>;
+  counts: Record<DisplayStatus, number>;
   distinct: { ripoff: number; obsolete: number };
   pricingFetchedAt: string | null | undefined;
   loading: boolean;

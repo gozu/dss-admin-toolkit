@@ -585,6 +585,7 @@ export interface DiagState {
   dataSource: DataSource;
   debugLogs: DebugLogEntry[];
   apiDirTree: ApiDirTreeState;
+  focusedConnection: string | null;
 }
 
 // Context actions
@@ -612,6 +613,7 @@ export type DiagAction =
   | { type: 'APPEND_PARTIAL_PROJECT_FOOTPRINT'; payload: ProjectFootprintRow[] }
   | { type: 'SET_API_DIR_TREE'; payload: Partial<ApiDirTreeState> }
   | { type: 'SET_API_DIR_TREE_EXPANDED_NODE'; payload: { path: string; node: DirEntry } }
+  | { type: 'SET_FOCUSED_CONNECTION'; payload: string | null }
   | { type: 'RESET' };
 
 // Health Score types
@@ -814,7 +816,7 @@ export type PageId =
   | 'report'
   | 'db-health'
   | 'trends'
-  | 'ecr-image-cleaner'
+  | 'image-cleaner'
   | 'llm-audit';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
