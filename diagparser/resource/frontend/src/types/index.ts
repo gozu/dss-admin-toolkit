@@ -1,0 +1,580 @@
+// Diagnostic types
+export type DiagType = 'instance' | 'job' | 'fm' | 'unknown';
+
+// Extracted files map
+export type ExtractedFiles = Record<string, string>;
+
+// Cluster types
+export interface NodeGroup {
+  name: string;
+  instanceType: string;
+  desiredCapacity: number;
+  minSize: number;
+  maxSize: number;
+  volumeSize?: number;
+  volumeType?: string;
+  spot?: boolean;
+  labels?: Record<string, string>;
+  taints?: Array<{ key: string; value: string; effect: string }>;
+}
+
+export interface Cluster {
+  name: string;
+  region?: string;
+  version?: string;
+  networkType?: string;
+  vpcCidr?: string;
+  subnets?: Record<string, Record<string, { id: string }>>;
+  subnetIds?: string[];
+  securityGroups?: string[];
+  vpcId?: string;
+  status?: 'ON' | 'OFF' | 'UNKNOWN';
+  uptime?: string;
+  server?: string;
+  nodeGroups: NodeGroup[];
+  lastStartTime?: Date;
+  lastStopTime?: Date;
+  currentContext?: string;
+  clusterName?: string;
+  authCommand?: string;
+  authApiVersion?: string;
+}
+
+// Project types
+export interface Permission {
+  type: 'Group' | 'User';
+  name: string;
+  permissions: Record<string, boolean>;
+}
+
+export interface AgentInfo {
+  name: string;
+  type: string;       // friendly name: "Visual Agent", "Agent Hub", etc.
+  rawType: string;    // original: "TOOLS_USING_AGENT", "webapp_agent-hub_agent-hub", etc.
+}
+
+export interface AgenticFeatures {
+  agents: AgentInfo[];
+  agentTools: AgentInfo[];
+  chatUIs: AgentInfo[];
+  agentReviews: AgentInfo[];
+  knowledgeBanks: number;
+  total: number;
+}
+
+export interface Project {
+  key: string;
+  name: string;
+  owner: string;
+  permissions: Permission[];
+  versionNumber: number;
+  agenticFeatures?: AgenticFeatures;
+}
+
+// Code Environment types
+export interface CodeEnv {
+  name: string;
+  version: string;
+  language: 'python' | 'r';
+  owner?: string;
+  sizeBytes?: number;
+  usageCount?: number;
+  projectCount?: number;
+}
+
+export type CodeEnvUsageType = 'project-default-python' | 'project-default-r' | 'recipe';
+
+export interface CodeEnvUsage {
+  projectKey: string;
+  recipeName?: string;
+  usageType: CodeEnvUsageType;
+}
+
+// LLM types (for report generation)
+export interface LlmOption {
+  id: string;
+  label: string;
+  type: string;
+}
+
+// User types
+export interface User {
+  login: string;
+  email?: string;
+  enabled?: boolean;
+  userProfile?: string;
+}
+
+// Filesystem info
+export interface FilesystemInfo {
+  Filesystem: string;
+  Size: string;
+  Used: string;
+  Available: string;
+  'Use%': string;
+  'Mounted on': string;
+}
+
+// Disabled feature info
+export interface DisabledFeature {
+  status: string;
+  description: string;
+  url: string;
+}
+
+// Log error types
+export interface LogError {
+  timestamp: string;
+  data: string[];
+}
+
+export interface LogStats {
+  'Total Lines': number;
+  'Unique Errors': number;
+  'Displayed Errors': number;
+}
+
+// Memory info
+export type MemoryInfo = Record<string, string>;
+
+// System limits
+export type SystemLimits = Record<string, string>;
+
+// Connection counts
+export type ConnectionCounts = Record<string, number>;
+
+// Connection detail with optional driver info
+export interface ConnectionDetail {
+  name: string;
+  type: string;
+  driverClassName?: string;
+  llmParams?: { type?: string; model?: string; deployment?: string };
+}
+
+export interface ConnectionDatasetUsage {
+  connectionName: string;
+  projectKey: string;
+  datasetName: string;
+}
+
+export interface ConnectionLlmUsage {
+  connectionName: string;
+  projectKey: string;
+  llmId?: string;
+  usageContext: 'agent' | 'agent-tool' | 'retrieval-llm' | 'knowledge-bank';
+  objectName: string;
+}
+
+// User stats
+export type UserStats = Record<string, string | number>;
+
+// License properties
+export type LicenseProperties = Record<string, string | { value: string; truncate: boolean; maxLength: number }>;
+
+// Settings types
+export type EnabledSettings = Record<string, boolean>;
+export type SparkSettings = Record<string, string | number | boolean>;
+export type AuthSettings = Record<string, string | { value: string; truncate: boolean; maxLength: number }>;
+export type ContainerSettings = Record<string, string | number>;
+export type IntegrationSettings = Record<string, string>;
+export type ResourceLimits = Record<string, string | number>;
+export type CgroupSettings = Record<string, string | number>;
+export type ProxySettings = Record<string, string | number | boolean | string[]>;
+export type MaxRunningActivities = Record<string, number | string>;
+export type JavaMemorySettings = Record<string, string>;
+
+// Instance info from install.ini
+export interface InstanceInfo {
+  nodeId?: string;
+  installId?: string;
+  instanceUrl?: string;
+}
+
+// Project Footprint types
+export type ProjectFootprintHealth = 'green' | 'yellow' | 'orange' | 'red' | 'angry-red';
+
+export interface ProjectFootprintRow {
+  projectKey: string;
+  name: string;
+  owner: string;
+  codeEnvCount: number;
+  codeStudioCount?: number;
+  codeEnvBytes?: number;
+  managedDatasetsBytes: number;
+  managedFoldersBytes: number;
+  bundleBytes: number;
+  bundleCount?: number;
+  totalBytes: number;
+  totalGB: number;
+  instanceAvgProjectGB: number;
+  projectSizeIndex: number;
+  projectSizeHealth: ProjectFootprintHealth;
+  codeEnvHealth: ProjectFootprintHealth;
+  codeEnvRisk?: number;
+  projectRisk?: number;
+}
+
+export interface ProjectFootprintSummary {
+  projectCount: number;
+  instanceAvgProjectGB: number;
+  instanceProjectRiskAvg: number;
+}
+
+// Unified row shape for the merged Projects table (governance + footprint)
+export interface ProjectRow {
+  // governance — always present
+  key: string;
+  name: string;
+  owner: string;
+  permissions: Permission[];
+  versionNumber: number;
+  agenticFeatures?: AgenticFeatures;
+
+  // footprint — undefined until dirTree loads and ProjectFootprintParser runs
+  footprint?: {
+    codeEnvCount: number;
+    codeStudioCount?: number;
+    codeEnvBytes?: number;
+    managedDatasetsBytes: number;
+    managedFoldersBytes: number;
+    bundleBytes: number;
+    bundleCount?: number;
+    totalBytes: number;
+    totalGB: number;
+    instanceAvgProjectGB: number;
+    projectSizeIndex: number;
+    projectSizeHealth: ProjectFootprintHealth;
+    codeEnvHealth: ProjectFootprintHealth;
+    codeEnvRisk?: number;
+    projectRisk?: number;
+  };
+}
+
+// LLM Audit types
+export type LlmAuditStatus = 'current' | 'ripoff' | 'obsolete' | 'unknown' | 'not_applicable';
+
+export interface LlmAuditRow {
+  llmId: string;
+  status: LlmAuditStatus;
+  friendlyName: string;
+  friendlyNameShort?: string;
+  type: string;
+  connection: string;
+  rawModel: string;
+  effectiveModel: string;
+  currentModel: string;
+  modelInputPrice: number | null;
+  modelOutputPrice: number | null;
+  currentInputPrice: number | null;
+  currentOutputPrice: number | null;
+  provider: string;
+  family: string;
+  projectsUsing: number;
+  referencingProjects: string[];
+}
+
+// Full parsed data structure
+export interface ParsedData {
+  // Basic info
+  company?: string;
+  dssVersion?: string;
+  pythonVersion?: string;
+  diagType?: DiagType;
+  lastRestartTime?: string;
+  instanceInfo?: InstanceInfo;
+
+  // System info
+  cpuCores?: string;
+  osInfo?: string;
+  memoryInfo?: MemoryInfo;
+  systemLimits?: SystemLimits;
+  filesystemInfo?: FilesystemInfo[];
+
+  // Settings
+  enabledSettings?: EnabledSettings;
+  sparkSettings?: SparkSettings;
+  authSettings?: AuthSettings;
+  containerSettings?: ContainerSettings;
+  integrationSettings?: IntegrationSettings;
+  resourceLimits?: ResourceLimits;
+  cgroupSettings?: CgroupSettings;
+  proxySettings?: ProxySettings;
+  maxRunningActivities?: MaxRunningActivities;
+  javaMemorySettings?: JavaMemorySettings;
+  javaMemoryLimits?: JavaMemorySettings;
+  disabledFeatures?: Record<string, DisabledFeature>;
+
+  // Data collections
+  connections?: ConnectionCounts;
+  connectionCounts?: ConnectionCounts;
+  connectionDetails?: ConnectionDetail[];
+  userStats?: UserStats;
+  usersByProjects?: Record<string, string>;
+  users?: User[];
+  projects?: Project[];
+  plugins?: string[];
+  pluginsCount?: number;
+  pluginDetails?: Array<{
+    id: string; label: string; installedVersion?: string; isDev?: boolean;
+  }>;
+  codeEnvs?: CodeEnv[];
+  codeEnvSizes?: Record<string, number>;
+  codeEnvUsages?: Record<string, CodeEnvUsage[]>;
+  connectionDatasetUsages?: ConnectionDatasetUsage[];
+  connectionLlmUsages?: ConnectionLlmUsage[];
+  connectionUsageTotal?: number;
+  connectionUsageScanned?: number;
+  projectFootprint?: ProjectFootprintRow[];
+  projectFootprintSummary?: ProjectFootprintSummary;
+  pythonVersionCounts?: Record<string, number>;
+  rVersionCounts?: Record<string, number>;
+  clusters?: Cluster[];
+
+  // License
+  license?: Record<string, unknown>;
+  licenseInfo?: Record<string, unknown>;
+  licenseProperties?: LicenseProperties;
+  hasLicenseUsage?: boolean;
+
+  // Logs
+  formattedLogErrors?: string;
+  rawLogErrors?: LogError[];
+  logStats?: LogStats;
+
+  // LLM Audit
+  llmAudit?: { rows: LlmAuditRow[]; lookupLoadedAt?: string | null; lookupError?: string | null };
+  llmAuditLoading?: { active: boolean; message?: string; progressPct?: number };
+
+  // General settings raw
+  generalSettings?: Record<string, unknown>;
+
+  // Directory listing
+  dirTree?: DirTreeData;
+}
+
+// Context state
+export interface DiagState {
+  extractedFiles: ExtractedFiles;
+  parsedData: ParsedData;
+  activeFilter: string;
+  isLoading: boolean;
+  error: string | null;
+  diagType: DiagType;
+  rootFiles: string[];
+  projectFiles: string[];
+  dsshome: string;
+  originalFile: File | null;  // Original zip file for deferred extraction
+}
+
+// Context actions
+export type DiagAction =
+  | { type: 'SET_LOADING'; payload: boolean }
+  | { type: 'SET_ERROR'; payload: string | null }
+  | { type: 'SET_EXTRACTED_FILES'; payload: ExtractedFiles }
+  | { type: 'SET_PARSED_DATA'; payload: Partial<ParsedData> }
+  | { type: 'SET_ACTIVE_FILTER'; payload: string }
+  | { type: 'SET_DIAG_TYPE'; payload: DiagType }
+  | { type: 'SET_ROOT_FILES'; payload: string[] }
+  | { type: 'SET_PROJECT_FILES'; payload: string[] }
+  | { type: 'SET_DSSHOME'; payload: string }
+  | { type: 'SET_ORIGINAL_FILE'; payload: File | null }
+  | { type: 'RESET' };
+
+// Health Score types
+export type HealthSeverity = 'critical' | 'warning' | 'info' | 'good';
+
+export type HealthCategory =
+  | 'version'
+  | 'license'
+  | 'system'
+  | 'errors'
+  | 'config'
+  | 'security'
+  | 'memory'
+  | 'project_footprint'
+  | 'code_envs';
+
+export interface HealthIssue {
+  id: string;
+  category: HealthCategory;
+  severity: HealthSeverity;
+  title: string;
+  description: string;
+  recommendation?: string;
+  docUrl?: string;
+  value?: string | number;
+  threshold?: string | number;
+}
+
+export interface HealthCategoryScore {
+  category: HealthCategory;
+  label: string;
+  score: number;
+  weight: number;
+  issues: HealthIssue[];
+}
+
+export interface HealthScore {
+  overall: number;
+  status: 'healthy' | 'warning' | 'critical';
+  categories: HealthCategoryScore[];
+  issues: HealthIssue[];
+  criticalCount: number;
+  warningCount: number;
+  infoCount: number;
+}
+
+// Directory tree types for datadir_listing.txt visualization
+export interface DirEntry {
+  name: string;
+  path: string;
+  size: number;           // Size in bytes (cumulative for dirs - includes hidden children)
+  ownSize: number;        // Directory's own size (usually 4096) or file size
+  isDirectory: boolean;
+  children: DirEntry[];
+  fileCount: number;      // Number of files (recursive for dirs - includes hidden)
+  depth: number;
+  hasHiddenChildren: boolean;  // True if children were pruned (depth limit or top-N)
+}
+
+export interface DirTreeData {
+  root: DirEntry | null;
+  totalSize: number;
+  totalFiles: number;
+  rootPath: string;
+}
+
+// State for the async directory tree loader
+export interface DirTreeLoaderState {
+  isLoading: boolean;
+  progress: number;       // 0-100 percentage
+  progressText: string;   // Human-readable progress
+  error: string | null;
+  tree: DirTreeData | null;
+}
+
+// =============================================================================
+// COMPARISON TYPES
+// =============================================================================
+
+export type AppMode = 'landing' | 'single' | 'comparison';
+export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';
+export type DeltaDirection = 'improvement' | 'regression' | 'neutral';
+export type DeltaSeverity = 'critical' | 'warning' | 'info';
+export type ChangeType = 'added' | 'removed' | 'modified' | 'unchanged';
+
+// A single diagnostic file with all its parsed data
+export interface DiagFile {
+  id: string;
+  filename: string;
+  uploadedAt: Date;
+  fileSize: number;
+  parsedData: ParsedData;
+  extractedFiles: ExtractedFiles;
+  diagType: DiagType;
+  dsshome: string;
+  originalFile: File | null;
+  healthScore: HealthScore | null;
+}
+
+// Delta for a single field comparison
+export interface FieldDelta {
+  field: string;
+  label: string;
+  category: string;
+  before: unknown;
+  after: unknown;
+  changeType: ChangeType;
+  direction: DeltaDirection;
+  severity: DeltaSeverity;
+  numericDelta?: number;
+  percentChange?: number;
+}
+
+// Delta for a collection (arrays of objects)
+export interface CollectionDelta<T> {
+  added: T[];
+  removed: T[];
+  modified: Array<{
+    before: T;
+    after: T;
+    changes: string[];
+  }>;
+  unchanged: number;
+}
+
+// Health score delta
+export interface HealthDelta {
+  before: number;
+  after: number;
+  change: number;
+  direction: DeltaDirection;
+}
+
+// A section of deltas grouped by category
+export interface DeltaSection {
+  id: string;
+  label: string;
+  icon: string;
+  deltas: FieldDelta[];
+  changeCount: number;
+}
+
+// Full comparison result
+export interface ComparisonResult {
+  computedAt: Date;
+  summary: {
+    totalChanges: number;
+    improvements: number;
+    regressions: number;
+    neutral: number;
+    critical: number;
+    improvementDeltas: FieldDelta[];
+    regressionDeltas: FieldDelta[];
+  };
+  health: HealthDelta;
+  sections: {
+    critical: DeltaSection;
+    system: DeltaSection;
+    versions: DeltaSection;
+    config: DeltaSection;
+    scale: DeltaSection;
+    infrastructure: DeltaSection;
+  };
+  collections: {
+    users: CollectionDelta<User>;
+    projects: CollectionDelta<Project>;
+    clusters: CollectionDelta<Cluster>;
+    codeEnvs: CollectionDelta<CodeEnv>;
+    plugins: CollectionDelta<string>;
+  };
+}
+
+// Comparison state
+export interface ComparisonState {
+  before: DiagFile | null;
+  after: DiagFile | null;
+  result: ComparisonResult | null;
+  viewMode: ComparisonViewMode;
+  isProcessingBefore: boolean;
+  isProcessingAfter: boolean;
+}
+
+// Extended DiagState with comparison support
+export interface DiagStateWithComparison extends DiagState {
+  mode: AppMode;
+  comparison: ComparisonState;
+}
+
+// New actions for comparison
+export type ComparisonAction =
+  | { type: 'SET_MODE'; payload: AppMode }
+  | { type: 'SET_COMPARISON_FILE'; payload: { slot: 'before' | 'after'; file: DiagFile } }
+  | { type: 'CLEAR_COMPARISON_FILE'; payload: 'before' | 'after' }
+  | { type: 'SET_COMPARISON_RESULT'; payload: ComparisonResult }
+  | { type: 'SET_COMPARISON_VIEW_MODE'; payload: ComparisonViewMode }
+  | { type: 'SET_COMPARISON_PROCESSING'; payload: { slot: 'before' | 'after'; isProcessing: boolean } }
+  | { type: 'RESET_COMPARISON' };
+
+// Combined action type
+export type DiagActionWithComparison = DiagAction | ComparisonAction;

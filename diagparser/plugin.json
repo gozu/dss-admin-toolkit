@@ -1,0 +1,10 @@
+{
+    "id": "diag-parser",
+    "version": "1.2.037",
+    "meta": {
+        "label": "Diag Parser",
+        "description": "Analyze Dataiku diagnostic files with visualizations and health scoring",
+        "author": "Alex Kaos",
+        "icon": "icon-bar-chart"
+    }
+}
