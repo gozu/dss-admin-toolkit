@@ -1418,7 +1418,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             const c = (summary as { countsByStatus?: Record<string, number> }).countsByStatus || {};
             log(
               `Loaded LLM audit: ${llmAuditRes.value.rows?.length || 0} profile(s) — ` +
-                `${c.ripoff || 0} ripoff, ${c.obsolete || 0} obsolete, ${c.unknown || 0} unknown`,
+                `${c.ripoff || 0} overpriced, ${c.obsolete || 0} obsolete, ${c.unknown || 0} unknown`,
             );
           } else {
             setLlmAuditLoading({
