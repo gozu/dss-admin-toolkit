@@ -2,7 +2,79 @@ import { useMemo, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import { useTableSort } from '../hooks/useTableSort';
-import type { LlmAuditRow, LlmAuditStatus } from '../types';
+import type { LlmAuditRow, LlmAuditStatus, LlmAuditUsageAsset } from '../types';
+
+type UsageAssetWithProject = LlmAuditUsageAsset & { projectKey: string };
+
+const ASSET_TYPE_LABEL: Record<LlmAuditUsageAsset['assetType'], string> = {
+  recipe: 'recipe',
+  notebook: 'notebook',
+  knowledge_bank: 'knowledge-bank',
+  agent: 'agent',
+};
+
+function assetDeepLink(baseUrl: string, a: UsageAssetWithProject): string {
+  const pk = encodeURIComponent(a.projectKey);
+  const name = encodeURIComponent(a.assetName);
+  switch (a.assetType) {
+    case 'recipe':
+      return `${baseUrl}/projects/${pk}/recipes/${name}/`;
+    case 'notebook':
+      return `${baseUrl}/projects/${pk}/notebooks/jupyter/${name}/`;
+    case 'knowledge_bank':
+      return `${baseUrl}/projects/${pk}/knowledge-banks/${name}/`;
+    case 'agent':
+      return `${baseUrl}/projects/${pk}/agents/${name}/`;
+  }
+}
+
+function UsageAssetList({
+  dssBaseUrl,
+  assets,
+}: {
+  dssBaseUrl: string;
+  assets: UsageAssetWithProject[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (assets.length === 0) {
+    return (
+      <div className="text-[11px] text-[var(--text-tertiary)] mt-1 italic">
+        no asset references found
+      </div>
+    );
+  }
+  const CAP = 5;
+  const visible = expanded ? assets : assets.slice(0, CAP);
+  const hidden = assets.length - visible.length;
+  return (
+    <ul className="mt-1 space-y-0.5 text-[11px]">
+      {visible.map((a, i) => (
+        <li key={`${a.projectKey}:${a.assetType}:${a.assetName}:${i}`}>
+          <a
+            href={assetDeepLink(dssBaseUrl, a)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={a.recipeType || undefined}
+            className="text-[var(--neon-cyan)] hover:underline"
+          >
+            {ASSET_TYPE_LABEL[a.assetType]}: {a.projectKey}/{a.assetName}
+          </a>
+        </li>
+      ))}
+      {hidden > 0 && (
+        <li>
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] focus:outline-none"
+          >
+            + {hidden} more ▾
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
 
 type SortKey =
   | 'status'
@@ -28,7 +100,7 @@ const STATUS_ORDER: Record<DisplayStatus, number> = {
 };
 
 const STATUS_LABEL: Record<DisplayStatus, string> = {
-  ripoff: 'Ripoff',
+  ripoff: 'Overpriced',
   obsolete: 'Obsolete',
   unknown: 'Unknown',
   current: 'Current',
@@ -36,9 +108,9 @@ const STATUS_LABEL: Record<DisplayStatus, string> = {
 
 const STATUS_TOOLTIP: Record<DisplayStatus, string> = {
   ripoff:
-    'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
+    'Overpriced: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
   obsolete:
-    'Ripoff: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
+    'Overpriced: a current replacement exists at lower input or output price. Obsolete: a current replacement exists at equal or cheaper price.',
   current: 'Current: this is the latest model in its family.',
   unknown: 'Unknown: no matching model family in the LiteLLM catalog.',
 };
@@ -103,10 +175,11 @@ interface GroupedRow {
   family: string;
   projectsUsing: number;
   referencingProjects: string[];
+  usageAssets: UsageAssetWithProject[];
 }
 
 export function LlmAuditTable() {
-  const { state, setActivePage, setFocusedConnection } = useDiag();
+  const { state } = useDiag();
   const audit = state.parsedData.llmAudit;
   const loading = state.parsedData.llmAuditLoading;
   const isLoading = Boolean(loading?.active);
@@ -121,7 +194,15 @@ export function LlmAuditTable() {
     for (const r of rows) {
       if (r.status === 'not_applicable') continue;
       const key = r.llmId || `${r.connection || '-'}::${r.rawModel || r.effectiveModel || '-'}`;
-      if (map.has(key)) continue;
+      const assetsForRow: UsageAssetWithProject[] = (r.usageAssets || []).map((a) => ({
+        ...a,
+        projectKey: r.projectKey,
+      }));
+      const existing = map.get(key);
+      if (existing) {
+        existing.usageAssets.push(...assetsForRow);
+        continue;
+      }
       map.set(key, {
         llmId: r.llmId || key,
         status: r.status as DisplayStatus,
@@ -140,6 +221,7 @@ export function LlmAuditTable() {
         family: r.family || '',
         projectsUsing: r.projectsUsing ?? 0,
         referencingProjects: r.referencingProjects ?? [],
+        usageAssets: assetsForRow,
       });
     }
     return Array.from(map.values());
@@ -381,41 +463,10 @@ export function LlmAuditTable() {
                       </span>
                     </td>
                     <td className="px-4 py-3 align-top">
-                      {r.connection ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFocusedConnection(r.connection);
-                            setActivePage('connections');
-                          }}
-                          title={`Focus connection "${r.connection}" on the Connections tab`}
-                          className="text-left focus:outline-none group"
-                        >
-                          <div className="text-sm text-[var(--neon-cyan)] group-hover:underline">
-                            {r.friendlyNameShort}
-                          </div>
-                          <div className="font-mono text-[11px] text-[var(--text-tertiary)] break-all">
-                            {r.llmId}
-                          </div>
-                          {r.provider && r.family && (
-                            <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
-                              {r.provider} · {r.family}
-                            </div>
-                          )}
-                        </button>
-                      ) : (
-                        <div>
-                          <div className="text-[var(--text-primary)] text-sm">{r.friendlyNameShort}</div>
-                          <div className="font-mono text-[11px] text-[var(--text-tertiary)] break-all">
-                            {r.llmId}
-                          </div>
-                          {r.provider && r.family && (
-                            <div className="text-[11px] text-[var(--text-tertiary)] mt-0.5">
-                              {r.provider} · {r.family}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      <div className="text-[var(--text-primary)] text-sm" title={r.llmId}>
+                        {r.friendlyNameShort}
+                      </div>
+                      <UsageAssetList dssBaseUrl={dssBaseUrl} assets={r.usageAssets} />
                     </td>
                     <td className="px-4 py-3 align-top">
                       <span className="text-[11px] font-mono text-[var(--text-secondary)]">
@@ -624,7 +675,7 @@ function SummaryCard({
       color: 'text-[var(--text-primary)]',
     },
     {
-      label: 'Ripoff',
+      label: 'Overpriced',
       value: counts.ripoff,
       sub: distinct.ripoff > 0 ? `${distinct.ripoff} distinct model(s)` : undefined,
       color: 'text-[var(--neon-red)]',

@@ -749,6 +749,12 @@ export type ToolsTab = 'outreach' | 'project-cleaner' | 'plugins';
 
 export type LlmAuditStatus = 'current' | 'obsolete' | 'ripoff' | 'unknown' | 'not_applicable';
 
+export interface LlmAuditUsageAsset {
+  assetType: 'recipe' | 'notebook' | 'knowledge_bank' | 'agent';
+  assetName: string;
+  recipeType?: string | null;
+}
+
 export interface LlmAuditRow {
   projectKey: string;
   projectName?: string;
@@ -770,6 +776,7 @@ export interface LlmAuditRow {
   currentOutputPrice?: number | null;
   projectsUsing?: number;
   referencingProjects?: string[];
+  usageAssets?: LlmAuditUsageAsset[];
 }
 
 export interface LlmAuditSummary {

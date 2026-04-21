@@ -9333,14 +9333,30 @@ def _llm_audit_scan_project_references(
     client: Any,
     project_key: str,
     llm_id_regex: Optional[Any],
-) -> set:
-    """Return the set of llmIds that are explicitly referenced by assets in one project.
+) -> List[Dict[str, Any]]:
+    """Return per-asset llmId hits in one project.
 
-    Scans prompt/LLM recipes, knowledge banks, agents (structured llmId walk), and
-    code recipes (literal substring match against the universe of known llmIds).
-    Per-asset try/except — one bad asset can't take out the project scan.
+    Each hit: {llmId, assetType: 'recipe'|'notebook'|'knowledge_bank'|'agent',
+               assetName, recipeType}. Deduped by (assetType, assetName, llmId).
+    Scans prompt/LLM recipes, knowledge banks, agents (structured walk), code
+    recipes and Jupyter notebooks (literal llmId regex match). Per-asset try/
+    except — one bad asset can't take out the project scan.
     """
-    found: set = set()
+    hits: List[Dict[str, Any]] = []
+    seen_hits: set = set()
+
+    def add_hit(llm_id: str, asset_type: str, asset_name: str, recipe_type: Optional[str]) -> None:
+        k = (asset_type, asset_name, llm_id)
+        if k in seen_hits:
+            return
+        seen_hits.add(k)
+        hits.append({
+            'llmId': llm_id,
+            'assetType': asset_type,
+            'assetName': asset_name,
+            'recipeType': recipe_type,
+        })
+
     project = client.get_project(project_key)
 
     try:
@@ -9361,8 +9377,10 @@ def _llm_audit_scan_project_references(
             code_recipes.append(r)
 
     for r in structured_recipes:
+        rtype = r.get('type', '') or ''
+        rname = r.get('name') or ''
         try:
-            recipe = project.get_recipe(r['name'])
+            recipe = project.get_recipe(rname)
             settings = recipe.get_settings()
             payload = settings.get_json_payload() if hasattr(settings, 'get_json_payload') else None
             if not payload:
@@ -9374,10 +9392,10 @@ def _llm_audit_scan_project_references(
             if not payload:
                 continue
             for llm_id in _find_llm_ids(payload):
-                found.add(llm_id)
+                add_hit(llm_id, 'recipe', rname, rtype)
         except Exception as exc:
             app.logger.debug("[llm_audit_usage] recipe %s/%s failed: %s",
-                             project_key, r.get('name'), exc)
+                             project_key, rname, exc)
 
     try:
         kbs = project.list_knowledge_banks() or []
@@ -9392,7 +9410,7 @@ def _llm_audit_scan_project_references(
             kb_settings = project.get_knowledge_bank(kb_id).get_settings()
             raw = kb_settings.get_raw() if hasattr(kb_settings, 'get_raw') else kb_settings
             for llm_id in _find_llm_ids(raw):
-                found.add(llm_id)
+                add_hit(llm_id, 'knowledge_bank', kb_id, None)
         except Exception as exc:
             app.logger.debug("[llm_audit_usage] knowledge_bank %s/%s failed: %s",
                              project_key, kb_id, exc)
@@ -9410,26 +9428,53 @@ def _llm_audit_scan_project_references(
             ag_settings = project.get_agent(ag_id).get_settings()
             raw = ag_settings.get_raw() if hasattr(ag_settings, 'get_raw') else ag_settings
             for llm_id in _find_llm_ids(raw):
-                found.add(llm_id)
+                add_hit(llm_id, 'agent', ag_id, None)
         except Exception as exc:
             app.logger.debug("[llm_audit_usage] agent %s/%s failed: %s",
                              project_key, ag_id, exc)
 
     if llm_id_regex is not None:
         for r in code_recipes:
+            rtype = r.get('type', '') or ''
+            rname = r.get('name') or ''
             try:
-                recipe = project.get_recipe(r['name'])
+                recipe = project.get_recipe(rname)
                 settings = recipe.get_settings()
                 payload_str = settings.get_payload() if hasattr(settings, 'get_payload') else ''
                 if not payload_str:
                     continue
                 for match in llm_id_regex.findall(payload_str):
-                    found.add(match)
+                    add_hit(match, 'recipe', rname, rtype)
             except Exception as exc:
                 app.logger.debug("[llm_audit_usage] code_recipe %s/%s failed: %s",
-                                 project_key, r.get('name'), exc)
+                                 project_key, rname, exc)
 
-    return found
+        try:
+            notebooks = project.list_jupyter_notebooks() or []
+        except Exception as exc:
+            app.logger.debug("[llm_audit_usage] list_jupyter_notebooks failed for %s: %s",
+                             project_key, exc)
+            notebooks = []
+        for nb in notebooks:
+            nb_name = getattr(nb, 'notebook_name', None)
+            if not nb_name:
+                continue
+            try:
+                raw = nb.get_content().get_raw()
+                if isinstance(raw, str):
+                    source_text = raw
+                else:
+                    try:
+                        source_text = json.dumps(raw)
+                    except Exception:
+                        source_text = str(raw)
+                for match in llm_id_regex.findall(source_text):
+                    add_hit(match, 'notebook', nb_name, None)
+            except Exception as exc:
+                app.logger.debug("[llm_audit_usage] notebook %s/%s failed: %s",
+                                 project_key, nb_name, exc)
+
+    return hits
 
 
 def _llm_audit_scan_project(client: Any, project_key: str) -> List[Dict[str, Any]]:
@@ -9564,6 +9609,7 @@ def api_llm_audit():
                     add_event('usage_regex_failed', f'failed to compile llmId regex: {exc}', 'warn')
 
             projects_using_by_llm_id: Dict[str, set] = {}
+            assets_by_project_llm: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
             if total_projects > 0:
                 with ThreadPoolExecutor(max_workers=workers) as ex:
                     futures = {
@@ -9575,8 +9621,16 @@ def api_llm_audit():
                         pk = futures[fut]
                         try:
                             referenced = fut.result()
-                            for llm_id in referenced:
+                            for hit in referenced:
+                                llm_id = hit.get('llmId')
+                                if not llm_id:
+                                    continue
                                 projects_using_by_llm_id.setdefault(llm_id, set()).add(pk)
+                                assets_by_project_llm.setdefault(pk, {}).setdefault(llm_id, []).append({
+                                    'assetType': hit.get('assetType'),
+                                    'assetName': hit.get('assetName'),
+                                    'recipeType': hit.get('recipeType'),
+                                })
                         except Exception as exc:
                             add_event('usage_scan_project_failed', f'{pk}: {exc}', 'warn', project_key=pk)
                         done += 1
@@ -9620,6 +9674,9 @@ def api_llm_audit():
                 merged.update(verdict)
                 merged['projectsUsing'] = len(using_set)
                 merged['referencingProjects'] = referencing_sorted[:50]
+                merged['usageAssets'] = assets_by_project_llm.get(
+                    row.get('projectKey') or '', {}
+                ).get(llm_id, [])
                 classified_rows.append(merged)
 
             summary = llm_audit.summarize_rows(classified_rows)
