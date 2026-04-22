@@ -25,17 +25,15 @@ function parseMemoryValues(data: ParsedData): MemoryValues | null {
   const totalVmStr = data.memoryInfo?.total || '';
   const jekStr = data.javaMemorySettings?.JEK || '0g';
   const maxActivitiesRaw = data.maxRunningActivities?.['Max Running Activities'];
-  const maxActivitiesPerJobRaw = data.maxRunningActivities?.['Max Running Activities Per Job'];
   const cgroupLimitStr = String(data.cgroupSettings?.['Memory Limit'] || '0');
 
   const totalVm = parseInt(totalVmStr.replace(/[^0-9]/g, '')) || 0;
   const jekGB = parseInt(jekStr.replace(/[^0-9]/g, '')) || 0;
   const maxActivities = typeof maxActivitiesRaw === 'number' ? maxActivitiesRaw : 0;
-  const maxActivitiesPerJob = typeof maxActivitiesPerJobRaw === 'number' && maxActivitiesPerJobRaw > 0 ? maxActivitiesPerJobRaw : 1;
   const cgroupLimit = parseInt(cgroupLimitStr.replace(/[^0-9]/g, '')) || 0;
 
-  // JEK is per-job (shared among activities within a job), so max concurrent JEKs = max concurrent jobs
-  const maxJobs = Math.ceil(maxActivities / maxActivitiesPerJob);
+  // Worst case concurrent JEKs: one job per activity → maxActivities.
+  const maxJobs = maxActivities;
 
   if (cgroupLimit === 0) return null;
 
