@@ -13,18 +13,17 @@ export function MemoryAnalysisCard() {
   const totalVmStr = parsedData.memoryInfo?.total || '';
   const jekStr = parsedData.javaMemorySettings?.JEK || '0g';
   const maxActivitiesRaw = parsedData.maxRunningActivities?.['Max Running Activities'];
-  const maxActivitiesPerJobRaw = parsedData.maxRunningActivities?.['Max Running Activities Per Job'];
   const cgroupLimitStr = String(parsedData.cgroupSettings?.['Memory Limit'] || '0');
 
   // Parse numeric values
   const totalVm = parseInt(totalVmStr.replace(/[^0-9]/g, '')) || 0;
   const jekGB = parseInt(jekStr.replace(/[^0-9]/g, '')) || 0;
   const maxActivities = typeof maxActivitiesRaw === 'number' ? maxActivitiesRaw : 0;
-  const maxActivitiesPerJob = typeof maxActivitiesPerJobRaw === 'number' && maxActivitiesPerJobRaw > 0 ? maxActivitiesPerJobRaw : 1;
   const cgroupLimit = parseInt(cgroupLimitStr.replace(/[^0-9]/g, '')) || 0;
 
-  // JEK is per-job (shared among activities within a job), so max concurrent JEKs = max concurrent jobs
-  const maxJobs = Math.ceil(maxActivities / maxActivitiesPerJob);
+  // JEK is per-job (1 JVM per job, activities within a job share it). Worst case: each
+  // job runs only 1 activity → concurrent JEKs = maxActivities.
+  const maxJobs = maxActivities;
 
   // Calculate recommended max based on total memory
   let recommendedMax = 0;
