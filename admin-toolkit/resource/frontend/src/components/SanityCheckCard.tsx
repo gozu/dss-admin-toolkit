@@ -87,8 +87,23 @@ function groupByCode(messages: SanityCheckMessage[]): GroupedMessage[] {
 
 // --- HTML / text helpers ------------------------------------------------
 
-function stripLinks(html: string): string {
-  return html.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1');
+function rewriteLinks(html: string, dssBaseUrl: string): string {
+  return html.replace(/<a\b([^>]*)>/gi, (_match, attrs: string) => {
+    let newAttrs = attrs;
+    if (dssBaseUrl) {
+      newAttrs = newAttrs.replace(
+        /\bhref\s*=\s*"(\/[^"]*)"/i,
+        (_m: string, h: string) => `href="${dssBaseUrl}${h}"`,
+      );
+      newAttrs = newAttrs.replace(
+        /\bhref\s*=\s*'(\/[^']*)'/i,
+        (_m: string, h: string) => `href='${dssBaseUrl}${h}'`,
+      );
+    }
+    newAttrs = newAttrs.replace(/\btarget\s*=\s*("[^"]*"|'[^']*')/i, '');
+    newAttrs = newAttrs.replace(/\brel\s*=\s*("[^"]*"|'[^']*')/i, '');
+    return `<a${newAttrs} target="_blank" rel="noopener noreferrer">`;
+  });
 }
 
 function stripOuterPre(html: string): string {
@@ -117,8 +132,12 @@ function extractQuotedTokens(detailsList: string[]): string[] | null {
 // Parse the <pre>-block GIT-unmigrated layout. Preserves anything we
 // don't recognise verbatim so DSS truncation markers (e.g. "(... 402 more)")
 // are not silently dropped.
-function parseGitUnmigrated(occs: GroupedOccurrence[]): string[] {
-  const lines: string[] = [];
+function parseGitUnmigrated(
+  occs: GroupedOccurrence[],
+  projectKeys: Set<string>,
+  dssBaseUrl: string,
+): ReactNode[] {
+  const items: ReactNode[] = [];
   for (const o of occs) {
     const raw = stripOuterPre(o.extraInfoDetails || '').trim();
     if (!raw) continue;
@@ -133,33 +152,145 @@ function parseGitUnmigrated(occs: GroupedOccurrence[]): string[] {
       }
       const branch = l.match(/^\s*-\s*(\S+)\s+(\(.*\))\s*$/);
       if (branch && currentProject) {
-        lines.push(`${currentProject}: ${capitalize(branch[1])} ${branch[2]}`);
+        const suffix = `: ${capitalize(branch[1])} ${branch[2]}`;
+        if (dssBaseUrl && projectKeys.has(currentProject)) {
+          items.push(
+            <>
+              <a
+                href={`${dssBaseUrl}/projects/${encodeURIComponent(currentProject)}/`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[var(--neon-cyan)] hover:underline"
+              >
+                {currentProject}
+              </a>
+              {suffix}
+            </>,
+          );
+        } else {
+          items.push(`${currentProject}${suffix}`);
+        }
       } else {
-        lines.push(l.trim());
+        items.push(l.trim());
       }
     }
   }
-  return lines;
+  return items;
 }
 
 // --- Per-code rendering -------------------------------------------------
 
+function renderTokenLink(
+  code: string,
+  token: string,
+  projectNameToKey: Map<string, string>,
+  dssBaseUrl: string,
+): ReactNode {
+  const linkClass = 'text-[var(--neon-cyan)] hover:underline';
+
+  if (!dssBaseUrl) {
+    if (code === 'WARN_CLUSTERS_NONE_SELECTED_PROJECT') {
+      const key = projectNameToKey.get(token) || token;
+      return <code>{key}</code>;
+    }
+    return <span>{token}</span>;
+  }
+
+  if (/^(WARN_CONNECTION_|ERR_CONNECTION_)/.test(code)) {
+    return (
+      <a
+        href={`${dssBaseUrl}/admin/connections/edit/${encodeURIComponent(token)}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        {token}
+      </a>
+    );
+  }
+  if (code === 'WARN_CLUSTERS_NONE_SELECTED_PROJECT') {
+    const key = projectNameToKey.get(token) || token;
+    return (
+      <a
+        href={`${dssBaseUrl}/projects/${encodeURIComponent(key)}/`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        <code>{key}</code>
+      </a>
+    );
+  }
+  if (/^WARN_CLUSTERS_/.test(code)) {
+    return (
+      <a
+        href={`${dssBaseUrl}/admin/clusters/${encodeURIComponent(token)}/`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        {token}
+      </a>
+    );
+  }
+  if (/^(WARN_CODEENV_|ERR_CODEENV_)/.test(code)) {
+    return (
+      <a
+        href={`${dssBaseUrl}/admin/code-envs/`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        {token}
+      </a>
+    );
+  }
+  if (/^(WARN_USER_|WARN_USERS_|ERR_LICENSE_USER_)/.test(code)) {
+    return (
+      <a
+        href={`${dssBaseUrl}/admin/users/${encodeURIComponent(token)}/`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        {token}
+      </a>
+    );
+  }
+  if (/^(WARN_PROJECT_|ERR_PROJECT_)/.test(code)) {
+    const key = projectNameToKey.get(token) || token;
+    return (
+      <a
+        href={`${dssBaseUrl}/projects/${encodeURIComponent(key)}/`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+      >
+        <code>{key}</code>
+      </a>
+    );
+  }
+  return <span>{token}</span>;
+}
+
 function renderDetails(
   g: GroupedMessage,
   projectNameToKey: Map<string, string>,
+  projectKeys: Set<string>,
+  dssBaseUrl: string,
 ): ReactNode {
   if (g.occurrences.length === 0) {
     return <span className="text-[var(--text-muted)]">—</span>;
   }
 
   if (g.code === 'WARN_GIT_PROJECT_NOT_MIGRATED') {
-    const lines = parseGitUnmigrated(g.occurrences);
-    if (lines.length > 0) {
+    const items = parseGitUnmigrated(g.occurrences, projectKeys, dssBaseUrl);
+    if (items.length > 0) {
       return (
         <ul className="list-disc pl-5 space-y-0.5 marker:text-[var(--text-muted)]">
-          {lines.map((l, i) => (
+          {items.map((item, i) => (
             <li key={i} className="font-mono text-sm break-all">
-              {l}
+              {item}
             </li>
           ))}
         </ul>
@@ -176,18 +307,12 @@ function renderDetails(
       {g.occurrences.map((o, i) => {
         let head: ReactNode;
         if (tokens) {
-          const raw = tokens[i];
-          if (g.code === 'WARN_CLUSTERS_NONE_SELECTED_PROJECT') {
-            const key = projectNameToKey.get(raw) || raw;
-            head = <code>{key}</code>;
-          } else {
-            head = <span>{raw}</span>;
-          }
+          head = renderTokenLink(g.code, tokens[i], projectNameToKey, dssBaseUrl);
         } else {
           head = (
             <span
               className="sanity-html-content"
-              dangerouslySetInnerHTML={{ __html: stripLinks(o.details || '') }}
+              dangerouslySetInnerHTML={{ __html: rewriteLinks(o.details || '', dssBaseUrl) }}
             />
           );
         }
@@ -203,7 +328,7 @@ function renderDetails(
             {o.extraInfoDetails && (
               <div
                 className="pl-3 mt-0.5 text-xs font-sans sanity-html-content"
-                dangerouslySetInnerHTML={{ __html: stripLinks(o.extraInfoDetails) }}
+                dangerouslySetInnerHTML={{ __html: rewriteLinks(o.extraInfoDetails, dssBaseUrl) }}
               />
             )}
           </li>
@@ -234,6 +359,24 @@ export function SanityCheckCard() {
     }
     return m;
   }, [parsedData.projects]);
+
+  const projectKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of parsedData.projects || []) {
+      if (p.key) s.add(p.key);
+    }
+    return s;
+  }, [parsedData.projects]);
+
+  const dssBaseUrl = useMemo(() => {
+    const bUrl = getBackendUrl('/');
+    try {
+      const u = new URL(bUrl, window.location.origin);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      return '';
+    }
+  }, []);
 
   const rescan = useCallback(async () => {
     abortRef.current?.abort();
@@ -368,7 +511,7 @@ export function SanityCheckCard() {
                       {row.title}
                     </td>
                     <td className="text-[var(--text-secondary)] text-sm leading-relaxed align-top">
-                      {renderDetails(row, projectNameToKey)}
+                      {renderDetails(row, projectNameToKey, projectKeys, dssBaseUrl)}
                     </td>
                   </tr>
                 ))}
