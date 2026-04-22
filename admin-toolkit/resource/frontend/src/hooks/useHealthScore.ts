@@ -41,7 +41,8 @@ export type HealthFactorKey =
   | 'code_envs_per_project'
   | 'project_size_pressure'
   | 'disabled_features'
-  | 'java_memory_limits';
+  | 'java_memory_limits'
+  | 'runtime_database';
 
 export type HealthFactorToggles = Record<HealthFactorKey, boolean>;
 
@@ -58,6 +59,7 @@ export const DEFAULT_HEALTH_FACTOR_TOGGLES: HealthFactorToggles = {
   project_size_pressure: true,
   disabled_features: true,
   java_memory_limits: true,
+  runtime_database: true,
 };
 
 interface WeightedScoreComponent {
@@ -521,6 +523,35 @@ function scoreSecuritySettings(parsedData: ParsedData): { score: number; issues:
 }
 
 /**
+ * Calculate runtime database score.
+ * Production DSS instances should use PostgreSQL for the runtime database.
+ * PostgreSQL: 100, other: 40 (warning), unknown: 75 (neutral).
+ */
+function scoreRuntimeDatabase(
+  generalSettings: ParsedData['generalSettings'],
+): { score: number; issue?: HealthIssue } {
+  const internalDb = (
+    generalSettings as { internalDatabase?: { connection?: { type?: string } } } | undefined
+  )?.internalDatabase;
+  const type = internalDb?.connection?.type;
+  if (!type) return { score: 75 };
+  if (type === 'PostgreSQL') return { score: 100 };
+  return {
+    score: 40,
+    issue: {
+      id: 'runtime-db-not-postgres',
+      category: 'runtime_config',
+      severity: 'warning',
+      title: `Runtime database is ${type}, not PostgreSQL`,
+      description: `DSS runtime database connection type is '${type}'. Production DSS instances should use PostgreSQL for the runtime database.`,
+      recommendation: 'Migrate the DSS runtime database to PostgreSQL.',
+      value: type,
+      threshold: 'PostgreSQL',
+    },
+  };
+}
+
+/**
  * Calculate Java memory settings score
  */
 function scoreJavaMemory(javaMemorySettings: ParsedData['javaMemorySettings']): { score: number; issues: HealthIssue[] } {
@@ -888,10 +919,12 @@ export function calculateHealthScore(
     // ============================================
     const disabledResult = scoreDisabledFeatures(parsedData.disabledFeatures);
     const javaMemoryResult = scoreJavaMemory(parsedData.javaMemorySettings);
+    const runtimeDbResult = scoreRuntimeDatabase(parsedData.generalSettings);
 
     const runtimeConfigScore = combineEnabledScores([
-      { enabled: toggles.disabled_features, score: disabledResult.score, weight: 0.5 },
-      { enabled: toggles.java_memory_limits, score: javaMemoryResult.score, weight: 0.5 },
+      { enabled: toggles.disabled_features, score: disabledResult.score, weight: 0.34 },
+      { enabled: toggles.java_memory_limits, score: javaMemoryResult.score, weight: 0.33 },
+      { enabled: toggles.runtime_database, score: runtimeDbResult.score, weight: 0.33 },
     ]);
     const runtimeConfigIssues: HealthIssue[] = [];
     if (toggles.java_memory_limits) {
@@ -899,6 +932,9 @@ export function calculateHealthScore(
     }
     if (toggles.disabled_features && disabledResult.issue) {
       runtimeConfigIssues.push(disabledResult.issue);
+    }
+    if (toggles.runtime_database && runtimeDbResult.issue) {
+      runtimeConfigIssues.push(runtimeDbResult.issue);
     }
 
     categoryScores.push({
