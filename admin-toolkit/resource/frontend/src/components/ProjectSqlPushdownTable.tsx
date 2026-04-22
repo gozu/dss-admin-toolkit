@@ -1,0 +1,288 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Card } from './Card';
+import { getBackendUrl } from '../utils/api';
+import type {
+  SqlPushdownOwnerGroup,
+  SqlPushdownProjectFinding,
+  SqlPushdownRecipeFinding,
+} from '../types';
+
+interface ScanState {
+  total: number | null;
+  scanned: number | null;
+  ownerGroups: SqlPushdownOwnerGroup[];
+  status: 'idle' | 'scanning' | 'done' | 'error';
+  error: string | null;
+  elapsedMs: number | null;
+}
+
+const INITIAL_STATE: ScanState = {
+  total: null,
+  scanned: null,
+  ownerGroups: [],
+  status: 'idle',
+  error: null,
+  elapsedMs: null,
+};
+
+function OwnerRow({ group }: { group: SqlPushdownOwnerGroup }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-b border-[var(--border-glass)] last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full grid grid-cols-[auto_1fr_auto] items-center gap-3 px-4 py-2 text-left hover:bg-[var(--bg-glass)] transition-colors"
+        aria-expanded={open}
+      >
+        <span className="text-[10px] text-[var(--text-muted)] font-mono w-3">
+          {open ? '▼' : '▶'}
+        </span>
+        <span className="min-w-0">
+          <span className="text-[var(--text-primary)] font-medium">
+            {group.ownerDisplayName}
+          </span>
+          <span className="text-xs text-[var(--text-muted)] font-mono ml-2">
+            {group.ownerLogin}
+          </span>
+          {group.ownerEmail && (
+            <a
+              href={`mailto:${group.ownerEmail}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs text-[var(--neon-cyan)] hover:underline ml-2"
+            >
+              {group.ownerEmail}
+            </a>
+          )}
+        </span>
+        <span className="px-2 py-0.5 text-xs font-mono rounded-full badge-warning">
+          {group.totalRecipes} recipe{group.totalRecipes === 1 ? '' : 's'}
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 pb-3 pl-10 space-y-2">
+          {group.projects.map((proj) => (
+            <ProjectRow key={proj.projectKey} project={proj} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectRow({ project }: { project: SqlPushdownProjectFinding }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md border border-[var(--border-glass)] bg-[var(--bg-surface)]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full grid grid-cols-[auto_1fr_auto] items-center gap-2 px-3 py-1.5 text-left hover:bg-[var(--bg-glass)] transition-colors"
+        aria-expanded={open}
+      >
+        <span className="text-[10px] text-[var(--text-muted)] font-mono w-3">
+          {open ? '▼' : '▶'}
+        </span>
+        <span className="min-w-0 text-sm">
+          <span className="text-[var(--text-primary)]">{project.projectName}</span>
+          <span className="text-xs text-[var(--text-muted)] font-mono ml-2">
+            {project.projectKey}
+          </span>
+        </span>
+        <span className="text-xs font-mono text-[var(--text-muted)]">
+          {project.recipes.length}
+        </span>
+      </button>
+      {open && (
+        <ul className="px-3 pb-2 pl-8 space-y-1">
+          {project.recipes.map((r) => (
+            <RecipeLine key={`${project.projectKey}-${r.recipeName}`} recipe={r} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RecipeLine({ recipe }: { recipe: SqlPushdownRecipeFinding }) {
+  return (
+    <li className="text-sm">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[var(--text-muted)]">&bull;</span>
+        <span className="text-[var(--text-primary)] font-mono">{recipe.recipeName}</span>
+        <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-[var(--bg-glass)] text-[var(--text-secondary)]">
+          {recipe.recipeType}
+        </span>
+      </div>
+      <div className="pl-4 text-xs text-[var(--text-muted)]">
+        connection:{' '}
+        <span className="font-mono text-[var(--text-secondary)]">{recipe.connection}</span>
+        <span className="ml-2">
+          {recipe.inputs.join(', ')} &rarr; {recipe.outputs.join(', ')}
+        </span>
+      </div>
+    </li>
+  );
+}
+
+export function ProjectSqlPushdownTable() {
+  const [scan, setScan] = useState<ScanState>(INITIAL_STATE);
+  const abortRef = useRef<AbortController | null>(null);
+  const startedRef = useRef(false);
+
+  const runScan = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setScan({ ...INITIAL_STATE, status: 'scanning' });
+
+    try {
+      const url = getBackendUrl('/api/projects/sql_pushdown_audit');
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        const body = await response.text();
+        let msg = `Scan failed: ${response.status} ${response.statusText}`;
+        try {
+          msg = (JSON.parse(body) as { error?: string }).error || msg;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(msg);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          const eventMatch = part.match(/^event:\s*(\S+)/m);
+          const dataMatch = part.match(/^data:\s*(.*)/m);
+          if (!eventMatch || !dataMatch) continue;
+          const eventType = eventMatch[1];
+          let payload: Record<string, unknown>;
+          try {
+            payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (eventType === 'error') {
+            throw new Error(String(payload.error || 'Scan error'));
+          } else if (eventType === 'init') {
+            setScan((s) => ({ ...s, total: Number(payload.total) }));
+          } else if (eventType === 'progress') {
+            setScan((s) => ({ ...s, scanned: Number(payload.scanned) }));
+          } else if (eventType === 'done') {
+            setScan((s) => ({
+              ...s,
+              status: 'done',
+              ownerGroups: (payload.ownerGroups || []) as SqlPushdownOwnerGroup[],
+              scanned: s.total,
+              elapsedMs: Number(payload.total_ms) || null,
+            }));
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+      setScan((s) => ({
+        ...s,
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      abortRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void runScan();
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, [runScan]);
+
+  const progressPct = useMemo(() => {
+    if (!scan.total || scan.total <= 0) return 0;
+    const scanned = scan.scanned ?? 0;
+    return Math.max(0, Math.min(100, Math.round((scanned / scan.total) * 100)));
+  }, [scan.total, scan.scanned]);
+
+  const isScanning = scan.status === 'scanning';
+  const totalFindings = scan.ownerGroups.reduce((sum, g) => sum + g.totalRecipes, 0);
+
+  return (
+    <Card
+      id="project-sql-pushdown-audit"
+      title="SQL Pushdown Audit — Visual Recipes Running on DSS Engine"
+      variant="warning"
+      itemCount={scan.status === 'done' ? totalFindings : undefined}
+      collapsible
+      defaultOpen
+    >
+      <div className="px-4 py-3 text-sm text-[var(--text-secondary)] border-b border-[var(--border-glass)]">
+        When a visual recipe reads from and writes to datasets on the same SQL
+        connection, it should run in-database (engine = SQL) rather than pulling
+        warehouse-sized data through the DSS host. Recipes below qualify for
+        pushdown but are running on the DSS engine.
+      </div>
+
+      {isScanning && (
+        <div className="px-4 py-3 border-b border-[var(--border-glass)]">
+          <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
+            <span>
+              {scan.total === null
+                ? 'Discovering projects…'
+                : `Scanning ${scan.scanned ?? 0} / ${scan.total} projects…`}
+            </span>
+            <span className="font-mono">{progressPct}%</span>
+          </div>
+          <div className="mt-2 h-2 rounded-full bg-[var(--bg-glass)] overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[var(--neon-amber)] to-[var(--neon-red)] transition-all duration-300 ease-out"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {scan.status === 'error' && (
+        <div className="px-4 py-3 text-sm text-[var(--neon-red)]">
+          <span className="font-medium">Scan error:</span> {scan.error}
+          <button
+            type="button"
+            onClick={runScan}
+            className="ml-3 px-2 py-0.5 text-xs rounded border border-[var(--border-default)] hover:bg-[var(--bg-glass-hover)]"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {scan.status === 'done' && scan.ownerGroups.length === 0 && (
+        <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
+          All qualifying visual recipes are using SQL pushdown. Nothing to fix.
+        </div>
+      )}
+
+      {scan.ownerGroups.length > 0 && (
+        <div className="card-scroll-body">
+          {scan.ownerGroups.map((group) => (
+            <OwnerRow key={group.ownerLogin} group={group} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}

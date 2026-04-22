@@ -4704,6 +4704,230 @@ def api_connection_usages():
     )
 
 
+_SQL_PUSHDOWN_CODE_RECIPE_TYPES = frozenset({
+    'python', 'r', 'pyspark', 'spark_scala', 'scala', 'sql_query', 'sql_script',
+})
+
+
+@app.route('/api/projects/sql_pushdown_audit')
+def api_sql_pushdown_audit():
+    """Stream visual recipes running on DSS engine that qualify for SQL pushdown.
+
+    A recipe is reported when: (1) it is a visual (non-code) recipe, (2) all inputs
+    and outputs are SQL-type datasets sharing the same connection, and (3) the
+    selected engine is DSS (i.e., not already SQL). Grouped by project owner.
+    """
+
+    def _dataset_map_for(proj) -> Dict[str, Dict[str, str]]:
+        out: Dict[str, Dict[str, str]] = {}
+        try:
+            datasets = proj.list_datasets()
+        except Exception as e:
+            app.logger.debug("[sql_pushdown] list_datasets failed: %s", e)
+            return out
+        for ds in datasets:
+            name = ds.get('name') or ''
+            if not name:
+                continue
+            params = ds.get('params', {})
+            if isinstance(params, str):
+                try:
+                    import ast
+                    params = ast.literal_eval(params)
+                except Exception:
+                    params = {}
+            conn = params.get('connection') if isinstance(params, dict) else None
+            out[name] = {
+                'type': ds.get('type', '') or '',
+                'connection': conn or '',
+            }
+        return out
+
+    def _strip_project_prefix(ref: str, project_key: str) -> Tuple[str, bool]:
+        """Return (localName, isForeign). Foreign refs are disqualifiers."""
+        if '.' in ref:
+            prefix, name = ref.split('.', 1)
+            if prefix == project_key:
+                return name, False
+            return ref, True
+        return ref, False
+
+    def _scan_project_sql_pushdown(project_key: str) -> Dict[str, Any]:
+        client = _thread_client()
+        proj = client.get_project(project_key)
+        findings: List[Dict[str, Any]] = []
+
+        ds_map = _dataset_map_for(proj)
+
+        try:
+            recipes = proj.list_recipes() or []
+        except Exception as e:
+            app.logger.debug("[sql_pushdown] list_recipes failed for %s: %s", project_key, e)
+            return {'projectKey': project_key, 'findings': findings}
+
+        for r in recipes:
+            if not isinstance(r, dict):
+                continue
+            rtype = r.get('type', '') or ''
+            if not rtype or rtype in _SQL_PUSHDOWN_CODE_RECIPE_TYPES:
+                continue
+            rname = r.get('name') or ''
+            if not rname:
+                continue
+            try:
+                recipe = proj.get_recipe(rname)
+                settings = recipe.get_settings()
+                inputs = list(settings.get_flat_input_refs() or [])
+                outputs = list(settings.get_flat_output_refs() or [])
+                if not inputs or not outputs:
+                    continue
+
+                def _resolve(refs):
+                    resolved: List[Tuple[str, Dict[str, str]]] = []
+                    for ref in refs:
+                        local, foreign = _strip_project_prefix(ref, project_key)
+                        if foreign:
+                            return None
+                        info = ds_map.get(local)
+                        if info is None:
+                            return None
+                        resolved.append((local, info))
+                    return resolved
+
+                in_resolved = _resolve(inputs)
+                if in_resolved is None:
+                    continue
+                out_resolved = _resolve(outputs)
+                if out_resolved is None:
+                    continue
+
+                all_infos = [info for _, info in in_resolved + out_resolved]
+                if not all(info.get('type') in _SQL_CONNECTION_TYPES for info in all_infos):
+                    continue
+                connections = {info.get('connection') for info in all_infos}
+                if len(connections) != 1:
+                    continue
+                connection = next(iter(connections))
+                if not connection:
+                    continue
+
+                status = recipe.get_status()
+                engine_details = status.get_selected_engine_details() if status else None
+                if not isinstance(engine_details, dict):
+                    continue
+                if engine_details.get('type') != 'DSS':
+                    continue
+
+                findings.append({
+                    'recipeName': rname,
+                    'recipeType': rtype,
+                    'connection': connection,
+                    'inputs': [local for local, _ in in_resolved],
+                    'outputs': [local for local, _ in out_resolved],
+                })
+            except Exception as e:
+                app.logger.debug("[sql_pushdown] recipe %s/%s failed: %s", project_key, rname, e)
+
+        return {'projectKey': project_key, 'findings': findings}
+
+    def generate():
+        t0 = time.time()
+        try:
+            client = dataiku.api_client()
+            projects_catalog = _list_projects_catalog(client)
+            project_names = {p['key']: p.get('name', p['key']) for p in projects_catalog}
+            project_owners = {p['key']: p.get('owner') or '' for p in projects_catalog}
+            project_keys = list(project_names.keys())
+
+            users = _sdk_fetch(
+                'list_users',
+                _BACKEND_SETTINGS['cache_ttl_users'],
+                lambda: client.list_users(),
+            ) or []
+            user_map: Dict[str, Dict[str, Any]] = {}
+            for u in users:
+                login = u.get('login') or ''
+                if not login:
+                    continue
+                user_map[login] = {
+                    'displayName': u.get('displayName') or login,
+                    'email': u.get('email') or None,
+                }
+        except Exception as e:
+            yield "event: error\ndata: %s\n\n" % json.dumps({'error': str(e)[:200]})
+            return
+
+        yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(project_keys)})
+
+        per_project: Dict[str, List[Dict[str, Any]]] = {}
+        scanned = 0
+
+        workers = min(8, max(1, len(project_keys)))
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            futures = {pool.submit(_scan_project_sql_pushdown, pk): pk for pk in project_keys}
+            for future in as_completed(futures):
+                pk = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    result = {'projectKey': pk, 'findings': []}
+                if result.get('findings'):
+                    per_project[pk] = result['findings']
+                scanned += 1
+                if scanned % 20 == 0 or scanned == len(project_keys):
+                    yield "event: progress\ndata: %s\n\n" % json.dumps({'scanned': scanned})
+        except GeneratorExit:
+            pool.shutdown(wait=False, cancel_futures=True)
+            return
+        finally:
+            pool.shutdown(wait=False)
+
+        # Group by owner
+        owner_buckets: Dict[str, Dict[str, Any]] = {}
+        for pk, findings in per_project.items():
+            owner_login = project_owners.get(pk) or 'Unknown'
+            info = user_map.get(owner_login, {})
+            bucket = owner_buckets.setdefault(owner_login, {
+                'ownerLogin': owner_login,
+                'ownerDisplayName': info.get('displayName') or owner_login,
+                'ownerEmail': info.get('email'),
+                'projects': [],
+                'totalRecipes': 0,
+            })
+            sorted_findings = sorted(findings, key=lambda f: (f.get('recipeName') or '').lower())
+            bucket['projects'].append({
+                'projectKey': pk,
+                'projectName': project_names.get(pk, pk),
+                'recipes': sorted_findings,
+            })
+            bucket['totalRecipes'] += len(sorted_findings)
+
+        # Sort projects within each owner by recipe count desc, then name asc
+        for bucket in owner_buckets.values():
+            bucket['projects'].sort(
+                key=lambda p: (-len(p['recipes']), (p.get('projectName') or '').lower()),
+            )
+
+        # Sort owners by totalRecipes desc, then displayName asc
+        owner_groups = sorted(
+            owner_buckets.values(),
+            key=lambda b: (-b['totalRecipes'], (b.get('ownerDisplayName') or '').lower()),
+        )
+
+        total_ms = int((time.time() - t0) * 1000)
+        yield "event: done\ndata: %s\n\n" % json.dumps({
+            'total_ms': total_ms,
+            'ownerGroups': owner_groups,
+        })
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @app.route('/api/users')
 def api_users():
     client = dataiku.api_client()

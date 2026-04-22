@@ -90,6 +90,28 @@ export interface ProjectFootprintRow {
   usageBreakdown?: Record<string, number>;
 }
 
+export interface SqlPushdownRecipeFinding {
+  recipeName: string;
+  recipeType: string;
+  connection: string;
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface SqlPushdownProjectFinding {
+  projectKey: string;
+  projectName: string;
+  recipes: SqlPushdownRecipeFinding[];
+}
+
+export interface SqlPushdownOwnerGroup {
+  ownerLogin: string;
+  ownerDisplayName: string;
+  ownerEmail: string | null;
+  totalRecipes: number;
+  projects: SqlPushdownProjectFinding[];
+}
+
 export interface ProjectFootprintSummary {
   instanceProjectRiskAvg: number;
   instanceAvgProjectGB: number;

@@ -9,6 +9,7 @@ export { CardGrid } from './CardGrid';
 export { Card } from './Card';
 export { ProjectsTable } from './ProjectsTable';
 export { ProjectFootprintTable } from './ProjectFootprintTable';
+export { ProjectSqlPushdownTable } from './ProjectSqlPushdownTable';
 export { PluginsTable } from './PluginsTable';
 export { CodeEnvsTable } from './CodeEnvsTable';
 export { FilesystemChart } from './FilesystemChart';
