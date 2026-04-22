@@ -410,6 +410,8 @@ export interface SanityCheckMessage {
   title: string;
   details: string;
   message: string;
+  extraInfoSummary?: string | null;
+  extraInfoDetails?: string | null;
 }
 
 // Connection usage mapping (from /api/connections/usages SSE)
