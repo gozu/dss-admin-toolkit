@@ -9278,6 +9278,32 @@ def api_mail_channels():
     return jsonify({'channels': channels})
 
 
+@app.route('/api/sanity-check')
+def api_sanity_check():
+    try:
+        client = dataiku.api_client()
+        result = client.perform_instance_sanity_check(wait=True)
+        messages = [
+            {
+                'severity': m.severity,
+                'code': m.code,
+                'title': m.title,
+                'details': m.details,
+                'message': m.message,
+            }
+            for m in result.messages
+        ]
+        return jsonify({
+            'messages': messages,
+            'hasError': result.has_error,
+            'hasWarning': result.has_warning,
+            'hasSuccess': result.has_success,
+            'maxSeverity': result.max_severity,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'messages': []}), 500
+
+
 @app.route('/api/logs/errors')
 def api_logs_errors():
     client = dataiku.api_client()

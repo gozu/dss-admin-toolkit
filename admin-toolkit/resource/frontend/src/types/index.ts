@@ -404,6 +404,14 @@ export interface ConnectionHealthResult {
   error?: string;
 }
 
+export interface SanityCheckMessage {
+  severity: 'ERROR' | 'WARNING' | 'INFO' | 'SUCCESS';
+  code: string;
+  title: string;
+  details: string;
+  message: string;
+}
+
 // Connection usage mapping (from /api/connections/usages SSE)
 export interface ConnectionDatasetUsage {
   projectKey: string;
@@ -504,6 +512,8 @@ export interface ParsedData {
   connectionDetails?: ConnectionDetail[];
   connectionHealth?: ConnectionHealthResult[];
   connectionHealthTotal?: number | null;
+  sanityCheck?: SanityCheckMessage[];
+  sanityCheckMaxSeverity?: string | null;
   connectionDatasetUsages?: ConnectionUsageItem[];
   connectionLlmUsages?: ConnectionUsageItem[];
   connectionUsageTotal?: number | null;
@@ -815,6 +825,7 @@ export type PageId =
   | 'connections'
   | 'runtime-config'
   | 'logs'
+  | 'sanity-check'
   | 'outreach'
   | 'code-env-cleaner'
   | 'project-cleaner'

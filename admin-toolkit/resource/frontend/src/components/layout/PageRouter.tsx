@@ -15,6 +15,7 @@ import { CodeEnvsComparisonPage } from '../pages/CodeEnvsComparisonPage';
 import { ConnectionsPage } from '../pages/ConnectionsPage';
 import { RuntimeConfigPage } from '../pages/RuntimeConfigPage';
 import { LogsPage } from '../pages/LogsPage';
+import { SanityCheckPage } from '../pages/SanityCheckPage';
 
 // Lazy-load only the heavy views
 const ToolsView = lazy(() => import('../ToolsView').then((m) => ({ default: m.ToolsView })));
@@ -83,6 +84,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <RuntimeConfigPage />;
     case 'logs':
       return <LogsPage />;
+    case 'sanity-check':
+      return <SanityCheckPage />;
     case 'code-env-cleaner':
       return <CodeEnvCleanerLazy />;
     case 'image-cleaner':

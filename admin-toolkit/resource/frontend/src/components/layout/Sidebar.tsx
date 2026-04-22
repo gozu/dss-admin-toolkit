@@ -95,6 +95,12 @@ const icons: Record<string, ReactNode> = {
       <polyline points="10 9 9 9 8 9" />
     </svg>
   ),
+  'sanity-check': (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  ),
   outreach: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
@@ -198,6 +204,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'connections', label: 'Connections' },
       { id: 'runtime-config', label: 'Runtime' },
       { id: 'logs', label: 'Errors', badge: 'logs' },
+      { id: 'sanity-check', label: 'Sanity Check' },
       { id: 'plugins', label: 'Plugin Sync' },
     ],
   },
