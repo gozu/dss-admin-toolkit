@@ -137,7 +137,10 @@ export function ConnectionHealthCard() {
     return groups;
   }, [failedConnections]);
 
-  const auditFindings: ConnectionAuditResult[] = parsedData.connectionAudit || [];
+  const auditFindings: ConnectionAuditResult[] = useMemo(
+    () => parsedData.connectionAudit || [],
+    [parsedData.connectionAudit],
+  );
   const auditBySeverity = useMemo(() => {
     const groups: Record<'critical' | 'warning' | 'info', ConnectionAuditResult[]> = {
       critical: [],
