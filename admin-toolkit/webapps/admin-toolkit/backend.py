@@ -9283,22 +9283,25 @@ def api_sanity_check():
     try:
         client = dataiku.api_client()
         result = client.perform_instance_sanity_check(wait=True)
+        raw = result._data or {}
         messages = [
             {
-                'severity': m.severity,
-                'code': m.code,
-                'title': m.title,
-                'details': m.details,
-                'message': m.message,
+                'severity': m.get('severity'),
+                'code': m.get('code'),
+                'title': m.get('title'),
+                'details': m.get('details'),
+                'message': m.get('message'),
+                'extraInfoSummary': m.get('extraInfoSummary'),
+                'extraInfoDetails': m.get('extraInfoDetails'),
             }
-            for m in result.messages
+            for m in raw.get('messages', [])
         ]
         return jsonify({
             'messages': messages,
-            'hasError': result.has_error,
-            'hasWarning': result.has_warning,
-            'hasSuccess': result.has_success,
-            'maxSeverity': result.max_severity,
+            'hasError': raw.get('error', False),
+            'hasWarning': raw.get('warning', False),
+            'hasSuccess': raw.get('success', False),
+            'maxSeverity': raw.get('maxSeverity'),
         })
     except Exception as e:
         return jsonify({'error': str(e), 'messages': []}), 500
