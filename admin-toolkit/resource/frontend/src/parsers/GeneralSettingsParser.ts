@@ -12,11 +12,31 @@ import type {
   DisabledFeature,
   MemoryInfo,
   JavaMemorySettings,
+  SecurityDefaultsSettings,
 } from '../types';
 
 interface GeneralSettingsData {
   [key: string]: unknown;
-  ldapSettings?: { enabled?: boolean };
+  ldapSettings?: { enabled?: boolean; authorizedGroups?: string[] };
+  security?: { secureCookies?: boolean; [key: string]: unknown };
+  metastoreCatalogsSettings?: {
+    synchronizeTo?: { flavor?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+  graphicsExportsEnabled?: boolean;
+  defaultDatasetCreationSettings?: {
+    forcedPreferedConnection?: string;
+    preferedStorageFormats?: string;
+    preferedConnection?: string;
+    preferedUploadConnection?: string;
+    [key: string]: unknown;
+  };
+  recipeEnginesPreferences?: {
+    enginesPreferenceOrder?: unknown[];
+    preferenceByRecipeType?: Record<string, unknown>;
+    forbiddenEngines?: unknown[];
+    [key: string]: unknown;
+  };
   ssoSettings?: {
     enabled?: boolean;
     protocol?: string;
@@ -103,6 +123,8 @@ interface GeneralSettingsResult {
   cgroupSettings: CgroupSettings;
   proxySettings: ProxySettings;
   disabledFeatures: Record<string, DisabledFeature>;
+  securityDefaults: SecurityDefaultsSettings;
+  ldapAuthorizedGroups: string[];
 }
 
 interface ExternalData {
@@ -132,6 +154,8 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
       cgroupSettings: {},
       proxySettings: {},
       disabledFeatures: {},
+      securityDefaults: {},
+      ldapAuthorizedGroups: [],
     };
 
     // Extract enabled settings
@@ -157,11 +181,47 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
     result.resourceLimits = this.parseResourceLimits(data);
     result.proxySettings = this.parseProxySettings(data);
     result.cgroupSettings = this.parseCgroupsSettings(data);
+    result.securityDefaults = this.parseSecurityDefaults(data);
+    result.ldapAuthorizedGroups = Array.isArray(data.ldapSettings?.authorizedGroups)
+      ? (data.ldapSettings!.authorizedGroups as string[])
+      : [];
 
     // Check for disabled features
     result.disabledFeatures = this.checkDisabledFeatures(data);
 
     return result;
+  }
+
+  private parseSecurityDefaults(
+    data: GeneralSettingsData
+  ): SecurityDefaultsSettings {
+    const settings: SecurityDefaultsSettings = {};
+
+    settings['Secure Cookies'] =
+      data.security?.secureCookies === true ? 'Enabled' : 'Disabled';
+
+    const flavor = data.metastoreCatalogsSettings?.synchronizeTo?.flavor;
+    settings['Metastore Flavor'] = flavor && String(flavor).length > 0 ? String(flavor) : 'Not set';
+
+    settings['Graphics Export'] =
+      data.graphicsExportsEnabled === true ? 'Enabled' : 'Disabled';
+
+    const dds = data.defaultDatasetCreationSettings || {};
+    settings['Forced Preferred Connection'] =
+      dds.forcedPreferedConnection && dds.forcedPreferedConnection.length > 0
+        ? dds.forcedPreferedConnection
+        : 'Not set';
+    settings['Preferred Storage Formats'] =
+      dds.preferedStorageFormats && dds.preferedStorageFormats.length > 0
+        ? dds.preferedStorageFormats
+        : 'Not set';
+
+    const engines = data.recipeEnginesPreferences || {};
+    const hasOrder = Array.isArray(engines.enginesPreferenceOrder) && engines.enginesPreferenceOrder.length > 0;
+    const hasByType = engines.preferenceByRecipeType && Object.keys(engines.preferenceByRecipeType).length > 0;
+    settings['Engine Preferences'] = hasOrder || hasByType ? 'Configured' : 'Default';
+
+    return settings;
   }
 
   private checkDisabledFeatures(
@@ -338,6 +398,14 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
 
     // Always include LDAP status
     authSettings['LDAP Authentication'] = data.ldapSettings?.enabled === true ? 'Enabled' : 'Disabled';
+
+    if (data.ldapSettings?.enabled === true) {
+      const groups = Array.isArray(data.ldapSettings.authorizedGroups)
+        ? data.ldapSettings.authorizedGroups
+        : [];
+      authSettings['LDAP Authorized Groups'] =
+        groups.length > 0 ? `${groups.length} configured` : 'None (any LDAP user can sign in)';
+    }
 
     // Always include SSO status
     if (data.ssoSettings) {

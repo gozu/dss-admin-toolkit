@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
-import type { ConnectionHealthResult } from '../types';
+import type { ConnectionHealthResult, ConnectionAuditResult } from '../types';
 
 type ErrorCategory = 'missing_config' | 'missing_credentials' | 'invalid_credentials' | 'unreachable';
 
@@ -137,8 +137,34 @@ export function ConnectionHealthCard() {
     return groups;
   }, [failedConnections]);
 
+  const auditFindings: ConnectionAuditResult[] = parsedData.connectionAudit || [];
+  const auditBySeverity = useMemo(() => {
+    const groups: Record<'critical' | 'warning' | 'info', ConnectionAuditResult[]> = {
+      critical: [],
+      warning: [],
+      info: [],
+    };
+    for (const f of auditFindings) {
+      if (f.configIssues.length === 0) continue;
+      groups[f.severity].push(f);
+    }
+    return groups;
+  }, [auditFindings]);
+  const auditSeverityOrder: Array<'critical' | 'warning' | 'info'> = ['critical', 'warning', 'info'];
+  const auditSeverityLabels: Record<'critical' | 'warning' | 'info', string> = {
+    critical: 'Critical',
+    warning: 'Warning',
+    info: 'Info',
+  };
+  const auditSeverityColors: Record<'critical' | 'warning' | 'info', string> = {
+    critical: 'var(--neon-red)',
+    warning: 'amber-400',
+    info: 'var(--text-muted)',
+  };
+  const hasAudit = auditFindings.some((f) => f.configIssues.length > 0);
+
   return (
-    <div className="space-y-4">
+    <div id="connection-health-card" className="space-y-4">
       {/* Header */}
       <section className="glass-card p-4">
         <h3 className="text-lg font-semibold text-[var(--text-primary)]">Connection Health</h3>
@@ -266,6 +292,65 @@ export function ConnectionHealthCard() {
                 </div>
               ))
             )}
+          </div>
+        </section>
+      )}
+
+      {/* Configuration Audit */}
+      {hasAudit && (
+        <section className="glass-card p-4">
+          <h4 className="text-sm font-semibold text-[var(--text-primary)] mb-1">Configuration Audit</h4>
+          <p className="text-xs text-[var(--text-muted)] mb-3">
+            Recommended settings for fast-write, details readability, HDFS interface, and default connections.
+          </p>
+          <div className="overflow-auto max-h-[60vh]">
+            {auditSeverityOrder
+              .filter((sev) => auditBySeverity[sev].length > 0)
+              .map((sev) => (
+                <div key={sev} className="mb-4 last:mb-0">
+                  <div className="flex items-center gap-2 mb-2">
+                    <h4 className="text-sm font-semibold" style={{ color: auditSeverityColors[sev] }}>
+                      {auditSeverityLabels[sev]}
+                    </h4>
+                    <span className="text-xs font-mono text-[var(--text-muted)]">
+                      ({auditBySeverity[sev].length})
+                    </span>
+                  </div>
+                  <table className="table-dark w-full">
+                    <thead>
+                      <tr>
+                        <th>Connection</th>
+                        <th>Type</th>
+                        <th>Findings</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditBySeverity[sev].map((f) => (
+                        <tr key={f.name} className="hover:bg-[var(--bg-glass)] align-top">
+                          <td className="whitespace-nowrap">
+                            <a
+                              href={`${dssBaseUrl}/admin/connections/${encodeURIComponent(f.name)}/`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[var(--neon-cyan)] hover:underline"
+                            >
+                              {f.name}
+                            </a>
+                          </td>
+                          <td className="text-[var(--text-secondary)] whitespace-nowrap">{f.type}</td>
+                          <td className="text-[var(--text-muted)] text-xs leading-relaxed">
+                            <ul className="list-disc list-inside space-y-0.5">
+                              {f.configIssues.map((issue, idx) => (
+                                <li key={idx}>{issue}</li>
+                              ))}
+                            </ul>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
           </div>
         </section>
       )}

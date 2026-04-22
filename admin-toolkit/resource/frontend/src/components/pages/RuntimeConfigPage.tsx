@@ -18,6 +18,7 @@ const ALL_TABS: TabDef[] = [
   { id: 'enabled', label: 'Enabled Settings', dataKey: 'enabledSettings', title: 'Enabled Settings' },
   { id: 'resource-limits', label: 'Resource Limits', dataKey: 'resourceLimits', title: 'Resource Limits' },
   { id: 'auth', label: 'Auth Settings', dataKey: 'authSettings', title: 'Authentication Settings' },
+  { id: 'security-defaults', label: 'Security & Defaults', dataKey: 'securityDefaults', title: 'Security & Defaults' },
   { id: 'cgroups', label: 'CGroups Config', dataKey: 'cgroupSettings', title: 'CGroups Config' },
   { id: 'users-projects', label: 'Users by Projects', dataKey: 'usersByProjects', title: 'Users by Projects' },
   { id: 'system-limits', label: 'System Limits', dataKey: 'systemLimits', title: 'System Limits' },

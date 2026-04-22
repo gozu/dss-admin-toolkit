@@ -49,6 +49,8 @@ const categoryExplanations: Record<HealthCategory, string> = {
     'Legacy category kept for backward compatibility with older snapshots.',
   security:
     'Legacy category kept for backward compatibility with older snapshots.',
+  connections:
+    'Checks per-connection configuration audit: fast-write, details readability, HDFS interface, and default connections (e.g. filesystem_root).',
   license:
     'License compliance signal (currently not weighted).',
   errors:

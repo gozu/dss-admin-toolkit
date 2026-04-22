@@ -25,6 +25,7 @@ const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
   system: 0,
   config: 0,
   security: 0,
+  connections: 0,  // Surfaced via issue banner, not weighted
   license: 0,      // Not used
   errors: 0,       // Not used
 };

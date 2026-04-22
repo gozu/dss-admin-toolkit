@@ -145,6 +145,8 @@ export function useDataParser(): UseDataParserReturn {
       parsedData.cgroupSettings = result.cgroupSettings || {};
       parsedData.proxySettings = result.proxySettings || {};
       parsedData.disabledFeatures = result.disabledFeatures || {};
+      parsedData.securityDefaults = result.securityDefaults || {};
+      parsedData.ldapAuthorizedGroups = result.ldapAuthorizedGroups || [];
     }
     timer.measure('parse:settings', 'parse:settings');
 

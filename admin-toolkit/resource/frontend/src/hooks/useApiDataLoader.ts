@@ -16,6 +16,7 @@ import type {
   OutreachData,
   ConnectionHealthResult,
   LlmAuditResponse,
+  ConnectionAuditResult,
 } from '../types';
 import { fetchJson, fetchText, getBackendUrl } from '../utils/api';
 import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
@@ -429,11 +430,17 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           timedFetch('/api/plugins', fetchJson<PluginsResponse>('/api/plugins')),
           timedFetch('/api/java-memory', fetchText('/api/java-memory')),
           timedFetch('/api/mail-channels', fetchJson<MailChannelsResponse>('/api/mail-channels')),
+          timedFetch(
+            '/api/connections/audit',
+            fetchJson<{ connections: ConnectionAuditResult[]; summary: Record<string, number> }>(
+              '/api/connections/audit',
+            ),
+          ),
         ]);
 
         if (cancelled) return;
 
-        const [connectionsRes, usersRes, pluginsRes, javaMemoryRes, mailChannelsRes] = phase2;
+        const [connectionsRes, usersRes, pluginsRes, javaMemoryRes, mailChannelsRes, connectionAuditRes] = phase2;
 
         if (connectionsRes.status === 'fulfilled') {
           currentParsedData = {
@@ -501,6 +508,18 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           log(`Failed /api/mail-channels: ${getErrorMessage(mailChannelsRes.reason)}`, 'warn');
         }
 
+        if (connectionAuditRes.status === 'fulfilled') {
+          const auditFindings = connectionAuditRes.value.connections || [];
+          currentParsedData = {
+            ...currentParsedData,
+            connectionAudit: auditFindings,
+          };
+          dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
+          log(`Loaded connection audit (${auditFindings.length} findings)`);
+        } else {
+          log(`Failed /api/connections/audit: ${getErrorMessage(connectionAuditRes.reason)}`, 'warn');
+        }
+
         // Apply general settings parser after we have memory and java data
         const settingsParser = new GeneralSettingsParser();
         settingsParser.setExternalData({
@@ -530,6 +549,8 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
           cgroupSettings: settingsResult.cgroupSettings || {},
           proxySettings: settingsResult.proxySettings || {},
           disabledFeatures: settingsResult.disabledFeatures || {},
+          securityDefaults: settingsResult.securityDefaults || {},
+          ldapAuthorizedGroups: settingsResult.ldapAuthorizedGroups || [],
         };
         dispatch({ type: 'SET_PARSED_DATA', payload: currentParsedData });
         log('Applied GeneralSettings parser');

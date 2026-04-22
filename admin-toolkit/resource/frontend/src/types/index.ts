@@ -490,6 +490,19 @@ export interface InstanceInfo {
   nodeId?: string;
   installId?: string;
   instanceUrl?: string;
+  https?: boolean;
+  port?: string;
+}
+
+// Security & defaults settings rendered as a flat key/value table
+export type SecurityDefaultsSettings = Record<string, string | boolean>;
+
+// Per-connection configuration audit result (from /api/connections/audit)
+export interface ConnectionAuditResult {
+  name: string;
+  type: string;
+  configIssues: string[];
+  severity: 'critical' | 'warning' | 'info';
 }
 
 export interface PluginInfo {
@@ -529,6 +542,9 @@ export interface ParsedData {
   javaMemorySettings?: JavaMemorySettings;
   javaMemoryLimits?: JavaMemorySettings;
   disabledFeatures?: Record<string, DisabledFeature>;
+  securityDefaults?: SecurityDefaultsSettings;
+  ldapAuthorizedGroups?: string[];
+  connectionAudit?: ConnectionAuditResult[];
 
   // Data collections
   connections?: ConnectionCounts;
@@ -665,7 +681,8 @@ export type HealthCategory =
   | 'system'
   | 'errors'
   | 'config'
-  | 'security';
+  | 'security'
+  | 'connections';
 
 export interface HealthIssue {
   id: string;

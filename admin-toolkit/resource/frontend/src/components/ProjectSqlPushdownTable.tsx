@@ -25,7 +25,13 @@ const INITIAL_STATE: ScanState = {
   elapsedMs: null,
 };
 
-function OwnerRow({ group }: { group: SqlPushdownOwnerGroup }) {
+function OwnerRow({
+  group,
+  dssBaseUrl,
+}: {
+  group: SqlPushdownOwnerGroup;
+  dssBaseUrl: string;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="border-b border-[var(--border-glass)] last:border-b-0">
@@ -62,7 +68,11 @@ function OwnerRow({ group }: { group: SqlPushdownOwnerGroup }) {
       {open && (
         <div className="px-4 pb-3 pl-10 space-y-2">
           {group.projects.map((proj) => (
-            <ProjectRow key={proj.projectKey} project={proj} />
+            <ProjectRow
+              key={proj.projectKey}
+              project={proj}
+              dssBaseUrl={dssBaseUrl}
+            />
           ))}
         </div>
       )}
@@ -70,8 +80,15 @@ function OwnerRow({ group }: { group: SqlPushdownOwnerGroup }) {
   );
 }
 
-function ProjectRow({ project }: { project: SqlPushdownProjectFinding }) {
+function ProjectRow({
+  project,
+  dssBaseUrl,
+}: {
+  project: SqlPushdownProjectFinding;
+  dssBaseUrl: string;
+}) {
   const [open, setOpen] = useState(false);
+  const projectUrl = dssBaseUrl ? `${dssBaseUrl}/projects/${project.projectKey}/` : null;
   return (
     <div className="rounded-md border border-[var(--border-glass)] bg-[var(--bg-surface)]">
       <button
@@ -84,7 +101,19 @@ function ProjectRow({ project }: { project: SqlPushdownProjectFinding }) {
           {open ? '▼' : '▶'}
         </span>
         <span className="min-w-0 text-sm">
-          <span className="text-[var(--text-primary)]">{project.projectName}</span>
+          {projectUrl ? (
+            <a
+              href={projectUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-[var(--neon-cyan)] hover:underline"
+            >
+              {project.projectName}
+            </a>
+          ) : (
+            <span className="text-[var(--text-primary)]">{project.projectName}</span>
+          )}
           <span className="text-xs text-[var(--text-muted)] font-mono ml-2">
             {project.projectKey}
           </span>
@@ -96,7 +125,12 @@ function ProjectRow({ project }: { project: SqlPushdownProjectFinding }) {
       {open && (
         <ul className="px-3 pb-2 pl-8 space-y-1">
           {project.recipes.map((r) => (
-            <RecipeLine key={`${project.projectKey}-${r.recipeName}`} recipe={r} />
+            <RecipeLine
+              key={`${project.projectKey}-${r.recipeName}`}
+              projectKey={project.projectKey}
+              recipe={r}
+              dssBaseUrl={dssBaseUrl}
+            />
           ))}
         </ul>
       )}
@@ -104,12 +138,34 @@ function ProjectRow({ project }: { project: SqlPushdownProjectFinding }) {
   );
 }
 
-function RecipeLine({ recipe }: { recipe: SqlPushdownRecipeFinding }) {
+function RecipeLine({
+  projectKey,
+  recipe,
+  dssBaseUrl,
+}: {
+  projectKey: string;
+  recipe: SqlPushdownRecipeFinding;
+  dssBaseUrl: string;
+}) {
+  const recipeUrl = dssBaseUrl
+    ? `${dssBaseUrl}/projects/${projectKey}/recipes/${recipe.recipeName}/`
+    : null;
   return (
     <li className="text-sm">
       <div className="flex items-baseline gap-2">
         <span className="text-[var(--text-muted)]">&bull;</span>
-        <span className="text-[var(--text-primary)] font-mono">{recipe.recipeName}</span>
+        {recipeUrl ? (
+          <a
+            href={recipeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[var(--neon-cyan)] font-mono hover:underline"
+          >
+            {recipe.recipeName}
+          </a>
+        ) : (
+          <span className="text-[var(--text-primary)] font-mono">{recipe.recipeName}</span>
+        )}
         <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-[var(--bg-glass)] text-[var(--text-secondary)]">
           {recipe.recipeType}
         </span>
@@ -129,6 +185,16 @@ export function ProjectSqlPushdownTable() {
   const [scan, setScan] = useState<ScanState>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
   const startedRef = useRef(false);
+
+  const dssBaseUrl = useMemo(() => {
+    const bUrl = getBackendUrl('/');
+    try {
+      const u = new URL(bUrl, window.location.origin);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      return '';
+    }
+  }, []);
 
   const runScan = useCallback(async () => {
     abortRef.current?.abort();
@@ -279,7 +345,11 @@ export function ProjectSqlPushdownTable() {
       {scan.ownerGroups.length > 0 && (
         <div className="card-scroll-body">
           {scan.ownerGroups.map((group) => (
-            <OwnerRow key={group.ownerLogin} group={group} />
+            <OwnerRow
+              key={group.ownerLogin}
+              group={group}
+              dssBaseUrl={dssBaseUrl}
+            />
           ))}
         </div>
       )}

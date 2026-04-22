@@ -299,6 +299,108 @@ export function useIssueDetection(parsedData: ParsedData) {
       }
     }
 
+    // ============================================
+    // HTTPS / SECURE COOKIES / LDAP GROUPS
+    // ============================================
+    if (parsedData.instanceInfo && 'https' in parsedData.instanceInfo) {
+      if (parsedData.instanceInfo.https !== true) {
+        issues.push({
+          id: 'https-not-configured',
+          severity: 'warning',
+          title: 'HTTPS not configured',
+          description: 'Web server is serving plain HTTP — configure SSL in install.ini [server]',
+          category: 'security_isolation',
+          scrollTarget: 'overview',
+        });
+      }
+    }
+
+    if (parsedData.securityDefaults) {
+      const defaults = parsedData.securityDefaults;
+
+      if (defaults['Secure Cookies'] === 'Disabled') {
+        issues.push({
+          id: 'secure-cookies-disabled',
+          severity: 'warning',
+          title: 'Secure cookies disabled',
+          description: 'Session cookies are not marked Secure — enable security.secureCookies',
+          category: 'security_isolation',
+          scrollTarget: 'securityDefaults-table',
+        });
+      }
+
+      if (defaults['Graphics Export'] === 'Disabled') {
+        issues.push({
+          id: 'graphics-export-disabled',
+          severity: 'info',
+          title: 'Graphics export not configured',
+          description: 'PDF/image export from dashboards is disabled (graphicsExportsEnabled)',
+          category: 'config',
+          scrollTarget: 'securityDefaults-table',
+        });
+      }
+
+      const forcedPref = defaults['Forced Preferred Connection'];
+      const enginePref = defaults['Engine Preferences'];
+      if ((forcedPref !== 'Not set' && forcedPref !== undefined) || enginePref === 'Configured') {
+        issues.push({
+          id: 'preferred-engines-forced',
+          severity: 'info',
+          title: 'Preferred connections/engines configured',
+          description: 'Review defaults — admins should confirm the forced preferences match the intent',
+          category: 'config',
+          scrollTarget: 'securityDefaults-table',
+        });
+      }
+    }
+
+    if (
+      parsedData.authSettings?.['LDAP Authentication'] === 'Enabled' &&
+      (parsedData.ldapAuthorizedGroups?.length ?? 0) === 0
+    ) {
+      issues.push({
+        id: 'ldap-authorized-groups-empty',
+        severity: 'info',
+        title: 'LDAP authorized groups not set',
+        description: 'No LDAP groups restrict sign-in — any LDAP user can authenticate',
+        category: 'security_isolation',
+        scrollTarget: 'authSettings-table',
+      });
+    }
+
+    // ============================================
+    // CONNECTION AUDIT (filesystem_root + rollup)
+    // ============================================
+    if (parsedData.connectionAudit && parsedData.connectionAudit.length > 0) {
+      const hasFilesystemRoot = parsedData.connectionAudit.some(
+        (c) => c.name === 'filesystem_root' && c.severity === 'critical'
+      );
+      if (hasFilesystemRoot) {
+        issues.push({
+          id: 'filesystem-root-exists',
+          severity: 'critical',
+          title: 'Default filesystem_root connection present',
+          description: 'Default filesystem_root should be removed — it exposes the DSS data dir as a writable connection',
+          category: 'connections',
+          scrollTarget: 'connection-health-card',
+        });
+      }
+
+      const nonCriticalCount = parsedData.connectionAudit.filter(
+        (c) => c.severity !== 'critical' && c.configIssues.length > 0
+      ).length;
+      if (nonCriticalCount > 0) {
+        issues.push({
+          id: 'connections-config-issues',
+          severity: 'warning',
+          title: `${nonCriticalCount} connection${nonCriticalCount > 1 ? 's' : ''} with config issues`,
+          description: 'Review fast-write, details-readable, and HDFS interface settings in Connection Health',
+          category: 'connections',
+          scrollTarget: 'connection-health-card',
+        });
+      }
+    }
+
     // Sort by severity: critical first, then warning, then info
     const severityOrder: Record<IssueSeverity, number> = {
       critical: 0,

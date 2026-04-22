@@ -4346,6 +4346,12 @@ def api_overview():
                         instance_info['installId'] = value
                     elif key.lower() == 'instanceurl':
                         instance_info['instanceUrl'] = value
+                elif current_section == 'server' and '=' in line:
+                    key, value = [part.strip() for part in line.split('=', 1)]
+                    if key.lower() == 'ssl':
+                        instance_info['https'] = value.lower() in ('true', '1', 'yes')
+                    elif key.lower() == 'port':
+                        instance_info['port'] = value
 
         supervisord_log = None
         try:
@@ -4425,6 +4431,116 @@ def api_connections():
         return {'connections': connection_counts, 'connectionDetails': details}
 
     data = _cache_get('connections', _BACKEND_SETTINGS['cache_ttl_connections'], loader)
+    return jsonify(data)
+
+
+_CLOUD_HDFS_INTERFACES = {
+    'S3': ('S3A', 'EMRFS'),
+    'EC2': ('S3A', 'EMRFS'),
+    'Azure': ('ABFS', 'WASB', 'WASBS'),
+    'GCS': ('GS',),
+}
+
+
+def _audit_details_readable(config: dict) -> bool:
+    """True if connection details are readable by at least one group (ALL or ALLOWED with groups)."""
+    dr = config.get('detailsReadability') or {}
+    mode = dr.get('readableBy')
+    if mode == 'ALL':
+        return True
+    if mode == 'ALLOWED' and dr.get('allowedGroups'):
+        return True
+    return False
+
+
+def _audit_connection(name: str, config: dict) -> dict:
+    """Inspect one connection and return {name,type,configIssues,severity}."""
+    conn_type = config.get('type') or 'Unknown'
+    params = config.get('params') if isinstance(config.get('params'), dict) else {}
+    issues: List[str] = []
+    severity = 'info'
+
+    if conn_type == 'Filesystem' and name == 'filesystem_root':
+        issues.append('Default filesystem_root connection should be removed')
+        severity = 'critical'
+
+    elif conn_type in ('S3', 'EC2', 'Azure', 'GCS'):
+        if not _audit_details_readable(config):
+            issues.append('Connection details not readable by any group (detailsReadability)')
+        allowed_interfaces = _CLOUD_HDFS_INTERFACES.get(conn_type, ())
+        hdfs_interface = params.get('hdfsInterface') or ''
+        if not hdfs_interface:
+            issues.append('HDFS interface not configured')
+        elif allowed_interfaces and hdfs_interface not in allowed_interfaces:
+            issues.append('HDFS interface %s not in recommended %s' % (hdfs_interface, '/'.join(allowed_interfaces)))
+        if issues:
+            severity = 'warning'
+
+    elif conn_type == 'Snowflake':
+        if not params.get('useSparkNative'):
+            issues.append('Spark native integration not enabled (useSparkNative)')
+        if not params.get('useUDF'):
+            issues.append('UDF support not enabled (useUDF)')
+        if not params.get('autoFastWriteConnection'):
+            issues.append('Fast-write connection not configured (autoFastWriteConnection)')
+        if not _audit_details_readable(config):
+            issues.append('Connection details not readable by any group (detailsReadability)')
+        if issues:
+            severity = 'warning'
+
+    elif conn_type == 'Databricks':
+        if not params.get('autoFastWriteConnection'):
+            issues.append('Fast-write connection not configured (autoFastWriteConnection)')
+        if not _audit_details_readable(config):
+            issues.append('Connection details not readable by any group (detailsReadability)')
+        if issues:
+            severity = 'warning'
+
+    elif conn_type in ('Redshift', 'BigQuery', 'Synapse'):
+        if not params.get('autoFastWriteConnection'):
+            issues.append('Fast-write connection not configured (autoFastWriteConnection)')
+        if issues:
+            severity = 'warning'
+
+    return {
+        'name': name,
+        'type': conn_type,
+        'configIssues': issues,
+        'severity': severity,
+    }
+
+
+@app.route('/api/connections/audit')
+def api_connections_audit():
+    """Audit connection configuration (fast-write, details readability, HDFS interface, filesystem_root)."""
+    client = dataiku.api_client()
+
+    def loader():
+        connections = _sdk_fetch(
+            'list_connections',
+            _BACKEND_SETTINGS['cache_ttl_connections'],
+            lambda: client.list_connections(),
+        )
+        if isinstance(connections, dict):
+            items = connections.items()
+        else:
+            items = [(c.get('name'), c) for c in connections]
+
+        results: List[Dict[str, Any]] = []
+        summary = {'critical': 0, 'warning': 0, 'info': 0, 'total': 0}
+        for name, config in items:
+            if not name or not isinstance(config, dict):
+                continue
+            summary['total'] += 1
+            audit = _audit_connection(name, config)
+            if audit['configIssues']:
+                results.append(audit)
+                sev = audit['severity']
+                if sev in summary:
+                    summary[sev] += 1
+        return {'connections': results, 'summary': summary}
+
+    data = _cache_get('connections_audit', _BACKEND_SETTINGS['cache_ttl_connections'], loader)
     return jsonify(data)
 
 
