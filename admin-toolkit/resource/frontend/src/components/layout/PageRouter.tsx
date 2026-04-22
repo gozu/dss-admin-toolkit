@@ -10,6 +10,7 @@ import { FilesystemPage } from '../pages/FilesystemPage';
 import { MemoryPage } from '../pages/MemoryPage';
 import { DirectoryPage } from '../pages/DirectoryPage';
 import { ProjectsPage } from '../pages/ProjectsPage';
+import { ProjectComputePage } from '../pages/ProjectComputePage';
 import { CodeEnvsInsightsPage } from '../pages/CodeEnvsPage';
 import { CodeEnvsComparisonPage } from '../pages/CodeEnvsComparisonPage';
 import { ConnectionsPage } from '../pages/ConnectionsPage';
@@ -74,6 +75,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <DirectoryPage />;
     case 'projects':
       return <ProjectsPage />;
+    case 'project-compute':
+      return <ProjectComputePage />;
     case 'code-envs':
       return <CodeEnvsInsightsPage />;
     case 'code-envs-comparison':

@@ -853,6 +853,7 @@ export type PageId =
   | 'outreach'
   | 'code-env-cleaner'
   | 'project-cleaner'
+  | 'project-compute'
   | 'plugins'
   | 'tracking'
   | 'report'

@@ -213,6 +213,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'project-cleaner', label: 'Cleaner' },
       { id: 'projects', label: 'Insights' },
+      { id: 'project-compute', label: 'Compute' },
     ],
   },
   {

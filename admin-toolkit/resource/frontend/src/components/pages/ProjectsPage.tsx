@@ -3,7 +3,6 @@ import { useDiag } from '../../context/DiagContext';
 import {
   ProjectsTable,
   ProjectFootprintTable,
-  ProjectSqlPushdownTable,
   ProjectPermissionsModal,
 } from '../index';
 import { useModal } from '../../hooks';
@@ -34,8 +33,6 @@ export function ProjectsPage() {
         {hasProjects && <ProjectsTable onViewPermissions={handleViewPermissions} />}
 
         {(hasFootprint || footprintLoading) && <ProjectFootprintTable />}
-
-        <ProjectSqlPushdownTable />
 
         {!hasProjects && !hasFootprint && !footprintLoading && (
           <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center">
