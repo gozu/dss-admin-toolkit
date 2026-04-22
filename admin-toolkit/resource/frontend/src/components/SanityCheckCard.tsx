@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { getBackendUrl } from '../utils/api';
 import type { SanityCheckMessage } from '../types';
@@ -28,217 +28,189 @@ interface SanityCheckResponse {
   error?: string;
 }
 
-// --- Text helpers --------------------------------------------------------
-
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-function stripHtml(s: string | null | undefined): string {
-  if (!s) return '';
-  const withBreaks = s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/\s*(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '');
-  return decodeEntities(withBreaks).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-}
-
-function stripTitlePrefix(title: string): string {
-  if (!title) return '';
-  const idx = title.indexOf(' - ');
-  return idx >= 0 ? title.slice(idx + 3).trim() : title;
-}
-
-function uniq(arr: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const v of arr) {
-    if (!seen.has(v)) {
-      seen.add(v);
-      out.push(v);
-    }
-  }
-  return out;
-}
-
-// --- Per-code extractor regexes -----------------------------------------
-
-const CONN_SINGLE_QUOTE_RE = /connection '([^']+)'/;
-const PROJECT_SINGLE_QUOTE_RE = /project '([^']+)'/;
-const CODE_ENV_DEP_RE =
-  /environment '([^']+)' uses a deprecated python interpreter\s*:?\s*([^\n.]+)?/i;
-const CODE_ENV_NAME_RE = /code environment '([^']+)'/i;
-
-function extractFirst(re: RegExp, s: string): string | null {
-  const m = s.match(re);
-  return m ? m[1] : null;
-}
-
-function formatList(items: string[]): string {
-  return items.join(', ');
-}
-
-// --- Per-code formatters -------------------------------------------------
-
-type Formatter = (msgs: SanityCheckMessage[]) => string;
-
-const FORMATTERS: Record<string, Formatter> = {
-  WARN_CONNECTION_SPARK_NO_GROUP_WITH_DETAILS_READ_ACCESS: (msgs) => {
-    const names = uniq(
-      msgs.map((m) => extractFirst(CONN_SINGLE_QUOTE_RE, stripHtml(m.details))).filter(Boolean) as string[],
-    );
-    if (names.length === 0) return defaultFormatter(msgs);
-    return `${formatList(names)} have no groups allowed to read their details. Spark interaction may be slow.`;
-  },
-
-  WARN_CLUSTERS_NONE_SELECTED_PROJECT: (msgs) => {
-    const names = uniq(
-      msgs.map((m) => extractFirst(PROJECT_SINGLE_QUOTE_RE, stripHtml(m.details))).filter(Boolean) as string[],
-    );
-    return names.length ? formatList(names) : defaultFormatter(msgs);
-  },
-
-  WARN_CONNECTION_SNOWFLAKE_NO_AUTOFASTWRITE: (msgs) => {
-    const names = uniq(
-      msgs.map((m) => extractFirst(CONN_SINGLE_QUOTE_RE, stripHtml(m.details))).filter(Boolean) as string[],
-    );
-    return names.length ? formatList(names) : defaultFormatter(msgs);
-  },
-
-  WARN_CONNECTION_NO_HADOOP_INTERFACE: (msgs) => {
-    const names = uniq(
-      msgs.map((m) => extractFirst(CONN_SINGLE_QUOTE_RE, stripHtml(m.details))).filter(Boolean) as string[],
-    );
-    return names.length ? formatList(names) : defaultFormatter(msgs);
-  },
-
-  WARN_MISC_CODE_ENV_DEPRECATED_INTERPRETER: (msgs) => {
-    const entries = msgs
-      .map((m) => {
-        const plain = stripHtml(m.details);
-        const match = plain.match(CODE_ENV_DEP_RE);
-        if (!match) return null;
-        const env = match[1];
-        const interp = (match[2] || '').trim();
-        return interp ? `${env} (${interp})` : env;
-      })
-      .filter(Boolean) as string[];
-    return entries.length ? formatList(uniq(entries)) : defaultFormatter(msgs);
-  },
-
-  WARN_MISC_CODE_ENV_USES_PYSPARK: (msgs) => {
-    const names = uniq(
-      msgs.map((m) => extractFirst(CODE_ENV_NAME_RE, stripHtml(m.details))).filter(Boolean) as string[],
-    );
-    return names.length ? formatList(names) : defaultFormatter(msgs);
-  },
-
-  WARN_GIT_PROJECT_NOT_MIGRATED: (msgs) => {
-    // extraInfoDetails holds a <pre>...</pre> block shaped like:
-    //   PROJECT_KEY:
-    //     - branch1 (last migrated with DSS X.Y.Z)
-    //     - branch2 (last migrated with DSS X.Y.Z)
-    //   NEXT_PROJECT_KEY:
-    //     - master (last migrated with DSS X.Y.Z)
-    // One message typically covers all affected projects.
-    const lines: string[] = [];
-    const branchRe = /^-\s*(.+?)\s*\(last migrated with DSS\s+(.+?)\)\s*$/;
-    for (const m of msgs) {
-      const block = stripHtml(m.extraInfoDetails || '');
-      if (!block) continue;
-      let current = '';
-      for (const raw of block.split('\n')) {
-        const line = raw.trim();
-        if (!line) continue;
-        const bm = line.match(branchRe);
-        if (bm) {
-          const branch = bm[1].trim();
-          const ver = bm[2].trim();
-          lines.push(
-            current
-              ? `${current}: ${branch} (last migrated with DSS ${ver})`
-              : `${branch} (last migrated with DSS ${ver})`,
-          );
-        } else if (line.endsWith(':')) {
-          current = line.slice(0, -1).trim();
-        }
-      }
-    }
-    return lines.length ? lines.join('\n') : defaultFormatter(msgs);
-  },
-
-  WARN_APP_AS_RECIPE_HAS_ORPHAN_INSTANCES: (msgs) => {
-    const parts: string[] = [];
-    for (const m of msgs) {
-      const summary = stripHtml(m.details);
-      const extraSummary = stripHtml(m.extraInfoSummary || '');
-      const extra = stripHtml(m.extraInfoDetails || '');
-      const tail = [extraSummary, extra].filter(Boolean).join(' ');
-      const combined = [summary, tail].filter(Boolean).join('\n');
-      if (combined) parts.push(combined);
-    }
-    return parts.length ? parts.join('\n\n') : defaultFormatter(msgs);
-  },
-
-  WARN_SECURITY_MEMORY_LIMIT_TOO_HIGH: (msgs) => {
-    return uniq(msgs.map((m) => stripHtml(m.details)).filter(Boolean)).join('\n\n');
-  },
-};
-
-function defaultFormatter(msgs: SanityCheckMessage[]): string {
-  const parts = uniq(msgs.map((m) => stripHtml(m.details || m.message || '')).filter(Boolean));
-  return parts.join('; ');
-}
-
-function formatDetailsForCode(code: string, msgs: SanityCheckMessage[]): string {
-  const fn = FORMATTERS[code];
-  return (fn || defaultFormatter)(msgs);
-}
-
-// --- Grouping -----------------------------------------------------------
-
-interface GroupedRow {
-  code: string;
-  severity: Severity;
-  title: string;
-  msgs: SanityCheckMessage[];
-}
-
 function normalizeSeverity(s: string): Severity {
   return (['ERROR', 'WARNING', 'INFO', 'SUCCESS'] as Severity[]).includes(s as Severity)
     ? (s as Severity)
     : 'INFO';
 }
 
-function groupByCode(msgs: SanityCheckMessage[]): GroupedRow[] {
-  const map = new Map<string, SanityCheckMessage[]>();
-  for (const m of msgs) {
-    const key = m.code || m.title || '';
-    const arr = map.get(key);
-    if (arr) arr.push(m);
-    else map.set(key, [m]);
-  }
-  const rows: GroupedRow[] = [];
-  for (const [code, arr] of map) {
-    rows.push({
-      code,
-      severity: normalizeSeverity(arr[0].severity),
-      title: arr[0].title || '',
-      msgs: arr,
+// --- Grouping -----------------------------------------------------------
+
+interface GroupedOccurrence {
+  details: string;
+  extraInfoSummary?: string | null;
+  extraInfoDetails?: string | null;
+}
+
+interface GroupedMessage {
+  code: string;
+  severity: Severity;
+  title: string;
+  count: number;
+  occurrences: GroupedOccurrence[];
+}
+
+function groupByCode(messages: SanityCheckMessage[]): GroupedMessage[] {
+  const order: string[] = [];
+  const map = new Map<string, GroupedMessage>();
+
+  for (const m of messages) {
+    const key = m.code || '(no-code)';
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        code: key,
+        severity: normalizeSeverity(m.severity),
+        title: m.title || key,
+        count: 0,
+        occurrences: [],
+      };
+      map.set(key, g);
+      order.push(key);
+    }
+    g.count += 1;
+    g.occurrences.push({
+      details: m.details,
+      extraInfoSummary: m.extraInfoSummary,
+      extraInfoDetails: m.extraInfoDetails,
     });
+    const sev = normalizeSeverity(m.severity);
+    // Lower rank = more severe; promote to highest seen.
+    if (SEVERITY_RANK[sev] < SEVERITY_RANK[g.severity]) {
+      g.severity = sev;
+    }
+    if (!g.title && m.title) g.title = m.title;
   }
-  rows.sort((a, b) => {
-    const sd = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
-    if (sd !== 0) return sd;
-    return a.code.localeCompare(b.code);
-  });
-  return rows;
+
+  return order.map((k) => map.get(k)!);
+}
+
+// --- HTML / text helpers ------------------------------------------------
+
+function stripLinks(html: string): string {
+  return html.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1');
+}
+
+function stripOuterPre(html: string): string {
+  return html.replace(/<\/?pre\b[^>]*>/gi, '').replace(/\r\n/g, '\n');
+}
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// If every details string has exactly one pair of single quotes AND the
+// non-quoted scaffolding is identical across occurrences, return the list
+// of quoted tokens. Otherwise return null.
+function extractQuotedTokens(detailsList: string[]): string[] | null {
+  if (detailsList.length === 0) return null;
+  const split = detailsList.map((d) => d.split("'"));
+  if (!split.every((s) => s.length === 3)) return null;
+  const refBefore = split[0][0];
+  const refAfter = split[0][2];
+  for (const s of split) {
+    if (s[0] !== refBefore || s[2] !== refAfter) return null;
+  }
+  return split.map((s) => s[1]);
+}
+
+// Parse the <pre>-block GIT-unmigrated layout. Preserves anything we
+// don't recognise verbatim so DSS truncation markers (e.g. "(... 402 more)")
+// are not silently dropped.
+function parseGitUnmigrated(occs: GroupedOccurrence[]): string[] {
+  const lines: string[] = [];
+  for (const o of occs) {
+    const raw = stripOuterPre(o.extraInfoDetails || '').trim();
+    if (!raw) continue;
+    let currentProject = '';
+    for (const rawLine of raw.split('\n')) {
+      const l = rawLine.replace(/\r$/, '');
+      if (!l.trim()) continue;
+      const header = l.match(/^(\S.*):\s*$/);
+      if (header) {
+        currentProject = header[1];
+        continue;
+      }
+      const branch = l.match(/^\s*-\s*(\S+)\s+(\(.*\))\s*$/);
+      if (branch && currentProject) {
+        lines.push(`${currentProject}: ${capitalize(branch[1])} ${branch[2]}`);
+      } else {
+        lines.push(l.trim());
+      }
+    }
+  }
+  return lines;
+}
+
+// --- Per-code rendering -------------------------------------------------
+
+function renderDetails(
+  g: GroupedMessage,
+  projectNameToKey: Map<string, string>,
+): ReactNode {
+  if (g.occurrences.length === 0) {
+    return <span className="text-[var(--text-muted)]">—</span>;
+  }
+
+  if (g.code === 'WARN_GIT_PROJECT_NOT_MIGRATED') {
+    const lines = parseGitUnmigrated(g.occurrences);
+    if (lines.length > 0) {
+      return (
+        <ul className="list-disc pl-5 space-y-0.5 marker:text-[var(--text-muted)]">
+          {lines.map((l, i) => (
+            <li key={i} className="font-mono text-sm break-all">
+              {l}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+  }
+
+  const detailsOnly = g.occurrences.map((o) => o.details || '');
+  const tokens = extractQuotedTokens(detailsOnly);
+  const mono = tokens !== null;
+
+  return (
+    <ul className="list-disc pl-5 space-y-0.5 marker:text-[var(--text-muted)]">
+      {g.occurrences.map((o, i) => {
+        let head: ReactNode;
+        if (tokens) {
+          const raw = tokens[i];
+          if (g.code === 'WARN_CLUSTERS_NONE_SELECTED_PROJECT') {
+            const key = projectNameToKey.get(raw) || raw;
+            head = <code>{key}</code>;
+          } else {
+            head = <span>{raw}</span>;
+          }
+        } else {
+          head = (
+            <span
+              className="sanity-html-content"
+              dangerouslySetInnerHTML={{ __html: stripLinks(o.details || '') }}
+            />
+          );
+        }
+
+        return (
+          <li key={i} className={mono ? 'font-mono text-sm break-all' : 'break-words text-sm'}>
+            {head}
+            {o.extraInfoSummary && (
+              <div className="pl-3 mt-1 text-xs font-sans font-medium text-[var(--text-primary)] opacity-80">
+                {o.extraInfoSummary}
+              </div>
+            )}
+            {o.extraInfoDetails && (
+              <div
+                className="pl-3 mt-0.5 text-xs font-sans sanity-html-content"
+                dangerouslySetInnerHTML={{ __html: stripLinks(o.extraInfoDetails) }}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 // --- Component ----------------------------------------------------------
@@ -254,6 +226,14 @@ export function SanityCheckCard() {
 
   const results = useMemo(() => parsedData.sanityCheck || [], [parsedData.sanityCheck]);
   const hasResults = results.length > 0;
+
+  const projectNameToKey = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of parsedData.projects || []) {
+      if (p.name && p.key) m.set(p.name, p.key);
+    }
+    return m;
+  }, [parsedData.projects]);
 
   const rescan = useCallback(async () => {
     abortRef.current?.abort();
@@ -373,7 +353,7 @@ export function SanityCheckCard() {
             <table className="table-dark w-full">
               <thead>
                 <tr>
-                  <th>Title</th>
+                  <th className="w-1/3">Title</th>
                   <th>Details</th>
                 </tr>
               </thead>
@@ -384,11 +364,11 @@ export function SanityCheckCard() {
                     className="hover:bg-[var(--bg-glass)] align-top"
                     style={{ borderLeft: `3px solid ${SEVERITY_COLORS[row.severity]}` }}
                   >
-                    <td className="text-[var(--text-primary)] text-sm">
-                      {stripTitlePrefix(row.title)}
+                    <td className="text-[var(--text-primary)] text-sm align-top">
+                      {row.title}
                     </td>
-                    <td className="text-[var(--text-muted)] text-xs leading-relaxed max-w-[600px] whitespace-pre-wrap">
-                      {formatDetailsForCode(row.code, row.msgs)}
+                    <td className="text-[var(--text-secondary)] text-sm leading-relaxed align-top">
+                      {renderDetails(row, projectNameToKey)}
                     </td>
                   </tr>
                 ))}
