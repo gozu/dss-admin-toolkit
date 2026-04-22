@@ -140,33 +140,34 @@ const FORMATTERS: Record<string, Formatter> = {
   },
 
   WARN_GIT_PROJECT_NOT_MIGRATED: (msgs) => {
-    // Each message carries its own project. extraInfoDetails holds a <pre>...</pre>
-    // block shaped like:
-    //   DIAG_PARSER_BRANCH1:
-    //     - master (last migrated with DSS 13.1.0-rc2)
-    // The project key is referenced in details ("project 'FOO'") or title.
+    // extraInfoDetails holds a <pre>...</pre> block shaped like:
+    //   PROJECT_KEY:
+    //     - branch1 (last migrated with DSS X.Y.Z)
+    //     - branch2 (last migrated with DSS X.Y.Z)
+    //   NEXT_PROJECT_KEY:
+    //     - master (last migrated with DSS X.Y.Z)
+    // One message typically covers all affected projects.
     const lines: string[] = [];
+    const branchRe = /^-\s*(.+?)\s*\(last migrated with DSS\s+(.+?)\)\s*$/;
     for (const m of msgs) {
-      const projectKey =
-        extractFirst(PROJECT_SINGLE_QUOTE_RE, stripHtml(m.details)) ||
-        extractFirst(PROJECT_SINGLE_QUOTE_RE, m.title || '') ||
-        '';
       const block = stripHtml(m.extraInfoDetails || '');
-      // Extract every "- branch (last migrated with DSS X.Y.Z)" entry
-      const branchMatches = block.matchAll(/-\s*([^\n(]+?)\s*\(last migrated with DSS\s+([^)]+)\)/g);
-      let added = false;
-      for (const bm of branchMatches) {
-        const branch = bm[1].trim();
-        const ver = bm[2].trim();
-        lines.push(
-          projectKey
-            ? `${projectKey}: ${branch} (last migrated with DSS ${ver})`
-            : `${branch} (last migrated with DSS ${ver})`,
-        );
-        added = true;
-      }
-      if (!added && projectKey) {
-        lines.push(projectKey);
+      if (!block) continue;
+      let current = '';
+      for (const raw of block.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        const bm = line.match(branchRe);
+        if (bm) {
+          const branch = bm[1].trim();
+          const ver = bm[2].trim();
+          lines.push(
+            current
+              ? `${current}: ${branch} (last migrated with DSS ${ver})`
+              : `${branch} (last migrated with DSS ${ver})`,
+          );
+        } else if (line.endsWith(':')) {
+          current = line.slice(0, -1).trim();
+        }
       }
     }
     return lines.length ? lines.join('\n') : defaultFormatter(msgs);
@@ -176,8 +177,10 @@ const FORMATTERS: Record<string, Formatter> = {
     const parts: string[] = [];
     for (const m of msgs) {
       const summary = stripHtml(m.details);
+      const extraSummary = stripHtml(m.extraInfoSummary || '');
       const extra = stripHtml(m.extraInfoDetails || '');
-      const combined = [summary, extra].filter(Boolean).join('\n');
+      const tail = [extraSummary, extra].filter(Boolean).join(' ');
+      const combined = [summary, tail].filter(Boolean).join('\n');
       if (combined) parts.push(combined);
     }
     return parts.length ? parts.join('\n\n') : defaultFormatter(msgs);
