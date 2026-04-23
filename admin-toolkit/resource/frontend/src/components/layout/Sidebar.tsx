@@ -5,6 +5,8 @@ import type { PageId } from '../../types';
 import type { ReactNode } from 'react';
 
 import { getPageAvailability, type PageAvailability } from '../../utils/pageAvailability';
+import { loadFromStorage } from '../../utils/storage';
+import { SHOW_EXPERIMENTAL_STORAGE_KEY } from '../pages/SettingsPage';
 
 /* ------------------------------------------------------------------ */
 /*  Icons (20x20, viewBox 0 0 24 24, stroke=currentColor, sw=1.5)    */
@@ -191,6 +193,7 @@ interface NavItem {
   id: PageId;
   label: string;
   badge?: 'issues' | 'logs';
+  experimental?: boolean;
 }
 
 interface NavSection {
@@ -237,14 +240,14 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'code-env-cleaner', label: 'Cleaner' },
       { id: 'code-envs', label: 'Insights' },
       { id: 'code-envs-comparison', label: 'Comparison' },
-      { id: 'image-cleaner', label: 'Docker Images' },
+      { id: 'image-cleaner', label: 'Docker Images', experimental: true },
     ],
   },
   {
     title: 'TOOLS',
     items: [
-      { id: 'outreach', label: 'Outreach' },
-      { id: 'tracking', label: 'Compliance' },
+      { id: 'outreach', label: 'Outreach', experimental: true },
+      { id: 'tracking', label: 'Compliance', experimental: true },
       { id: 'directory', label: 'Dir Usage' },
       { id: 'db-health', label: 'DB Health' },
       { id: 'report', label: 'Report' },
@@ -260,7 +263,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'LLM',
     items: [
-      { id: 'llm-audit', label: 'Model Audit' },
+      { id: 'llm-audit', label: 'Model Audit', experimental: true },
     ],
   },
 ];
@@ -283,6 +286,29 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
   const [statusPhase, setStatusPhase] = useState<'loading' | 'complete' | 'refresh'>(
     dataReady ? 'refresh' : 'loading',
   );
+
+  const [showExperimental, setShowExperimental] = useState<boolean>(() =>
+    loadFromStorage<boolean>(SHOW_EXPERIMENTAL_STORAGE_KEY, false),
+  );
+
+  useEffect(() => {
+    const sync = () => {
+      setShowExperimental(loadFromStorage<boolean>(SHOW_EXPERIMENTAL_STORAGE_KEY, false));
+    };
+    window.addEventListener('experimental-flag-changed', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('experimental-flag-changed', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
+  const visibleSections = NAV_SECTIONS
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => !item.experimental || showExperimental),
+    }))
+    .filter((section) => section.items.length > 0);
 
   useEffect(() => {
     if (!dataReady) {
@@ -499,7 +525,7 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0">
-        {NAV_SECTIONS.map((section, idx) => renderSection(section, idx))}
+        {visibleSections.map((section, idx) => renderSection(section, idx))}
       </nav>
 
       {/* Contact author */}

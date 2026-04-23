@@ -1,7 +1,31 @@
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useDiag } from '../../context/DiagContext';
 import type { PageId } from '../../types';
+import { loadFromStorage } from '../../utils/storage';
+import { SHOW_EXPERIMENTAL_STORAGE_KEY } from '../pages/SettingsPage';
+
+const EXPERIMENTAL_PAGES: ReadonlySet<PageId> = new Set<PageId>([
+  'outreach',
+  'tracking',
+  'image-cleaner',
+  'llm-audit',
+]);
+
+function ExperimentalNotice() {
+  return (
+    <div className="flex-1 flex items-center justify-center py-20">
+      <div className="glass-card max-w-md p-6 text-center space-y-2">
+        <h3 className="text-lg font-semibold text-[var(--text-primary)]">
+          This feature is experimental
+        </h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          Enable experimental features in <strong>Tools &gt; Settings</strong> to access this page.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 // Eagerly import lightweight page components to avoid Suspense/AnimatePresence conflicts
 import { SummaryPage } from '../pages/SummaryPage';
@@ -120,12 +144,30 @@ export function PageRouter() {
   const { activePage } = state;
   const prevPageRef = useRef(activePage);
 
+  const [showExperimental, setShowExperimental] = useState<boolean>(() =>
+    loadFromStorage<boolean>(SHOW_EXPERIMENTAL_STORAGE_KEY, false),
+  );
+
+  useEffect(() => {
+    const sync = () => {
+      setShowExperimental(loadFromStorage<boolean>(SHOW_EXPERIMENTAL_STORAGE_KEY, false));
+    };
+    window.addEventListener('experimental-flag-changed', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('experimental-flag-changed', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
+
   useEffect(() => {
     if (prevPageRef.current !== activePage) {
       addDebugLog(`Page rendered: ${activePage} (prev: ${prevPageRef.current})`, 'navigation');
       prevPageRef.current = activePage;
     }
   }, [activePage, addDebugLog]);
+
+  const isBlockedExperimental = !showExperimental && EXPERIMENTAL_PAGES.has(activePage);
 
   return (
     <AnimatePresence mode="wait">
@@ -139,7 +181,7 @@ export function PageRouter() {
         className="flex-1 flex flex-col"
       >
         <Suspense fallback={<LoadingSpinner />}>
-          {renderPage(activePage)}
+          {isBlockedExperimental ? <ExperimentalNotice /> : renderPage(activePage)}
         </Suspense>
       </motion.div>
     </AnimatePresence>

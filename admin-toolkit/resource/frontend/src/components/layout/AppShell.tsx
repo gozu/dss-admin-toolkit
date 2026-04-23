@@ -206,10 +206,7 @@ export function AppShell({ children, onOpenPalette, onRefreshCache, sqliteFallba
             TOOLKIT
           </span>
           <span className="px-1.5 py-0.5 text-[10px] font-mono font-medium rounded bg-[var(--neon-cyan)]/10 text-[var(--neon-cyan)] border border-[var(--neon-cyan)]/30">
-            ALPHA
-          </span>
-          <span className="hidden lg:inline ml-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-amber-500/15 text-amber-400 border border-amber-500/40">
-            ⚠ Experimental — use outside sandbox at your own risk
+            BETA
           </span>
         </div>
 

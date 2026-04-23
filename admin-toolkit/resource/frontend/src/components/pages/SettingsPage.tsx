@@ -3,6 +3,7 @@ import { useDiag } from '../../context/DiagContext';
 import { loadFromStorage, saveToStorage } from '../../utils/storage';
 
 export const SELECTED_MAIL_CHANNEL_STORAGE_KEY = 'selectedMailChannel';
+export const SHOW_EXPERIMENTAL_STORAGE_KEY = 'showExperimental';
 
 export function SettingsPage() {
   const { state } = useDiag();
@@ -12,12 +13,22 @@ export function SettingsPage() {
     loadFromStorage<string>(SELECTED_MAIL_CHANNEL_STORAGE_KEY, ''),
   );
 
+  const [showExperimental, setShowExperimental] = useState<boolean>(() =>
+    loadFromStorage<boolean>(SHOW_EXPERIMENTAL_STORAGE_KEY, false),
+  );
+
   const isStoredValid = !!stored && mailChannels.some((c) => c.id === stored);
   const selectedChannel = isStoredValid ? stored : mailChannels[0]?.id ?? '';
 
   const handleChange = (id: string) => {
     setStored(id);
     saveToStorage(SELECTED_MAIL_CHANNEL_STORAGE_KEY, id);
+  };
+
+  const handleToggleExperimental = (checked: boolean) => {
+    setShowExperimental(checked);
+    saveToStorage(SHOW_EXPERIMENTAL_STORAGE_KEY, checked);
+    window.dispatchEvent(new Event('experimental-flag-changed'));
   };
 
   return (
@@ -48,6 +59,26 @@ export function SettingsPage() {
               No mail channels available. They load during Phase 2 of the main loader.
             </p>
           )}
+        </label>
+      </section>
+
+      <section className="glass-card p-4 space-y-3">
+        <div>
+          <h3 className="text-lg font-semibold text-[var(--text-primary)]">Experimental features</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Reveals in-progress tools that are still rough: Outreach, Compliance, Docker Images, and Model Audit.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showExperimental}
+            onChange={(e) => handleToggleExperimental(e.target.checked)}
+            className="h-4 w-4 accent-[var(--accent)]"
+          />
+          <span className="text-sm font-medium text-[var(--text-primary)]">
+            Show experimental features
+          </span>
         </label>
       </section>
     </div>
