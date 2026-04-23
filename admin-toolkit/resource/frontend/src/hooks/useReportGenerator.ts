@@ -51,16 +51,24 @@ export function useReportGenerator(): UseReportGeneratorReturn {
   const fetchLlms = useCallback(async () => {
     if (llms.length > 0 || isLoadingLlms) return;
     setIsLoadingLlms(true);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20_000);
     try {
-      const data = await fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms');
+      const data = await fetchJson<{ llms: LlmOption[]; error?: string }>('/api/llms', {
+        signal: controller.signal,
+      });
       setLlms(data.llms); // Show ALL model types (no HuggingFace filter)
       if (data.llms.length > 0) {
         setSelectedLlmLabel(data.llms[0].label);
       }
       if (data.error) setError(data.error);
     } catch (err) {
-      setError(String(err));
+      const msg = err instanceof DOMException && err.name === 'AbortError'
+        ? 'Timed out loading models (20s). Retry when DSS is responsive.'
+        : String(err);
+      setError(msg);
     } finally {
+      clearTimeout(timeoutId);
       setIsLoadingLlms(false);
     }
   }, [llms.length, isLoadingLlms]);

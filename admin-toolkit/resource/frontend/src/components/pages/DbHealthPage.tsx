@@ -116,12 +116,12 @@ function TableRow({ t, overview, actionLoading, handleAction }: {
     <tr className="border-b border-[var(--border-default)]/30 hover:bg-[var(--bg-glass-hover)]">
       <td className="py-1.5 pr-4 font-mono text-xs text-[var(--text-primary)]">{t.name}</td>
       <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.totalSize}</td>
-      <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{t.rowCount.toLocaleString()}</td>
-      <td className="py-1.5 pr-4 text-right" style={{ color: t.deadTuples > 1000 ? 'var(--neon-yellow)' : 'var(--text-secondary)' }}>
-        {t.deadTuples.toLocaleString()}
+      <td className="py-1.5 pr-4 text-right text-[var(--text-secondary)]">{(t.rowCount ?? 0).toLocaleString()}</td>
+      <td className="py-1.5 pr-4 text-right" style={{ color: (t.deadTuples ?? 0) > 1000 ? 'var(--neon-yellow)' : 'var(--text-secondary)' }}>
+        {(t.deadTuples ?? 0).toLocaleString()}
       </td>
-      <td className="py-1.5 pr-4 text-right font-mono" style={{ color: bloatColor(t.bloatRatio) }}>
-        {(t.bloatRatio * 100).toFixed(1)}%
+      <td className="py-1.5 pr-4 text-right font-mono" style={{ color: bloatColor(t.bloatRatio ?? 0) }}>
+        {((t.bloatRatio ?? 0) * 100).toFixed(1)}%
       </td>
       <td className="py-1.5 pr-4 text-xs" style={{ color: vacuumAgeColor(t.lastVacuum) }}>
         {relativeTime(t.lastVacuum)}
@@ -455,12 +455,12 @@ export function DbHealthPage() {
           </div>
           <div className="glass-card p-4 text-center">
             <div className="text-xs uppercase tracking-wider text-[var(--text-secondary)] mb-1">Dead Tuples</div>
-            <div className="text-2xl font-bold" style={{ color: overview.totalDeadTuples > 10000 ? 'var(--neon-red)' : 'var(--text-primary)' }}>
-              {overview.totalDeadTuples.toLocaleString()}
+            <div className="text-2xl font-bold" style={{ color: (overview.totalDeadTuples ?? 0) > 10000 ? 'var(--neon-red)' : 'var(--text-primary)' }}>
+              {(overview.totalDeadTuples ?? 0).toLocaleString()}
             </div>
-            {overview.totalLiveTuples > 0 && (
+            {(overview.totalLiveTuples ?? 0) > 0 && (
               <div className="text-xs text-[var(--text-secondary)] mt-0.5">
-                {((overview.totalDeadTuples / (overview.totalLiveTuples + overview.totalDeadTuples)) * 100).toFixed(1)}% bloat
+                {(((overview.totalDeadTuples ?? 0) / ((overview.totalLiveTuples ?? 0) + (overview.totalDeadTuples ?? 0))) * 100).toFixed(1)}% bloat
               </div>
             )}
           </div>
@@ -664,7 +664,7 @@ function ProjectBar({
         />
       </div>
       <div className="w-48 shrink-0 text-xs text-[var(--text-secondary)] text-right">
-        {size} &middot; {tableCount} tables &middot; {rowCount.toLocaleString()} rows
+        {size} &middot; {tableCount} tables &middot; {(rowCount ?? 0).toLocaleString()} rows
       </div>
     </div>
   );

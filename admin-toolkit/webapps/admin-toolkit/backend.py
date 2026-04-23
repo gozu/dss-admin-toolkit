@@ -302,12 +302,24 @@ def _bump_session_epoch() -> int:
         return _SESSION_EPOCH
 
 
+class CacheLoaderTimeout(Exception):
+    """Raised when a waiter on an in-flight cache loader exceeds its wait budget."""
+    def __init__(self, key: str, timeout: float):
+        super().__init__(f"cache loader for {key!r} did not complete within {timeout:.1f}s")
+        self.key = key
+        self.timeout = timeout
+
+
+_CACHE_WAIT_TIMEOUT = 45.0
+
+
 def _cache_get(key: str, ttl: int, loader):
     """Cached loader with in-flight coalescing.
 
     N concurrent callers with the same key result in one loader execution
     and N-1 waiters. If the loader raises, all waiters get the same error
-    so no one gets stuck.
+    so no one gets stuck. Waiters time out after _CACHE_WAIT_TIMEOUT so a
+    stalled loader does not pin every Flask worker.
     """
     now = time.time()
     with _CACHE_LOCK:
@@ -323,7 +335,9 @@ def _cache_get(key: str, ttl: int, loader):
             is_loader = False
 
     if not is_loader:
-        inflight.wait()
+        got = inflight.wait(timeout=_CACHE_WAIT_TIMEOUT)
+        if not got:
+            raise CacheLoaderTimeout(key, _CACHE_WAIT_TIMEOUT)
         with _CACHE_LOCK:
             err = _CACHE_INFLIGHT_ERRORS.pop(key, None)
             entry = _CACHE.get(key)
@@ -352,6 +366,16 @@ def _cache_get(key: str, ttl: int, loader):
     if err is not None:
         raise err
     return value
+
+
+@app.errorhandler(CacheLoaderTimeout)
+def _handle_cache_loader_timeout(exc: CacheLoaderTimeout):
+    app.logger.warning("[cache] loader timeout for key=%s after %.1fs", exc.key, exc.timeout)
+    return jsonify({
+        'error': 'Upstream slow',
+        'kind': 'cache_timeout',
+        'key': exc.key,
+    }), 503
 
 
 def _shared_project_code_env_usage_key(project_info: Dict[str, Dict[str, str]]) -> str:
@@ -1941,13 +1965,27 @@ _FOOTPRINT_STATE: Dict[str, Any] = {
     'unavailable': False,
     'reason': None,
     'failures': 0,
+    'latched_at': 0.0,
 }
 _FOOTPRINT_LOCK = threading.Lock()
 _FOOTPRINT_FAIL_THRESHOLD = 2
+_FOOTPRINT_COOLDOWN_SECS = 600
 
 
 def _footprint_available() -> bool:
-    return not _FOOTPRINT_STATE.get('unavailable')
+    with _FOOTPRINT_LOCK:
+        if not _FOOTPRINT_STATE.get('unavailable'):
+            return True
+        latched_at = float(_FOOTPRINT_STATE.get('latched_at') or 0.0)
+        if latched_at and (time.time() - latched_at) > _FOOTPRINT_COOLDOWN_SECS:
+            app.logger.info("[footprint] attempting after cooldown — %.0fs since latch",
+                            time.time() - latched_at)
+            _FOOTPRINT_STATE['unavailable'] = False
+            _FOOTPRINT_STATE['reason'] = None
+            _FOOTPRINT_STATE['failures'] = 0
+            _FOOTPRINT_STATE['latched_at'] = 0.0
+            return True
+        return False
 
 
 def _footprint_unavailable_reason() -> Optional[str]:
@@ -1959,6 +1997,7 @@ def _footprint_reset_negative_cache() -> None:
         _FOOTPRINT_STATE['unavailable'] = False
         _FOOTPRINT_STATE['reason'] = None
         _FOOTPRINT_STATE['failures'] = 0
+        _FOOTPRINT_STATE['latched_at'] = 0.0
 
 
 def _footprint_record_failure(reason: str) -> None:
@@ -1969,6 +2008,7 @@ def _footprint_record_failure(reason: str) -> None:
         if _FOOTPRINT_STATE['failures'] >= _FOOTPRINT_FAIL_THRESHOLD:
             _FOOTPRINT_STATE['unavailable'] = True
             _FOOTPRINT_STATE['reason'] = reason
+            _FOOTPRINT_STATE['latched_at'] = time.time()
             app.logger.warning("[footprint] latched unavailable after %d failures: %s",
                                _FOOTPRINT_STATE['failures'], reason)
 
@@ -1983,7 +2023,7 @@ def _compute_footprint_payload(
     scope: str,
     project_key: Optional[str],
 ) -> Optional[Any]:
-    if _FOOTPRINT_STATE.get('unavailable'):
+    if not _footprint_available():
         return None
 
     op_name = 'compute_all_dss_footprint'
@@ -6700,12 +6740,50 @@ def _collect_general_settings(client):
         return None
 
 
-def _do_tracking_ingest(db, data):
-    """Run a tracking ingest from outreach data. Returns the new run_id."""
+_INGEST_SLOW_STATE: Dict[str, float] = {'last_run_at': 0.0}
+_INGEST_SLOW_STATE_LOCK = threading.Lock()
+_INGEST_SLOW_INTERVAL_SECS = 15 * 60
+
+
+class _SlowTierSkipSignal(Exception):
+    """Internal marker used inside _do_tracking_ingest to bypass slow-tier blocks."""
+    pass
+
+
+def _slow_tier_due(force: bool = False) -> bool:
+    """Return True if the slow (project-sweep + connection-retest) tier should run."""
+    if force:
+        return True
+    with _INGEST_SLOW_STATE_LOCK:
+        last = float(_INGEST_SLOW_STATE.get('last_run_at') or 0.0)
+        return (time.time() - last) >= _INGEST_SLOW_INTERVAL_SECS
+
+
+def _slow_tier_mark_done() -> None:
+    with _INGEST_SLOW_STATE_LOCK:
+        _INGEST_SLOW_STATE['last_run_at'] = time.time()
+
+
+def _slow_tier_seconds_since() -> float:
+    with _INGEST_SLOW_STATE_LOCK:
+        last = float(_INGEST_SLOW_STATE.get('last_run_at') or 0.0)
+    return (time.time() - last) if last else float('inf')
+
+
+def _do_tracking_ingest(db, data, force: bool = False):
+    """Run a tracking ingest from outreach data. Returns the new run_id.
+
+    Runs a "fast tier" every call (findings, health metrics, DB write).
+    Runs a "slow tier" (V7 project sweep + V9 connection-health retest)
+    only when the last slow run is older than _INGEST_SLOW_INTERVAL_SECS,
+    or when force=True.
+    """
     import hashlib
     import time as _time
     _t0 = _time.time()
-    app.logger.info("[tracking:ingest] === INGEST STARTED ===")
+    run_slow_tier = _slow_tier_due(force=force)
+    app.logger.info("[tracking:ingest] === INGEST STARTED === slow_tier=%s (last_run=%.1fs ago)",
+                    run_slow_tier, _slow_tier_seconds_since())
 
     # Warm caches if cold — overview, users, plugins, connections are needed for health metrics
     for cache_key, endpoint_fn in [
@@ -6807,6 +6885,16 @@ def _do_tracking_ingest(db, data):
 
     try:
         client = dataiku.api_client()
+    except Exception as _e_client:
+        client = None
+        app.logger.warning("[tracking:ingest] dataiku.api_client() failed: %s", _e_client)
+
+    if not run_slow_tier:
+        app.logger.info("[tracking:ingest] slow tier skipped — V7 project sweep not due (last run %.1fs ago)",
+                        _slow_tier_seconds_since())
+    elif client is None:
+        app.logger.warning("[tracking:v7] no api client, skipping V7 collection")
+    else:
         project_keys = [p.get('projectKey') or p.get('key') for p in project_list if isinstance(p, dict)]
         for idx, pk in enumerate(project_keys):
             if _time.time() > v7_deadline:
@@ -6915,8 +7003,6 @@ def _do_tracking_ingest(db, data):
                 app.logger.debug("[tracking:v7] project %s scanned in %.1fs", pk, _time.time() - _tp)
             except Exception as e:
                 app.logger.debug("[tracking:v7] project %s error: %s", pk, e)
-    except Exception as e:
-        app.logger.warning("[tracking:v7] collection failed: %s", e)
 
     snapshot_data['datasets'] = v7_datasets
     snapshot_data['recipes'] = v7_recipes
@@ -6977,11 +7063,17 @@ def _do_tracking_ingest(db, data):
                     snapshot_data.get('project_footprint') is not None)
 
     # -- V9 snapshot: connection health + DB health --
+    if not run_slow_tier:
+        snapshot_data['connection_health'] = None
+        snapshot_data['db_health'] = None
+        app.logger.info("[tracking:ingest] slow tier skipped — V9 connection/db health retest not due")
     import re as _re_v9
     _SANITIZE_RE_V9 = _re_v9.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|/[\w/.-]{4,}')
 
     # Connection health: test all connections synchronously with thread pool
     try:
+        if not run_slow_tier:
+            raise _SlowTierSkipSignal()
         _t_conn_health = _time.time()
         conn_health_results = []
         connections_raw = _sdk_fetch(
@@ -7045,12 +7137,16 @@ def _do_tracking_ingest(db, data):
         snapshot_data['connection_health'] = conn_health_results
         app.logger.info("[tracking:v9] connection health: %d connections tested in %.1fs",
                         len(conn_health_results), _time.time() - _t_conn_health)
+    except _SlowTierSkipSignal:
+        pass
     except Exception as exc:
         snapshot_data['connection_health'] = None
         app.logger.warning("[tracking:v9] connection health collection failed: %s", exc)
 
     # DB health: collect overview + per-table data from configured PostgreSQL connection
     try:
+        if not run_slow_tier:
+            raise _SlowTierSkipSignal()
         _t_db_health = _time.time()
         db_cfg = _get_dbhealth_config()
         db_conn_name = db_cfg.connection_name if db_cfg else None
@@ -7115,6 +7211,8 @@ def _do_tracking_ingest(db, data):
         else:
             snapshot_data['db_health'] = None
             app.logger.info("[tracking:v9] db health: no configured PostgreSQL connection, skipping")
+    except _SlowTierSkipSignal:
+        pass
     except Exception as exc:
         snapshot_data['db_health'] = None
         app.logger.warning("[tracking:v9] db health collection failed: %s", exc)
@@ -7193,30 +7291,32 @@ def _do_tracking_ingest(db, data):
         campaign_summaries=campaign_summaries,
         snapshot_data=snapshot_data,
     )
-    app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
-                    run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)
+    if run_slow_tier:
+        _slow_tier_mark_done()
+    app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs, slow_tier=%s",
+                    run_id, len(findings), _time.time() - _t_db, _time.time() - _t0, run_slow_tier)
     return run_id
 
 
-_OUTREACH_INGEST_LOCK = threading.Lock()
-_OUTREACH_INGEST_STATE: Dict[str, Any] = {'epoch': None, 'running': False}
+_INGEST_LOCK = threading.Lock()
+_INGEST_STATE: Dict[str, Any] = {'epoch': None, 'running': False}
 
 
-def _schedule_outreach_ingest(data: Dict[str, Any]) -> None:
-    """Singleflight outreach ingest per session epoch.
+def _schedule_tracking_ingest(data: Dict[str, Any], do_ingest, kind: str = 'parsed') -> bool:
+    """Singleflight tracking ingest per session epoch.
 
-    If an ingest is already running for the current epoch, or one already
-    completed for this epoch, no-op. Otherwise fire a daemon thread so the
-    /api/tools/outreach-data response isn't blocked on 120s+ work.
+    Fire a daemon thread running `do_ingest(db, data)` if there isn't already
+    an ingest running for the current epoch (and no ingest already completed
+    for this epoch). Returns True if scheduled, False if skipped.
     """
     epoch = _get_session_epoch()
-    with _OUTREACH_INGEST_LOCK:
-        if _OUTREACH_INGEST_STATE.get('running'):
-            return
-        if _OUTREACH_INGEST_STATE.get('epoch') == epoch:
-            return
-        _OUTREACH_INGEST_STATE['running'] = True
-        _OUTREACH_INGEST_STATE['epoch'] = epoch
+    with _INGEST_LOCK:
+        if _INGEST_STATE.get('running'):
+            return False
+        if _INGEST_STATE.get('epoch') == epoch:
+            return False
+        _INGEST_STATE['running'] = True
+        _INGEST_STATE['epoch'] = epoch
 
     def _runner() -> None:
         try:
@@ -7224,16 +7324,17 @@ def _schedule_outreach_ingest(data: Dict[str, Any]) -> None:
             if db is None:
                 return
             try:
-                run_id = _do_tracking_ingest(db, data)
-                app.logger.info("[tracking] async-ingested run %d (epoch=%d)", run_id, epoch)
+                run_id = do_ingest(db, data)
+                app.logger.info("[tracking:%s] async-ingested run %s (epoch=%d)", kind, run_id, epoch)
             except Exception as exc:
-                app.logger.warning("[tracking] async ingest failed: %s", str(exc)[:300])
+                app.logger.warning("[tracking:%s] async ingest failed: %s", kind, str(exc)[:300])
         finally:
-            with _OUTREACH_INGEST_LOCK:
-                _OUTREACH_INGEST_STATE['running'] = False
+            with _INGEST_LOCK:
+                _INGEST_STATE['running'] = False
 
-    t = threading.Thread(target=_runner, name=f'outreach-ingest-epoch-{epoch}', daemon=True)
+    t = threading.Thread(target=_runner, name=f'tracking-ingest-{kind}-epoch-{epoch}', daemon=True)
     t.start()
+    return True
 
 
 @app.route('/api/tools/outreach-data')
@@ -8114,12 +8215,6 @@ def api_tools_outreach_data():
         }
 
     data = _cache_get('tools_outreach_data', _BACKEND_SETTINGS['cache_ttl_outreach'], loader)
-
-    # Fire tracking ingest asynchronously so the outreach response isn't blocked
-    # on 120s connection_health + DB write. Singleflight on (session_epoch) to
-    # avoid 3-way concurrent ingests when tabs thrash.
-    _schedule_outreach_ingest(data)
-
     return jsonify(data)
 
 
@@ -8681,6 +8776,10 @@ def api_tracking_issue_detail(issue_id):
     return jsonify(issue)
 
 
+_TRACKING_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix='tracking-users')
+_TRACKING_USERS_QUERY_TIMEOUT = 45.0
+
+
 @app.route('/api/tracking/users')
 def api_tracking_users_all():
     import time as _time
@@ -8690,14 +8789,14 @@ def api_tracking_users_all():
     if db is None:
         app.logger.error("[tracking:users] DB not available, returning 501")
         return jsonify({'error': 'Tracking not available'}), 501
-    try:
-        instance_id = request.args.get('instance_id') or _tracking_instance_id()
+    instance_id = request.args.get('instance_id') or _tracking_instance_id()
+
+    def loader():
         app.logger.info("[tracking:users] querying list_all_user_compliance(instance_id=%s)", instance_id)
-        rows = db.list_all_user_compliance(instance_id)
-        app.logger.info("[tracking:users] got %d compliance rows", len(rows) if rows else 0)
+        fut = _TRACKING_EXECUTOR.submit(db.list_all_user_compliance, instance_id)
+        rows = fut.result(timeout=_TRACKING_USERS_QUERY_TIMEOUT)
         disabled = db.get_disabled_campaigns()
-        app.logger.info("[tracking:users] disabled campaigns: %s", disabled)
-        users = {}
+        users: Dict[str, Dict[str, Any]] = {}
         skipped = 0
         for r in rows:
             if disabled and r.get('campaign_id') in disabled:
@@ -8707,9 +8806,22 @@ def api_tracking_users_all():
             if login not in users:
                 users[login] = {'login': login, 'email': r['owner_email'], 'campaigns': []}
             users[login]['campaigns'].append(_sanitize(r))
-        app.logger.info("[tracking:users] returning %d users (%d rows skipped due to disabled campaigns) in %.1fms",
+        app.logger.info("[tracking:users] built %d users (%d skipped) in %.1fms",
                         len(users), skipped, (_time.time() - _t0) * 1000)
-        return jsonify({'users': list(users.values())})
+        return {'users': list(users.values())}
+
+    try:
+        data = _cache_get(f'tracking_users:{instance_id}', 60, loader)
+        return jsonify(data)
+    except CacheLoaderTimeout:
+        raise
+    except FuturesTimeoutError:
+        app.logger.warning("[tracking:users] query timed out after %.1fs", _TRACKING_USERS_QUERY_TIMEOUT)
+        return jsonify({
+            'error': 'Query timed out',
+            'kind': 'query_timeout',
+            'hint': 'Retry shortly.',
+        }), 503
     except Exception as exc:
         app.logger.error("[tracking:users] UNHANDLED EXCEPTION: %s", exc, exc_info=True)
         return jsonify({'error': 'tracking/users failed: %s' % exc}), 500
@@ -9059,7 +9171,6 @@ def api_tracking_ingest_parsed():
     diagnostic data.  The frontend calls this after each analysis completes,
     sending the same parsedData object it uses to render the UI.
     """
-    import hashlib
     db = _get_tracking_db()
     if db is None:
         return jsonify({'error': 'Tracking not available'}), 501
@@ -9068,6 +9179,16 @@ def api_tracking_ingest_parsed():
     if not pd:
         return jsonify({'error': 'No data provided'}), 400
 
+    scheduled = _schedule_tracking_ingest(pd, _ingest_parsed_to_db, kind='parsed')
+    if not scheduled:
+        app.logger.info("[tracking:ingest-parsed] skipped, already ingested this epoch")
+        return jsonify({'ok': True, 'skipped': 'already-ingested-this-epoch'}), 202
+    return jsonify({'ok': True, 'scheduled': True}), 202
+
+
+def _ingest_parsed_to_db(db, pd):
+    """Synchronously run the parsed-data ingest. Designed to run on a daemon thread."""
+    import hashlib
     # --- Resolve instance identity ---
     inst_info = pd.get('instanceInfo') or {}
     install_id = inst_info.get('installId') or ''
@@ -9207,26 +9328,22 @@ def api_tracking_ingest_parsed():
                     pd.get('dssVersion'), len(user_ingest), len(project_ingest),
                     len(pd.get('pluginDetails') or []), len(pd.get('connectionDetails') or []))
 
-    try:
-        run_id = db.ingest_run(
-            instance_id=inst_id,
-            instance_url=instance_url,
-            install_id=install_id or None,
-            node_id=inst_info.get('nodeId'),
-            run_data=run_data,
-            findings=findings,
-            users=user_ingest,
-            projects=project_ingest,
-            sections=sections,
-            health_metrics=health_metrics,
-            campaign_summaries=campaign_summaries,
-            snapshot_data=snapshot_data,
-        )
-        app.logger.info("[tracking:ingest-parsed] run_id=%d ingested successfully", run_id)
-        return jsonify({'ok': True, 'run_id': run_id})
-    except Exception as exc:
-        app.logger.error("[tracking:ingest-parsed] ingest failed: %s", exc, exc_info=True)
-        return jsonify({'error': str(exc)[:300]}), 500
+    run_id = db.ingest_run(
+        instance_id=inst_id,
+        instance_url=instance_url,
+        install_id=install_id or None,
+        node_id=inst_info.get('nodeId'),
+        run_data=run_data,
+        findings=findings,
+        users=user_ingest,
+        projects=project_ingest,
+        sections=sections,
+        health_metrics=health_metrics,
+        campaign_summaries=campaign_summaries,
+        snapshot_data=snapshot_data,
+    )
+    app.logger.info("[tracking:ingest-parsed] run_id=%d ingested successfully", run_id)
+    return run_id
 
 
 def _parse_mem_str_to_mb(s):
@@ -9898,15 +10015,19 @@ def api_logs_errors():
 
 @app.route('/api/llms')
 def api_llms():
-    try:
+    def loader():
         client = dataiku.api_client()
         project = client.get_project(dataiku.default_project_key())
         llms = project.list_llms()
-        completion_llms = [
+        return [
             {'id': llm['id'], 'label': llm.get('friendlyName') or llm['id'], 'type': llm.get('type', '')}
             for llm in llms if llm.get('type') != 'RETRIEVAL_AUGMENTED'
         ]
+    try:
+        completion_llms = _cache_get('llms', 60, loader)
         return jsonify({'llms': completion_llms})
+    except CacheLoaderTimeout:
+        raise
     except Exception as e:
         return jsonify({'error': str(e), 'llms': []}), 500
 

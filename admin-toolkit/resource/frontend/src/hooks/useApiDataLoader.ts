@@ -28,6 +28,11 @@ interface OverviewResponse extends Partial<ParsedData> {
   sparkVersion?: string;
 }
 
+// Module-scoped singleflight: POST /api/tracking/ingest-parsed at most once per
+// backend session epoch. The backend also singleflights, so this just avoids an
+// otherwise-useless round trip when multiple tabs load the same epoch.
+let lastIngestedEpoch: number | null = null;
+
 interface ConnectionsResponse {
   connections?: ConnectionCounts;
   connectionDetails?: ConnectionDetail[];
@@ -1679,22 +1684,34 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
 
         // Write parsed data to SQL tracking tables for trends comparison
         try {
-          log('Ingesting parsed data to tracking SQL...');
-          const healthScore = calculateHealthScore(currentParsedData);
-          const ingestPayload = {
-            ...currentParsedData,
-            _healthScore: healthScore.overall,
-            _healthStatus: healthScore.status,
-            _categoryScores: Object.fromEntries(
-              healthScore.categories.map(c => [c.category, c.score])
-            ),
-          };
-          await fetchJson('/api/tracking/ingest-parsed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(ingestPayload),
-          });
-          log(`Tracking ingest complete (health_score=${healthScore.overall})`);
+          let epoch: number | null = null;
+          try {
+            const epochRes = await fetchJson<{ sessionEpoch: number }>('/api/session/epoch');
+            epoch = epochRes?.sessionEpoch ?? null;
+          } catch {
+            epoch = null;
+          }
+          if (epoch !== null && lastIngestedEpoch === epoch) {
+            log(`Tracking ingest skipped — already posted for epoch ${epoch}`);
+          } else {
+            log('Ingesting parsed data to tracking SQL...');
+            const healthScore = calculateHealthScore(currentParsedData);
+            const ingestPayload = {
+              ...currentParsedData,
+              _healthScore: healthScore.overall,
+              _healthStatus: healthScore.status,
+              _categoryScores: Object.fromEntries(
+                healthScore.categories.map(c => [c.category, c.score])
+              ),
+            };
+            await fetchJson('/api/tracking/ingest-parsed', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(ingestPayload),
+            });
+            if (epoch !== null) lastIngestedEpoch = epoch;
+            log(`Tracking ingest scheduled (health_score=${healthScore.overall}, epoch=${epoch ?? 'unknown'})`);
+          }
         } catch (ingestErr) {
           log(`Tracking ingest failed (non-critical): ${ingestErr instanceof Error ? ingestErr.message : ingestErr}`, 'warn');
         }
