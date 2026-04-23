@@ -1,6 +1,6 @@
 {
     "id": "admin-toolkit",
-    "version": "0.4.305",
+    "version": "0.4.306",
     "meta": {
         "label": "Admin Toolkit",
         "description": "Dataiku DSS administration toolkit with diagnostics, visualizations, and management tools",
@@ -67,10 +67,11 @@
         },
         {
             "name": "outreach_mail_channel",
-            "label": "Mail Channel",
-            "description": "DSS messaging channel used for outreach emails. Auto-selects the first available channel if not set.",
-            "type": "CHANNEL_MAIL",
-            "mandatory": false
+            "label": "Mail Channel ID",
+            "description": "DSS messaging channel ID used for outreach emails (e.g. 'mail-channel-1'). Leave empty to auto-select the first available channel.",
+            "type": "STRING",
+            "mandatory": false,
+            "defaultValue": ""
         },
         {
             "name": "sep_outreach_thresholds",
