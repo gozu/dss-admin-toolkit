@@ -68,10 +68,10 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'cache_ttl_plugins': 600,
     'cache_ttl_log_errors': 600,
     'cache_ttl_dir_tree': 600,
-    'cache_ttl_llm_audit': 600,
+    'cache_ttl_llm_audit': 7200,
     'cache_ttl_llm_pricing': 21600,
     # LLM audit
-    'llm_audit_timeout_ms': 600000,
+    'llm_audit_timeout_ms': 1200000,
     'llm_audit_pricing_timeout_sec': 30,
     # Frontend API timeouts (served to frontend for sync)
     'fe_timeout_code_envs': 620000,
@@ -79,7 +79,7 @@ _BACKEND_SETTINGS: Dict[str, Any] = {
     'fe_timeout_projects': 45000,
     'fe_timeout_logs': 30000,
     'fe_timeout_llm_analysis': 120000,
-    'fe_timeout_llm_audit': 620000,
+    'fe_timeout_llm_audit': 1200000,
     # Tracking
     'sqlite_connect_timeout': 30,
     'tracking_issue_page_size': 500,
@@ -284,15 +284,73 @@ def ping():
 
 
 
+_SESSION_EPOCH: int = 0
+_SESSION_EPOCH_LOCK = threading.Lock()
+_CACHE_INFLIGHT: Dict[str, threading.Event] = {}
+_CACHE_INFLIGHT_ERRORS: Dict[str, BaseException] = {}
+
+
+def _get_session_epoch() -> int:
+    with _SESSION_EPOCH_LOCK:
+        return _SESSION_EPOCH
+
+
+def _bump_session_epoch() -> int:
+    global _SESSION_EPOCH
+    with _SESSION_EPOCH_LOCK:
+        _SESSION_EPOCH += 1
+        return _SESSION_EPOCH
+
+
 def _cache_get(key: str, ttl: int, loader):
+    """Cached loader with in-flight coalescing.
+
+    N concurrent callers with the same key result in one loader execution
+    and N-1 waiters. If the loader raises, all waiters get the same error
+    so no one gets stuck.
+    """
     now = time.time()
     with _CACHE_LOCK:
         entry = _CACHE.get(key)
         if entry and now - entry['ts'] < ttl:
             return entry['value']
-    value = loader()
-    with _CACHE_LOCK:
-        _CACHE[key] = {'ts': now, 'value': value}
+        inflight = _CACHE_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = threading.Event()
+            _CACHE_INFLIGHT[key] = inflight
+            is_loader = True
+        else:
+            is_loader = False
+
+    if not is_loader:
+        inflight.wait()
+        with _CACHE_LOCK:
+            err = _CACHE_INFLIGHT_ERRORS.pop(key, None)
+            entry = _CACHE.get(key)
+        if err is not None:
+            raise err
+        if entry is not None:
+            return entry['value']
+        # Fall through to retry under our own in-flight (rare: loader succeeded
+        # but entry was cleared between set and our read).
+
+    err: Optional[BaseException] = None
+    value: Any = None
+    try:
+        value = loader()
+    except BaseException as exc:
+        err = exc
+    finally:
+        finish_ts = time.time()
+        with _CACHE_LOCK:
+            if err is None:
+                _CACHE[key] = {'ts': finish_ts, 'value': value}
+            else:
+                _CACHE_INFLIGHT_ERRORS[key] = err
+            _CACHE_INFLIGHT.pop(key, None)
+        inflight.set()
+    if err is not None:
+        raise err
     return value
 
 
@@ -1879,11 +1937,55 @@ def _wrap_project_footprint_payload(payload: Any, project_key: Optional[str]) ->
     return payload
 
 
+_FOOTPRINT_STATE: Dict[str, Any] = {
+    'unavailable': False,
+    'reason': None,
+    'failures': 0,
+}
+_FOOTPRINT_LOCK = threading.Lock()
+_FOOTPRINT_FAIL_THRESHOLD = 2
+
+
+def _footprint_available() -> bool:
+    return not _FOOTPRINT_STATE.get('unavailable')
+
+
+def _footprint_unavailable_reason() -> Optional[str]:
+    return _FOOTPRINT_STATE.get('reason') if _FOOTPRINT_STATE.get('unavailable') else None
+
+
+def _footprint_reset_negative_cache() -> None:
+    with _FOOTPRINT_LOCK:
+        _FOOTPRINT_STATE['unavailable'] = False
+        _FOOTPRINT_STATE['reason'] = None
+        _FOOTPRINT_STATE['failures'] = 0
+
+
+def _footprint_record_failure(reason: str) -> None:
+    with _FOOTPRINT_LOCK:
+        if _FOOTPRINT_STATE.get('unavailable'):
+            return
+        _FOOTPRINT_STATE['failures'] = int(_FOOTPRINT_STATE.get('failures') or 0) + 1
+        if _FOOTPRINT_STATE['failures'] >= _FOOTPRINT_FAIL_THRESHOLD:
+            _FOOTPRINT_STATE['unavailable'] = True
+            _FOOTPRINT_STATE['reason'] = reason
+            app.logger.warning("[footprint] latched unavailable after %d failures: %s",
+                               _FOOTPRINT_STATE['failures'], reason)
+
+
+def _footprint_record_success() -> None:
+    with _FOOTPRINT_LOCK:
+        _FOOTPRINT_STATE['failures'] = 0
+
+
 def _compute_footprint_payload(
     client: Any,
     scope: str,
     project_key: Optional[str],
 ) -> Optional[Any]:
+    if _FOOTPRINT_STATE.get('unavailable'):
+        return None
+
     op_name = 'compute_all_dss_footprint'
     if scope == 'global':
         op_name = 'compute_global_footprint'
@@ -1919,14 +2021,22 @@ def _compute_footprint_payload(
     elif scope == 'project' and project_key:
         rest_path = f'/directories-footprint/projects/{project_key}?summaryOnly=false'
 
-    response = _bench_call(op_name, _client_perform_json, client, 'GET', rest_path)
+    try:
+        response = _bench_call(op_name, _client_perform_json, client, 'GET', rest_path)
+    except Exception as exc:
+        _footprint_record_failure(f"REST {rest_path}: {type(exc).__name__}: {str(exc)[:200]}")
+        app.logger.debug("[footprint] REST %s failed: %s", rest_path, exc)
+        return None
+
     if not isinstance(response, dict):
+        _footprint_record_failure(f"REST {rest_path} returned non-dict: {type(response).__name__}")
         app.logger.debug(
             "[footprint] REST %s scope=%s project=%s returned non-dict: type=%s",
             rest_path, scope, project_key, type(response).__name__,
         )
         return None
 
+    _footprint_record_success()
     unwrapped = _unwrap_footprint_payload(response)
     if scope == 'project':
         return _wrap_project_footprint_payload(unwrapped, project_key)
@@ -3335,6 +3445,35 @@ def _get_mail_channel(client: Any, requested_id: Optional[str]) -> Any:
 _PYTHON_WEBAPP_TYPES = {'DASH', 'STANDARD', 'BOKEH'}
 
 
+def _list_projects_catalog_cheap(client: Any) -> List[Dict[str, str]]:
+    """Cheap catalog: list_projects only, no git-log enrichment.
+
+    Use this when callers only need {key, name, owner}. On large instances
+    this avoids the ~130s per-project git-log walk.
+    """
+    t_total = time.time()
+    projects = _sdk_fetch(
+        'list_projects',
+        _BACKEND_SETTINGS['cache_ttl_projects'],
+        lambda: _bench_call('list_projects', client.list_projects) or [],
+    )
+    out: List[Dict[str, str]] = []
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        key = str(project.get('projectKey') or project.get('key') or project.get('id') or '').strip()
+        if not key:
+            continue
+        out.append({
+            'key': key,
+            'name': str(project.get('name') or key),
+            'owner': str(project.get('ownerLogin') or project.get('owner') or project.get('ownerName') or 'Unknown'),
+        })
+    out.sort(key=lambda item: item.get('key') or '')
+    app.logger.debug("[perf:catalog_cheap] elapsed=%.0fms count=%d", (time.time() - t_total) * 1000, len(out))
+    return out
+
+
 def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
     t_total = time.time()
     projects = _sdk_fetch(
@@ -4568,9 +4707,18 @@ def api_connections_audit():
     return jsonify(data)
 
 
+_CONN_HEALTH_MEMO: Dict[Tuple[int, str], Dict[str, Any]] = {}
+_CONN_HEALTH_MEMO_LOCK = threading.Lock()
+
+
 @app.route('/api/connections/health')
 def api_connection_health():
-    """Stream connection health-test results via SSE."""
+    """Stream connection health-test results via SSE.
+
+    Memoized by (session_epoch, connection_set_hash). If the same set was
+    tested earlier in this epoch, replay the cached events and skip the
+    141×850ms work. Global Refresh bumps the epoch and invalidates the memo.
+    """
     import re
     _SANITIZE_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b|/[\w/.-]{4,}')
 
@@ -4609,11 +4757,25 @@ def api_connection_health():
             yield "event: error\ndata: %s\n\n" % json.dumps({'error': str(e)[:200]})
             return
 
+        epoch = _get_session_epoch()
+        item_names = sorted([str(n) for n, _ in items if n])
+        item_hash = hashlib.sha1('\n'.join(item_names).encode('utf-8')).hexdigest()
+        memo_key = (epoch, item_hash)
+        with _CONN_HEALTH_MEMO_LOCK:
+            cached = _CONN_HEALTH_MEMO.get(memo_key)
+        if cached is not None:
+            yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(items), 'cached': True})
+            for result in cached.get('results', []):
+                yield "event: conn\ndata: %s\n\n" % json.dumps(result)
+            yield "event: done\ndata: %s\n\n" % json.dumps(cached.get('done') or {})
+            return
+
         yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(items)})
 
         ok_count = 0
         fail_count = 0
         skipped_count = 0
+        collected_results: List[Dict[str, Any]] = []
         workers = min(8, max(1, len(items)))
         pool = ThreadPoolExecutor(max_workers=workers)
         try:
@@ -4634,6 +4796,7 @@ def api_connection_health():
                     fail_count += 1
                 else:
                     skipped_count += 1
+                collected_results.append(result)
                 yield "event: conn\ndata: %s\n\n" % json.dumps(result)
         except GeneratorExit:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -4645,7 +4808,7 @@ def api_connection_health():
         pct = round((ok_count / testable) * 100) if testable > 0 else 100
 
         total_ms = int((time.time() - t0) * 1000)
-        yield "event: done\ndata: %s\n\n" % json.dumps({
+        done_payload = {
             'total_ms': total_ms,
             'summary': {
                 'total': len(items),
@@ -4654,7 +4817,14 @@ def api_connection_health():
                 'skipped': skipped_count,
                 'healthPct': pct,
             },
-        })
+        }
+        with _CONN_HEALTH_MEMO_LOCK:
+            # Drop other epochs' entries (keep only current).
+            stale = [k for k in _CONN_HEALTH_MEMO if k[0] != epoch]
+            for k in stale:
+                _CONN_HEALTH_MEMO.pop(k, None)
+            _CONN_HEALTH_MEMO[memo_key] = {'results': collected_results, 'done': done_payload}
+        yield "event: done\ndata: %s\n\n" % json.dumps(done_payload)
 
     return Response(
         generate(),
@@ -4741,7 +4911,7 @@ def api_connection_usages():
         t0 = time.time()
         try:
             client = dataiku.api_client()
-            projects = _list_projects_catalog(client)
+            projects = _list_projects_catalog_cheap(client)
             project_names = {p['key']: p.get('name', p['key']) for p in projects}
             project_keys = list(project_names.keys())
 
@@ -4975,7 +5145,7 @@ def api_sql_pushdown_audit():
         t0 = time.time()
         try:
             client = dataiku.api_client()
-            projects_catalog = _list_projects_catalog(client)
+            projects_catalog = _list_projects_catalog_cheap(client)
             project_names = {p['key']: p.get('name', p['key']) for p in projects_catalog}
             project_owners = {p['key']: p.get('owner') or '' for p in projects_catalog}
             project_keys = list(project_names.keys())
@@ -5240,7 +5410,7 @@ def _task_ce_catalog(
     project_limit: int,
 ) -> Dict[str, Any]:
     add_event('load_project_catalog', 'loading project catalog')
-    project_catalog = _list_projects_catalog(client)
+    project_catalog = _list_projects_catalog_cheap(client)
     selected_catalog: List[Dict[str, str]] = project_catalog[:] if project_limit <= 0 else project_catalog[:project_limit]
     add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
     project_info: Dict[str, Dict[str, str]] = {}
@@ -5568,41 +5738,13 @@ def api_code_envs():
             )
             app.logger.info("[perf:ce] phase1_catalog elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
 
-            # Phase 2: usage_scan (size_map deferred to /api/code-envs/sizes)
-            footprint_pool = None
-            footprint_future = None
-
-            usage_data: Dict[str, Any] = {}
-            if catalog['project_info'] and not deadline_reached('collect_project_code_env_usage'):
-                step_started = time.time()
-                usage_data = _task_ce_usage_scan(
-                    client,
-                    catalog['project_info'],
-                    deadline,
-                    add_event,
-                    progress_event,
-                )
-                record_step('collect_project_code_env_usage', step_started, calls=catalog['selected_count'])
-            app.logger.info("[perf:ce] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), catalog['selected_count'])
-
-            # Size map deferred — sizes will be 0 until /api/code-envs/sizes is called
+            # Phase 2: usage_scan and size_map deferred.
+            # Per-env usages come from list_code_env_usages() bulk call below; per-project
+            # walk is only needed by /api/project-footprint.
             size_by_env: Dict[str, int] = {}
             progress_meta['sizeMapDone'] = True
             _update_progress_summary(False)
-            app.logger.info("[perf:ce] size_map deferred, elapsed=%.0fms", elapsed_ms())
-
-            # Phase 3: list + filter envs, then fetch details
-            envs_by_project: Dict[str, set] = usage_data.get('envsByProject') or {}
-            selected_env_keys: set = set()
-            for env_keys in envs_by_project.values():
-                selected_env_keys.update(env_keys or set())
-            app.logger.info(
-                "[code-envs] selectedEnvKeys=%s projects=%s elapsed=%.2fs",
-                len(selected_env_keys),
-                len(catalog['project_info']),
-                time.time() - started,
-            )
-            add_event('selected_env_keys', f"selected env keys count={len(selected_env_keys)}")
+            app.logger.info("[perf:ce] usage+size deferred, elapsed=%.0fms", elapsed_ms())
 
             envs: List[Dict[str, Any]] = []
             if not deadline_reached('list_code_envs'):
@@ -5708,7 +5850,7 @@ def api_code_envs():
                 'totalElapsedMs': round(elapsed_ms(), 2),
                 'remainingMs': remaining_ms(),
                 'selectedProjectCount': selected_count,
-                'selectedEnvKeyCount': len(selected_env_keys),
+                'selectedEnvKeyCount': 0,
                 'steps': steps,
                 'apiCalls': api_calls,
                 'events': events,
@@ -5764,10 +5906,18 @@ def api_code_envs():
 def api_code_envs_sizes():
     """Lazy-load code env sizes via global footprint. Cached for 300s."""
     def loader():
+        if not _footprint_available():
+            return {}
         client = dataiku.api_client()
         return _get_code_env_size_map(client)
     size_map = _cache_get('code_envs_sizes', _BACKEND_SETTINGS['cache_ttl_projects'], loader)
-    return jsonify({'sizes': size_map})
+    available = _footprint_available() and bool(size_map)
+    reason = _footprint_unavailable_reason() if not _footprint_available() else None
+    return jsonify({
+        'sizes': size_map,
+        'available': available,
+        'reason': reason,
+    })
 
 
 @app.route('/api/code-envs/progress')
@@ -5969,7 +6119,7 @@ def _task_pf_catalog(
     project_limit: int,
 ) -> Dict[str, Any]:
     add_event('load_project_catalog', 'loading project catalog')
-    catalog = _list_projects_catalog(client)
+    catalog = _list_projects_catalog_cheap(client)
     total_project_count = len(catalog)
     selected_catalog: List[Dict[str, str]] = catalog[:] if project_limit <= 0 else catalog[:project_limit]
     add_event('select_projects_by_key', f"selecting projects by key limit={limit_label}")
@@ -6430,6 +6580,8 @@ def api_project_footprint():
                 'instanceProjectRiskAvg': round(avg_project_risk, 4),
                 'instanceAvgProjectGB': round(avg_project_gb, 4),
                 'projectCount': len(project_rows),
+                'footprintAvailable': _footprint_available(),
+                'footprintReason': _footprint_unavailable_reason(),
                 'benchmark': benchmark_summary,
             }
             app.logger.info(
@@ -7044,6 +7196,44 @@ def _do_tracking_ingest(db, data):
     app.logger.info("[tracking:ingest] === INGEST DONE === run_id=%d, %d findings, db_write=%.1fs, total=%.1fs",
                     run_id, len(findings), _time.time() - _t_db, _time.time() - _t0)
     return run_id
+
+
+_OUTREACH_INGEST_LOCK = threading.Lock()
+_OUTREACH_INGEST_STATE: Dict[str, Any] = {'epoch': None, 'running': False}
+
+
+def _schedule_outreach_ingest(data: Dict[str, Any]) -> None:
+    """Singleflight outreach ingest per session epoch.
+
+    If an ingest is already running for the current epoch, or one already
+    completed for this epoch, no-op. Otherwise fire a daemon thread so the
+    /api/tools/outreach-data response isn't blocked on 120s+ work.
+    """
+    epoch = _get_session_epoch()
+    with _OUTREACH_INGEST_LOCK:
+        if _OUTREACH_INGEST_STATE.get('running'):
+            return
+        if _OUTREACH_INGEST_STATE.get('epoch') == epoch:
+            return
+        _OUTREACH_INGEST_STATE['running'] = True
+        _OUTREACH_INGEST_STATE['epoch'] = epoch
+
+    def _runner() -> None:
+        try:
+            db = _get_tracking_db()
+            if db is None:
+                return
+            try:
+                run_id = _do_tracking_ingest(db, data)
+                app.logger.info("[tracking] async-ingested run %d (epoch=%d)", run_id, epoch)
+            except Exception as exc:
+                app.logger.warning("[tracking] async ingest failed: %s", str(exc)[:300])
+        finally:
+            with _OUTREACH_INGEST_LOCK:
+                _OUTREACH_INGEST_STATE['running'] = False
+
+    t = threading.Thread(target=_runner, name=f'outreach-ingest-epoch-{epoch}', daemon=True)
+    t.start()
 
 
 @app.route('/api/tools/outreach-data')
@@ -7925,17 +8115,10 @@ def api_tools_outreach_data():
 
     data = _cache_get('tools_outreach_data', _BACKEND_SETTINGS['cache_ttl_outreach'], loader)
 
-    # ── Tracking: ingest run on fresh cache load ──
-    cache_entry = _CACHE.get('tools_outreach_data')
-    if cache_entry and not cache_entry.get('_tracking_ingested'):
-        db = _get_tracking_db()
-        if db is not None:
-            try:
-                run_id = _do_tracking_ingest(db, data)
-                cache_entry['_tracking_ingested'] = True
-                app.logger.info("[tracking] ingested run %d", run_id)
-            except Exception as exc:
-                app.logger.warning("[tracking] ingest failed: %s", str(exc)[:300])
+    # Fire tracking ingest asynchronously so the outreach response isn't blocked
+    # on 120s connection_health + DB write. Singleflight on (session_epoch) to
+    # avoid 3-way concurrent ingests when tabs thrash.
+    _schedule_outreach_ingest(data)
 
     return jsonify(data)
 
@@ -9250,9 +9433,17 @@ def api_cache_clear():
     """Clear the in-memory cache so subsequent requests fetch fresh data."""
     with _CACHE_LOCK:
         _CACHE.clear()
+        _CACHE_INFLIGHT_ERRORS.clear()
     _clear_shared_project_code_env_usage()
     _get_sdk_cache().invalidate_all(_instance_id())
-    return jsonify({'ok': True})
+    _footprint_reset_negative_cache()
+    new_epoch = _bump_session_epoch()
+    return jsonify({'ok': True, 'sessionEpoch': new_epoch})
+
+
+@app.route('/api/session/epoch', methods=['GET'])
+def api_session_epoch():
+    return jsonify({'sessionEpoch': _get_session_epoch()})
 
 
 @app.route('/api/managed-folders', methods=['GET'])
@@ -9988,6 +10179,10 @@ def api_llm_audit():
             set_summary(15, 'scan', projectsTotal=total_projects, projectsDone=0)
             llm_rows: List[Dict[str, Any]] = []
             workers = max(1, int(_BACKEND_SETTINGS.get('parallel_workers_default', 8) or 8))
+            project_name_lookup: Dict[str, str] = {}
+            for _p in projects:
+                if isinstance(_p, dict) and _p.get('projectKey'):
+                    project_name_lookup[_p['projectKey']] = _p.get('name') or _p['projectKey']
             if total_projects > 0:
                 with ThreadPoolExecutor(max_workers=workers) as ex:
                     futures = {ex.submit(_llm_audit_scan_project, client, pk): pk for pk in project_keys}
@@ -9997,6 +10192,20 @@ def api_llm_audit():
                         try:
                             project_rows = fut.result()
                             llm_rows.extend(project_rows)
+                            for pr in project_rows:
+                                if not isinstance(pr, dict):
+                                    continue
+                                _append_progress_partial_row('llm_audit', run_id, {
+                                    'projectKey': pr.get('projectKey') or pk,
+                                    'projectName': project_name_lookup.get(pr.get('projectKey') or pk, pk),
+                                    'llmId': pr.get('llmId'),
+                                    'friendlyName': pr.get('friendlyName'),
+                                    'friendlyNameShort': pr.get('friendlyNameShort'),
+                                    'type': pr.get('type'),
+                                    'connection': pr.get('connection'),
+                                    'rawModel': pr.get('rawModel'),
+                                    'partial': True,
+                                })
                         except Exception as exc:
                             add_event('scan_project_failed', f'{pk}: {exc}', 'warn', project_key=pk)
                         done += 1

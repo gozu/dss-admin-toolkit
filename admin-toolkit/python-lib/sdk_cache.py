@@ -8,7 +8,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
@@ -184,19 +184,39 @@ class SdkApiCache:
             self.set_many(instance_id, items, ttl_seconds)
 
     def set_many(self, instance_id: str, items: Dict[str, Any], ttl_seconds: int) -> None:
-        """Batch-write multiple cache entries in one SQL round-trip."""
+        """Batch-write multiple cache entries in one SQL round-trip.
+
+        Per-value size cap: values whose serialised JSON exceeds _MAX_VALUE_BYTES
+        are kept in the L1 memory cache but not persisted to SQL. This prevents
+        the whole INSERT from silently failing when one oversized blob sneaks in
+        (e.g. a 123 MB bulk git-log payload).
+        """
         if not items:
             return
         now = time.time()
+        _MAX_VALUE_BYTES = 1_000_000
         # Populate L1 only for JSON-serializable values
         serializable: Dict[str, str] = {}
+        oversized_keys: List[str] = []
         for k, v in items.items():
             try:
-                serializable[k] = json.dumps(v)
+                rj = json.dumps(v)
             except Exception:
                 continue
+            if len(rj) > _MAX_VALUE_BYTES:
+                oversized_keys.append(k)
+                continue
+            serializable[k] = rj
+        if oversized_keys:
+            _log.warning(
+                "[sdk_cache] set_many: skipped %d oversized key(s) (>%d bytes), kept in L1 only: %s",
+                len(oversized_keys), _MAX_VALUE_BYTES, oversized_keys[:5],
+            )
         with self._mem_lock:
             for k in serializable:
+                self._mem[(instance_id, k)] = (now, items[k])
+            # Still cache oversized values in L1 so callers don't pay refetch cost.
+            for k in oversized_keys:
                 self._mem[(instance_id, k)] = (now, items[k])
         if not self._conn:
             return

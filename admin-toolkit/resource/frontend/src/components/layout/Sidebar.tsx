@@ -275,7 +275,7 @@ interface SidebarProps {
   onRefreshCache?: () => Promise<void>;
 }
 
-export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
+export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: SidebarProps) {
   const { state, setActivePage, addDebugLog } = useDiag();
   const { activePage, parsedData } = state;
   const dataReady = !!parsedData.dataReady;
@@ -295,6 +295,14 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
   }, [dataReady]);
 
   const handleRefresh = async () => {
+    if (onRefreshCache) {
+      try {
+        await onRefreshCache();
+      } catch {
+        /* best-effort */
+      }
+      return;
+    }
     try {
       await fetch('/api/cache/clear', { method: 'POST' });
     } catch {

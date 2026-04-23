@@ -19,6 +19,7 @@ import type {
   ConnectionAuditResult,
 } from '../types';
 import { fetchJson, fetchText, getBackendUrl } from '../utils/api';
+import { fetchWithSessionCache } from '../state/sessionCache';
 import { prefetchInactiveProjects } from '../components/InactiveProjectCleaner';
 import { calculateHealthScore } from './useHealthScore';
 import { useProgressInterpolation } from './useProgressInterpolation';
@@ -1659,7 +1660,9 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
         log('Live data load completed');
         deferredTails.push(connectionHealthGate);
         deferredTails.push(
-          fetchJson<OutreachData>('/api/tools/outreach-data')
+          fetchWithSessionCache('outreach:data', () =>
+            fetchJson<OutreachData>('/api/tools/outreach-data'),
+          )
             .then((res) => {
               if (!cancelled) {
                 dispatch({ type: 'SET_PARSED_DATA', payload: { outreachData: res, outreachApiLoaded: true } });

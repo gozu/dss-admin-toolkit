@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { DiagProvider, useDiag } from './context/DiagContext';
+import { bumpSessionEpoch } from './state/sessionCache';
 import {
   Header,
   Footer,
@@ -40,6 +41,7 @@ function AppContent({ sqliteFallback }: { sqliteFallback?: boolean }) {
   const handleRefreshCache = useCallback(async () => {
     const url = (globalThis as unknown as { dataiku?: { getWebAppBackendUrl?: (p: string) => string } }).dataiku?.getWebAppBackendUrl?.('/api/cache/clear') ?? '/api/cache/clear';
     await fetch(url, { method: 'POST', credentials: 'same-origin' });
+    bumpSessionEpoch();
     setReloadKey((k) => k + 1);
   }, []);
 

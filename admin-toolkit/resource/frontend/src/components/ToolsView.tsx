@@ -7,6 +7,7 @@ import { useDiag } from '../context/DiagContext';
 import { useModal, useUltraWideLayout } from '../hooks';
 import { useThresholds } from '../hooks/useThresholds';
 import { fetchJson } from '../utils/api';
+import { fetchWithSessionCache } from '../state/sessionCache';
 import { loadFromStorage, saveToStorage } from '../utils/storage';
 import type {
   CampaignExemption,
@@ -1393,7 +1394,9 @@ export function ToolsView() {
   useEffect(() => {
     let cancelled = false;
     if (!parsedData.outreachApiLoaded) {
-      fetchJson<OutreachData>('/api/tools/outreach-data').then((apiData) => {
+      fetchWithSessionCache('outreach:data', () =>
+        fetchJson<OutreachData>('/api/tools/outreach-data'),
+      ).then((apiData) => {
         if (cancelled) return;
         let finalData: OutreachData = apiData;
         setData((prev) => {

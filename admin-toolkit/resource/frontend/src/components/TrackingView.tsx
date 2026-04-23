@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Container } from './Container';
 import { fetchJson } from '../utils/api';
 import { useDiag } from '../context/DiagContext';
+import { fetchWithSessionCache, subscribeSessionEpoch } from '../state/sessionCache';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -183,12 +184,13 @@ export function TrackingView() {
   const [sortKey, setSortKey] = useState<SortKey>('open');
   const [sortAsc, setSortAsc] = useState(false);
   const [expandedLogin, setExpandedLogin] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   const loadUsers = useCallback(() => {
     const t0 = performance.now();
-    log('GET /api/tracking/users');
-    return fetchJson<{ users: UserRow[] }>('/api/tracking/users')
+    log('GET /api/tracking/users (session-cached)');
+    return fetchWithSessionCache('tracking:users', () =>
+      fetchJson<{ users: UserRow[] }>('/api/tracking/users'),
+    )
       .then((data) => {
         const ms = (performance.now() - t0).toFixed(0);
         const agg = aggregate(data.users);
@@ -217,37 +219,29 @@ export function TrackingView() {
       });
   }, [log]);
 
-  // On mount: load existing data from DB (no auto-refresh to avoid connection pool exhaustion)
+  // On mount: load existing data from DB (session-cached — revisits are free).
   useEffect(() => {
     let cancelled = false;
     log('=== TrackingView MOUNTED ===');
-    log('Loading existing user data from DB...');
+    log('Loading user data (session-cached)...');
     loadUsers().finally(() => {
       if (!cancelled) {
         log('User data loaded, spinner dismissed');
         setLoading(false);
       }
     });
-    return () => { cancelled = true; };
-  }, [loadUsers]);
-
-  const handleRefresh = useCallback(() => {
-    log('Manual refresh triggered');
-    setRefreshing(true);
-    const t0 = performance.now();
-    fetchJson('/api/tracking/refresh', { method: 'POST' })
-      .then((result) => {
-        const secs = ((performance.now() - t0) / 1000).toFixed(1);
-        log(`Manual refresh OK (${secs}s): ${JSON.stringify(result).slice(0, 200)}`);
-        return loadUsers();
-      })
-      .catch((err) => {
-        const secs = ((performance.now() - t0) / 1000).toFixed(1);
-        log(`Manual refresh FAILED (${secs}s): ${err instanceof Error ? err.message : err}`, 'error');
-        return loadUsers();
-      })
-      .finally(() => setRefreshing(false));
-  }, [loadUsers]);
+    const unsubscribe = subscribeSessionEpoch(() => {
+      if (cancelled) return;
+      setLoading(true);
+      loadUsers().finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [loadUsers, log]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -299,29 +293,11 @@ export function TrackingView() {
   return (
     <Container className="py-6">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">User Compliance</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Track open, resolved, and regressed issues per user across campaigns.
-          </p>
-        </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="flex items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-glass)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-50"
-        >
-          <svg
-            className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`}
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          {refreshing ? 'Refreshing\u2026' : 'Refresh'}
-        </button>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-[var(--text-primary)]">User Compliance</h1>
+        <p className="mt-1 text-sm text-[var(--text-secondary)]">
+          Track open, resolved, and regressed issues per user across campaigns.
+        </p>
       </div>
 
       {/* Error */}
