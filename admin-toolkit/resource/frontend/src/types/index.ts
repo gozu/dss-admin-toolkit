@@ -484,6 +484,7 @@ export type CgroupSettings = Record<string, string | number>;
 export type ProxySettings = Record<string, string | number | boolean | string[]>;
 export type MaxRunningActivities = Record<string, number | string>;
 export type JavaMemorySettings = Record<string, string>;
+export interface JekSettings { maxRunningJobs?: number; numberOfReadyJEKs?: number; }
 
 // Instance info from install.ini
 export interface InstanceInfo {
@@ -539,6 +540,7 @@ export interface ParsedData {
   cgroupSettings?: CgroupSettings;
   proxySettings?: ProxySettings;
   maxRunningActivities?: MaxRunningActivities;
+  jekSettings?: JekSettings;
   javaMemorySettings?: JavaMemorySettings;
   javaMemoryLimits?: JavaMemorySettings;
   disabledFeatures?: Record<string, DisabledFeature>;

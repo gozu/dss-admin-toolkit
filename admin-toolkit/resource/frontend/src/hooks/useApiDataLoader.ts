@@ -542,6 +542,7 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
             ...(settingsResult.sparkSettings || {}),
           },
           maxRunningActivities: settingsResult.maxRunningActivities || {},
+          jekSettings: settingsResult.jekSettings || {},
           authSettings: settingsResult.authSettings || {},
           containerSettings: settingsResult.containerSettings || {},
           integrationSettings: settingsResult.integrationSettings || {},

@@ -138,6 +138,7 @@ export function useDataParser(): UseDataParserReturn {
         ...result.sparkSettings,
       };
       parsedData.maxRunningActivities = result.maxRunningActivities || {};
+      parsedData.jekSettings = result.jekSettings || {};
       parsedData.authSettings = result.authSettings || {};
       parsedData.containerSettings = result.containerSettings || {};
       parsedData.integrationSettings = result.integrationSettings || {};
@@ -413,6 +414,7 @@ export function useDataParser(): UseDataParserReturn {
       parsedData.enabledSettings = result.enabledSettings || {};
       parsedData.sparkSettings = { ...parsedData.sparkSettings, ...result.sparkSettings };
       parsedData.maxRunningActivities = result.maxRunningActivities || {};
+      parsedData.jekSettings = result.jekSettings || {};
       parsedData.authSettings = result.authSettings || {};
       parsedData.containerSettings = result.containerSettings || {};
       parsedData.integrationSettings = result.integrationSettings || {};

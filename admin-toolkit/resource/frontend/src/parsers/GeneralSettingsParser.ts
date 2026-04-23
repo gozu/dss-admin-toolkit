@@ -73,6 +73,7 @@ interface GeneralSettingsData {
   };
   maxRunningActivities?: number;
   maxRunningActivitiesPerJob?: number;
+  jekSettings?: { maxRunningJobs?: number; numberOfReadyJEKs?: number };
   proxySettings?: {
     host?: string;
     port?: number;
@@ -116,6 +117,7 @@ interface GeneralSettingsResult {
   enabledSettings: EnabledSettings;
   sparkSettings: SparkSettings;
   maxRunningActivities: MaxRunningActivities;
+  jekSettings: { maxRunningJobs?: number; numberOfReadyJEKs?: number };
   authSettings: AuthSettings;
   containerSettings: ContainerSettings;
   integrationSettings: IntegrationSettings;
@@ -147,6 +149,7 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
       enabledSettings: {},
       sparkSettings: {},
       maxRunningActivities: {},
+      jekSettings: {},
       authSettings: {},
       containerSettings: {},
       integrationSettings: {},
@@ -170,6 +173,8 @@ export class GeneralSettingsParser extends BaseJSONParser<GeneralSettingsResult>
       data.maxRunningActivities ?? 'Not set';
     result.maxRunningActivities['Max Running Activities Per Job'] =
       data.maxRunningActivitiesPerJob ?? 'Not set';
+
+    result.jekSettings = data.jekSettings ?? {};
 
     // Process spark settings
     this.processSparkSettings(data, result);

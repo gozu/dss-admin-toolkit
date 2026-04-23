@@ -31,9 +31,11 @@ function parseMemoryValues(data: ParsedData): MemoryValues | null {
   const jekGB = parseInt(jekStr.replace(/[^0-9]/g, '')) || 0;
   const maxActivities = typeof maxActivitiesRaw === 'number' ? maxActivitiesRaw : 0;
   const cgroupLimit = parseInt(cgroupLimitStr.replace(/[^0-9]/g, '')) || 0;
+  const maxRunningJobs = data.jekSettings?.maxRunningJobs ?? 0;
 
-  // Worst case concurrent JEKs: one job per activity → maxActivities.
-  const maxJobs = maxActivities;
+  // JEK is per-job. maxRunningJobs caps concurrent jobs when set; otherwise worst case
+  // is one job per activity.
+  const maxJobs = maxRunningJobs > 0 ? Math.min(maxRunningJobs, maxActivities) : maxActivities;
 
   if (cgroupLimit === 0) return null;
 
