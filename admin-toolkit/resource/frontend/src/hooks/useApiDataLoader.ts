@@ -887,17 +887,37 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
               phase: 'done',
               message: 'Code env analysis completed',
             });
-            deferredTails.push(
-              fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
-                .then((r) => {
-                  if (r?.sizes && typeof r.sizes === 'object') {
-                    dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
-                  }
-                  log('Pre-warming /api/dir-tree after global footprint');
-                  fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
-                })
-                .catch(() => { /* sizes optional */ }),
-            );
+            {
+              const sizesStart = nowMs();
+              deferredTails.push(
+                fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                  .then((r) => {
+                    if (r?.sizes && typeof r.sizes === 'object') {
+                      dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                      log(
+                        `Loaded /api/code-envs/sizes (${Object.keys(r.sizes).length} entries, ${fmtMs(sizesStart)})`,
+                      );
+                    } else {
+                      log(
+                        `/api/code-envs/sizes returned no sizes object (${fmtMs(sizesStart)})`,
+                        'warn',
+                      );
+                    }
+                    log('Pre-warming /api/dir-tree after global footprint');
+                    fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+                  })
+                  .catch((err: unknown) => {
+                    const name = err instanceof Error ? err.name : typeof err;
+                    const status = (err as { status?: number } | null)?.status;
+                    const raw = err instanceof Error ? err.message : String(err);
+                    const msg = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+                    log(
+                      `Failed /api/code-envs/sizes (${fmtMs(sizesStart)}): ${name}${status ? ` status=${status}` : ''} — ${msg}`,
+                      'warn',
+                    );
+                  }),
+              );
+            }
             codeEnvsInterpolator.setBackendProgress(100);
             codeEnvsLastProgressRef.current = 100;
             codeEnvsInterpolationEnabledRef.current = false;
@@ -969,17 +989,37 @@ export function useApiDataLoader(enabled: boolean, reloadKey = 0) {
                 phase: 'done',
                 message: `Code env analysis completed (${codeEnvsPartialBuffer.length} envs from progress)`,
               });
-              deferredTails.push(
-                fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
-                  .then((r) => {
-                    if (r?.sizes && typeof r.sizes === 'object') {
-                      dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
-                    }
-                    log('Pre-warming /api/dir-tree after global footprint');
-                    fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
-                  })
-                  .catch(() => { /* sizes optional */ }),
-              );
+              {
+                const sizesStart = nowMs();
+                deferredTails.push(
+                  fetchJson<{ sizes: Record<string, number> }>('/api/code-envs/sizes')
+                    .then((r) => {
+                      if (r?.sizes && typeof r.sizes === 'object') {
+                        dispatch({ type: 'SET_PARSED_DATA', payload: { codeEnvSizes: r.sizes } });
+                        log(
+                          `Loaded /api/code-envs/sizes (${Object.keys(r.sizes).length} entries, ${fmtMs(sizesStart)})`,
+                        );
+                      } else {
+                        log(
+                          `/api/code-envs/sizes returned no sizes object (${fmtMs(sizesStart)})`,
+                          'warn',
+                        );
+                      }
+                      log('Pre-warming /api/dir-tree after global footprint');
+                      fetchJson('/api/dir-tree?maxDepth=3&scope=dss').catch(() => { /* pre-warm optional */ });
+                    })
+                    .catch((err: unknown) => {
+                      const name = err instanceof Error ? err.name : typeof err;
+                      const status = (err as { status?: number } | null)?.status;
+                      const raw = err instanceof Error ? err.message : String(err);
+                      const msg = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+                      log(
+                        `Failed /api/code-envs/sizes (${fmtMs(sizesStart)}): ${name}${status ? ` status=${status}` : ''} — ${msg}`,
+                        'warn',
+                      );
+                    }),
+                );
+              }
               log(`Failed /api/code-envs but recovered ${codeEnvsPartialBuffer.length} envs from progress`, 'warn');
             } else {
               dispatch({ type: 'CLEAR_PROVISIONAL_CODE_ENVS' });

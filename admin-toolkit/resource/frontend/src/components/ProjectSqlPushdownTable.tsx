@@ -1,29 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Card } from './Card';
 import { getBackendUrl } from '../utils/api';
+import {
+  getSqlPushdownScan,
+  restartSqlPushdownScan,
+  startSqlPushdownScan,
+  subscribeSqlPushdownScan,
+} from '../state/sqlPushdownScan';
 import type {
   SqlPushdownOwnerGroup,
   SqlPushdownProjectFinding,
   SqlPushdownRecipeFinding,
 } from '../types';
-
-interface ScanState {
-  total: number | null;
-  scanned: number | null;
-  ownerGroups: SqlPushdownOwnerGroup[];
-  status: 'idle' | 'scanning' | 'done' | 'error';
-  error: string | null;
-  elapsedMs: number | null;
-}
-
-const INITIAL_STATE: ScanState = {
-  total: null,
-  scanned: null,
-  ownerGroups: [],
-  status: 'idle',
-  error: null,
-  elapsedMs: null,
-};
 
 function OwnerRow({
   group,
@@ -182,9 +170,15 @@ function RecipeLine({
 }
 
 export function ProjectSqlPushdownTable() {
-  const [scan, setScan] = useState<ScanState>(INITIAL_STATE);
-  const abortRef = useRef<AbortController | null>(null);
-  const startedRef = useRef(false);
+  const scan = useSyncExternalStore(
+    subscribeSqlPushdownScan,
+    getSqlPushdownScan,
+    getSqlPushdownScan,
+  );
+
+  useEffect(() => {
+    startSqlPushdownScan();
+  }, []);
 
   const dssBaseUrl = useMemo(() => {
     const bUrl = getBackendUrl('/');
@@ -195,89 +189,6 @@ export function ProjectSqlPushdownTable() {
       return '';
     }
   }, []);
-
-  const runScan = useCallback(async () => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setScan({ ...INITIAL_STATE, status: 'scanning' });
-
-    try {
-      const url = getBackendUrl('/api/projects/sql_pushdown_audit');
-      const response = await fetch(url, {
-        credentials: 'same-origin',
-        signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        const body = await response.text();
-        let msg = `Scan failed: ${response.status} ${response.statusText}`;
-        try {
-          msg = (JSON.parse(body) as { error?: string }).error || msg;
-        } catch {
-          /* ignore */
-        }
-        throw new Error(msg);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const part of parts) {
-          const eventMatch = part.match(/^event:\s*(\S+)/m);
-          const dataMatch = part.match(/^data:\s*(.*)/m);
-          if (!eventMatch || !dataMatch) continue;
-          const eventType = eventMatch[1];
-          let payload: Record<string, unknown>;
-          try {
-            payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-          if (eventType === 'error') {
-            throw new Error(String(payload.error || 'Scan error'));
-          } else if (eventType === 'init') {
-            setScan((s) => ({ ...s, total: Number(payload.total) }));
-          } else if (eventType === 'progress') {
-            setScan((s) => ({ ...s, scanned: Number(payload.scanned) }));
-          } else if (eventType === 'done') {
-            setScan((s) => ({
-              ...s,
-              status: 'done',
-              ownerGroups: (payload.ownerGroups || []) as SqlPushdownOwnerGroup[],
-              scanned: s.total,
-              elapsedMs: Number(payload.total_ms) || null,
-            }));
-          }
-        }
-      }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
-      setScan((s) => ({
-        ...s,
-        status: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      }));
-    } finally {
-      abortRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-    void runScan();
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [runScan]);
 
   const progressPct = useMemo(() => {
     if (!scan.total || scan.total <= 0) return 0;
@@ -328,7 +239,7 @@ export function ProjectSqlPushdownTable() {
           <span className="font-medium">Scan error:</span> {scan.error}
           <button
             type="button"
-            onClick={runScan}
+            onClick={restartSqlPushdownScan}
             className="ml-3 px-2 py-0.5 text-xs rounded border border-[var(--border-default)] hover:bg-[var(--bg-glass-hover)]"
           >
             Retry
