@@ -33,6 +33,7 @@ const PAGE_DEFS: PageDef[] = [
   { id: 'tracking', label: 'Compliance', section: 'Tools', keywords: ['tracking', 'compliance', 'audit', 'issues'] },
   { id: 'directory', label: 'Directory Usage', section: 'Tools', keywords: ['treemap', 'space', 'folder', 'size'] },
   { id: 'db-health', label: 'DB Health', section: 'Tools', keywords: ['postgres', 'database', 'vacuum', 'tables', 'runtimedb', 'bloat'] },
+  { id: 'settings', label: 'Settings', section: 'Tools', keywords: ['settings', 'mail', 'channel', 'email', 'config', 'preferences'] },
   { id: 'trends', label: 'Trends', section: 'Trends', keywords: ['trends', 'compare', 'history', 'then', 'now', 'delta', 'change'] },
   { id: 'image-cleaner', label: 'Docker Images', section: 'Code Environments', keywords: ['ecr', 'acr', 'gar', 'docker', 'image', 'container', 'cleanup', 'aws', 'azure', 'gcp', 'registry'] },
 ];

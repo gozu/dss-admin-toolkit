@@ -27,6 +27,7 @@ const PAGE_SECTION_MAP: Record<PageId, SectionInfo> = {
   directory: { label: 'Tools', firstPage: 'outreach' },
   'db-health': { label: 'Tools', firstPage: 'outreach' },
   report: { label: 'Tools', firstPage: 'outreach' },
+  settings: { label: 'Tools', firstPage: 'outreach' },
   trends: { label: 'Trends', firstPage: 'trends' },
   'image-cleaner': { label: 'Code Environments', firstPage: 'code-envs' },
   'llm-audit': { label: 'LLM', firstPage: 'llm-audit' },
@@ -56,6 +57,7 @@ const PAGE_LABELS: Record<PageId, string> = {
   trends: 'Trends',
   'image-cleaner': 'Docker Images',
   'llm-audit': 'Model Audit',
+  settings: 'Settings',
 };
 
 export function Breadcrumb() {

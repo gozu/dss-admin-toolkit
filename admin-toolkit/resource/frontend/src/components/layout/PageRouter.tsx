@@ -17,6 +17,7 @@ import { ConnectionsPage } from '../pages/ConnectionsPage';
 import { RuntimeConfigPage } from '../pages/RuntimeConfigPage';
 import { LogsPage } from '../pages/LogsPage';
 import { SanityCheckPage } from '../pages/SanityCheckPage';
+import { SettingsPage } from '../pages/SettingsPage';
 
 // Lazy-load only the heavy views
 const ToolsView = lazy(() => import('../ToolsView').then((m) => ({ default: m.ToolsView })));
@@ -107,6 +108,8 @@ function renderPage(activePage: PageId): React.ReactNode {
       return <TrendsPage />;
     case 'llm-audit':
       return <LlmAuditPage />;
+    case 'settings':
+      return <SettingsPage />;
     default:
       return <SummaryPage />;
   }

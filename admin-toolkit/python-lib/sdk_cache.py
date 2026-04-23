@@ -15,6 +15,21 @@ _log = logging.getLogger(__name__)
 _IN_FLIGHT: Dict[Tuple[str, str], threading.Event] = {}
 _IN_FLIGHT_LOCK = threading.Lock()
 
+_EXC_LOG_MAX_CHARS = 500
+
+
+def _brief(exc: Any) -> str:
+    """Condense a SQL driver exception to a single short line.
+
+    JDBC/psycopg2 exceptions often embed the full failing query, which for
+    bulk cache writes is thousands of characters of `project_git_log:...`
+    keys and makes backend.log unreadable. Keep the root cause, drop the rest.
+    """
+    s = str(exc).replace('\n', ' ').replace('\r', ' ')
+    if len(s) > _EXC_LOG_MAX_CHARS:
+        return s[:_EXC_LOG_MAX_CHARS] + f"... [{len(s) - _EXC_LOG_MAX_CHARS} chars truncated]"
+    return s
+
 
 def _L(val) -> str:
     """Convert a Python value to a safe SQL literal string."""
@@ -69,7 +84,7 @@ class SdkApiCache:
             if self._schema:
                 self._migrate_from_default_schema(executor)
         except Exception as exc:
-            _log.warning("[sdk_cache] _init_tables failed: %s", exc)
+            _log.warning("[sdk_cache] _init_tables failed: %s", _brief(exc))
 
     def _migrate_from_default_schema(self, executor) -> None:
         """Copy api_cache data from default schema to configured schema, then drop old."""
@@ -104,7 +119,7 @@ class SdkApiCache:
                                  post_queries=['COMMIT'])
             _log.info("[sdk_cache] schema migration: migrated %d rows from %s → %s", old_count, old, new)
         except Exception as exc:
-            _log.error("[sdk_cache] schema migration failed: %s", exc)
+            _log.error("[sdk_cache] schema migration failed: %s", _brief(exc))
 
     def get_or_fetch(
         self,
@@ -220,7 +235,7 @@ class SdkApiCache:
             elapsed_ms = (time.time() - t0) * 1000.0
             with self._stats_lock:
                 self._stats['sql_ms'] += elapsed_ms
-            _log.warning("[sdk_cache] set_many failed: %s", exc)
+            _log.warning("[sdk_cache] set_many failed (keys=%d): %s", len(values), _brief(exc))
 
     def get(self, instance_id: str, cache_key: str, ttl_seconds: int) -> Optional[Any]:
         """Read-only check of L1 memory cache. Returns None on miss."""
@@ -269,4 +284,4 @@ class SdkApiCache:
             executor.query_to_df(sql)
             _log.info("[sdk_cache] invalidated all for instance_id=%s", instance_id)
         except Exception as exc:
-            _log.warning("[sdk_cache] invalidate_all failed: %s", exc)
+            _log.warning("[sdk_cache] invalidate_all failed: %s", _brief(exc))

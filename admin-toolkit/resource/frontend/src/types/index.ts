@@ -879,7 +879,8 @@ export type PageId =
   | 'db-health'
   | 'trends'
   | 'image-cleaner'
-  | 'llm-audit';
+  | 'llm-audit'
+  | 'settings';
 
 export type AppMode = 'landing' | 'single' | 'comparison' | 'tools' | 'settings';
 export type ComparisonViewMode = 'delta' | 'side-by-side' | 'tabbed';

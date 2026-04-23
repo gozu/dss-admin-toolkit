@@ -1906,8 +1906,12 @@ def _compute_footprint_payload(
                     lambda: _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_project_footprint(project_key, wait=True))),
                 )
             return _bench_call(op_name, lambda: _unwrap_footprint_payload(footprint_api.compute_all_dss_footprint(wait=True)))
-        except Exception:
-            pass
+        except Exception as exc:
+            # On some DSS versions / under load the SDK path fails; fall back to REST.
+            app.logger.debug(
+                "[footprint] sdk %s scope=%s project=%s failed, falling back to REST: %s: %s",
+                op_name, scope, project_key, type(exc).__name__, str(exc)[:200],
+            )
 
     rest_path = '/directories-footprint/all-dss?summaryOnly=false'
     if scope == 'global':
@@ -1917,6 +1921,10 @@ def _compute_footprint_payload(
 
     response = _bench_call(op_name, _client_perform_json, client, 'GET', rest_path)
     if not isinstance(response, dict):
+        app.logger.debug(
+            "[footprint] REST %s scope=%s project=%s returned non-dict: type=%s",
+            rest_path, scope, project_key, type(response).__name__,
+        )
         return None
 
     unwrapped = _unwrap_footprint_payload(response)
@@ -1947,6 +1955,10 @@ _FOOTPRINT_SCALAR_KEYS = frozenset({
 
 
 def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
+    # Footprint payloads may be missing entirely (per-project fetch failed, stale cache, etc.)
+    # so every accessor in this family must tolerate a non-dict input and return an empty map.
+    if not isinstance(footprint, dict):
+        return {}
     details = footprint.get('details')
     if isinstance(details, dict):
         return details
@@ -1972,6 +1984,8 @@ def _footprint_details_map(footprint: Any) -> Dict[str, Any]:
 
 
 def _footprint_size(footprint: Any) -> int:
+    if not isinstance(footprint, dict):
+        return 0
     size = _coerce_int(footprint.get('size'), 0)
     if size > 0:
         return size
@@ -3328,7 +3342,7 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
         _BACKEND_SETTINGS['cache_ttl_projects'],
         lambda: _bench_call('list_projects', client.list_projects) or [],
     )
-    app.logger.info("[perf:catalog] list_projects elapsed=%.0fms count=%d", (time.time() - t_total) * 1000, len(projects))
+    app.logger.debug("[perf:catalog] list_projects elapsed=%.0fms count=%d", (time.time() - t_total) * 1000, len(projects))
     out: List[Dict[str, str]] = []
     keys: List[str] = []
     for project in projects:
@@ -3363,7 +3377,7 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
                 cached_logs[key] = cached
             else:
                 uncached_keys.append(key)
-        app.logger.info("[perf:catalog] git_log cache hit=%d miss=%d", len(cached_logs), len(uncached_keys))
+        app.logger.debug("[perf:catalog] git_log cache hit=%d miss=%d", len(cached_logs), len(uncached_keys))
 
         # Phase B: fetch uncached git logs from API in parallel
         fetched_logs: Dict[str, Any] = {}
@@ -3400,9 +3414,9 @@ def _list_projects_catalog(client: Any) -> List[Dict[str, str]]:
             ts = ts_map.get(entry['key'])
             if ts is not None:
                 entry['lastModifiedOn'] = ts
-        app.logger.info("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d cached=%d fetched=%d", (time.time() - t_total) * 1000, len(keys), min(8, len(uncached_keys)) if uncached_keys else 0, len(cached_logs), len(fetched_logs))
+        app.logger.debug("[perf:catalog] git_log_batch elapsed=%.0fms projects=%d workers=%d cached=%d fetched=%d", (time.time() - t_total) * 1000, len(keys), min(8, len(uncached_keys)) if uncached_keys else 0, len(cached_logs), len(fetched_logs))
 
-    app.logger.info("[perf:catalog] total elapsed=%.0fms", (time.time() - t_total) * 1000)
+    app.logger.debug("[perf:catalog] total elapsed=%.0fms", (time.time() - t_total) * 1000)
     out.sort(key=lambda item: item.get('key') or '')
     return out
 
@@ -3672,7 +3686,16 @@ def _build_project_footprint_map_with_deadline(
                     elapsed_ms=(time.time() - started_at) * 1000.0,
                 )
 
-    app.logger.info("[footprint-map] final rows=%s elapsed=%.2fs", len(footprint_map), time.time() - started)
+    missing = max(0, len(wanted_keys) - len(footprint_map))
+    if missing > 0:
+        # Per-project fetch exceptions are logged at DEBUG in _compute_footprint_payload; surface
+        # the aggregate here so customer logs reveal systemic failures (e.g., DSS 14.2 endpoint gone).
+        app.logger.warning(
+            "[footprint-map] final rows=%s wanted=%s missing=%s elapsed=%.2fs — run with DEBUG on 'webapps.backend' for per-project reasons",
+            len(footprint_map), len(wanted_keys), missing, time.time() - started,
+        )
+    else:
+        app.logger.info("[footprint-map] final rows=%s elapsed=%.2fs", len(footprint_map), time.time() - started)
     _notify_progress(
         progress_cb,
         'project_footprint_fetch_pool_done',
@@ -4513,6 +4536,7 @@ def _audit_connection(name: str, config: dict) -> dict:
 @app.route('/api/connections/audit')
 def api_connections_audit():
     """Audit connection configuration (fast-write, details readability, HDFS interface, filesystem_root)."""
+    app.logger.info("[connections-audit] endpoint hit")
     client = dataiku.api_client()
 
     def loader():
@@ -4833,6 +4857,7 @@ def api_sql_pushdown_audit():
     and outputs are SQL-type datasets sharing the same connection, and (3) the
     selected engine is DSS (i.e., not already SQL). Grouped by project owner.
     """
+    app.logger.info("[sql_pushdown] endpoint hit")
 
     def _dataset_map_for(proj) -> Dict[str, Dict[str, str]]:
         out: Dict[str, Dict[str, str]] = {}
@@ -4970,9 +4995,11 @@ def api_sql_pushdown_audit():
                     'email': u.get('email') or None,
                 }
         except Exception as e:
-            yield "event: error\ndata: %s\n\n" % json.dumps({'error': str(e)[:200]})
+            app.logger.exception("[sql_pushdown] setup failed exc_type=%s", type(e).__name__)
+            yield "event: error\ndata: %s\n\n" % json.dumps({'error': f"{type(e).__name__}: {str(e)[:200]}"})
             return
 
+        app.logger.info("[sql_pushdown] scan start projects=%d users=%d", len(project_keys), len(user_map))
         yield "event: init\ndata: %s\n\n" % json.dumps({'total': len(project_keys)})
 
         per_project: Dict[str, List[Dict[str, Any]]] = {}
@@ -9620,8 +9647,14 @@ def api_mail_channels():
 
 @app.route('/api/sanity-check')
 def api_sanity_check():
+    t0 = time.time()
     try:
         client = dataiku.api_client()
+        if not hasattr(client, 'perform_instance_sanity_check'):
+            # Older DSS versions (<14.4) do not expose this API.
+            msg = 'perform_instance_sanity_check() not available on this DSS version'
+            app.logger.warning("[sanity-check] %s", msg)
+            return jsonify({'error': msg, 'messages': []}), 501
         result = client.perform_instance_sanity_check(wait=True)
         raw = result._data or {}
         messages = [
@@ -9636,6 +9669,10 @@ def api_sanity_check():
             }
             for m in raw.get('messages', [])
         ]
+        app.logger.info(
+            "[sanity-check] ok elapsed=%.0fms messages=%d maxSeverity=%s",
+            (time.time() - t0) * 1000.0, len(messages), raw.get('maxSeverity'),
+        )
         return jsonify({
             'messages': messages,
             'hasError': raw.get('error', False),
@@ -9644,7 +9681,11 @@ def api_sanity_check():
             'maxSeverity': raw.get('maxSeverity'),
         })
     except Exception as e:
-        return jsonify({'error': str(e), 'messages': []}), 500
+        app.logger.exception(
+            "[sanity-check] failed elapsed=%.0fms exc_type=%s",
+            (time.time() - t0) * 1000.0, type(e).__name__,
+        )
+        return jsonify({'error': f"{type(e).__name__}: {e}", 'messages': []}), 500
 
 
 @app.route('/api/logs/errors')
