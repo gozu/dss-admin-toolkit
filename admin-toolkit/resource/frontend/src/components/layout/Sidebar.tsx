@@ -421,6 +421,11 @@ export function Sidebar({ collapsed, onToggleCollapse, onRefreshCache }: Sidebar
         {!collapsed && (
           <>
             <span className="flex-1 text-left whitespace-nowrap">{item.label}</span>
+            {item.experimental && (
+              <span className="flex-shrink-0 h-5 flex items-center justify-center rounded bg-amber-500/15 text-amber-400 border border-amber-500/40 text-[10px] font-semibold uppercase tracking-wide px-1.5">
+                exp
+              </span>
+            )}
             {badgeCount > 0 && (
               <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center rounded-full bg-[var(--accent-muted)] text-[var(--accent)] text-xs font-medium px-1.5">
                 {badgeCount}
