@@ -10,6 +10,7 @@ resource/frontend/node_modules/
 
 # OS files
 .DS_Store
+__MACOSX/
 
 # Python
 __pycache__/
@@ -17,6 +18,9 @@ __pycache__/
 
 # Temporary files
 release_info.json
+.codex
+.omc/
+*/.omc/
 
 # Binary / image files — only track text-based sources
 *.png
@@ -39,6 +43,7 @@ release_info.json
 # Screenshots and test artifacts
 resource/frontend/screenshots/
 resource/frontend/test-results/
+resource/frontend/tests/trends-ingest-smoke.spec.ts
 
 # Claude Code config
 CLAUDE.md
@@ -49,6 +54,8 @@ am.md
 sam.md
 amprompt.md
 codexplan.md
+codexprogress.md
+currentflow*.md
 dbstruct.md
 slack
 HANDOFF-*.md
@@ -58,8 +65,11 @@ plugins.html
 plan.md
 codex-*.md
 CLAUDE-*.md
-!CLAUDE.md
 webapps.html
+in-progress/
+outreachlayouts/
+qa_smoke_tests.xlsx
+dss_operational_checklist.md
 
 # Superseded by Makefile
 bump_version.py
@@ -72,6 +82,13 @@ tam-restart-*.log
 
 # Temp docs
 docs/api-optimization-animated.html
+docs/dataiku-guidelines.html
+docs/dku-extracted-styles.css
+docs/playwright-capture.js
+docs/screenshot-slides.js
+docs/slide-preview.html
+docs/table-draw-report.html
+docs/trends-ui-audit-plan.md
 docs/webapp-api-latency-diagrams.md
 docs/webapp-api-latency-live.html
 
@@ -83,11 +100,19 @@ test.sh
 dss_webapp_restart_*
 
 # Ad-hoc debug/test scripts (not in tests/ directory)
+compare_code_envs.py
+find_unused_code_envs.py
+find_unused_packages.py
+runtimeaccess.sh
+update_bwrap.sh
 resource/frontend/cluster-debug-test.ts
+resource/frontend/discover_ui.mjs
 resource/frontend/live-card-smoke.mjs
 resource/frontend/remote-compare.mjs
 resource/frontend/screenshot-test.ts
 resource/frontend/take-screenshots.mjs
+resource/frontend/trends-capture.cjs
+resource/frontend/ui_run*.mjs
 
 # API reference data (large, not needed in deploys)
 dssapiref/
