@@ -68,6 +68,17 @@ export interface Project {
 
 export type ProjectFootprintHealth = 'green' | 'yellow' | 'orange' | 'red' | 'angry-red';
 
+export interface ProjectSavedModelRef {
+  id: string;
+  name: string;
+  type: 'PREDICTION' | 'CLUSTERING' | 'UNKNOWN' | string;
+  savedModelType?: string;
+  backendType?: string;
+  predictionType?: string;
+  versionsCount?: number;
+  activeVersionId?: string;
+}
+
 export interface ProjectFootprintRow {
   projectKey: string;
   name: string;
@@ -88,6 +99,10 @@ export interface ProjectFootprintRow {
   codeEnvRisk?: number;
   projectRisk?: number;
   usageBreakdown?: Record<string, number>;
+  savedModelCount?: number;
+  savedModels?: ProjectSavedModelRef[];
+  savedModelTypeCounts?: Record<string, number>;
+  savedModelSummary?: string;
 }
 
 export interface SqlPushdownRecipeFinding {

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useDiag } from '../context/DiagContext';
 import { useTableFilter } from '../hooks/useTableFilter';
 import { useTableSort } from '../hooks/useTableSort';
@@ -9,11 +9,22 @@ type SortKey =
   | 'projectKey'
   | 'codeEnvCount'
   | 'codeStudioCount'
+  | 'savedModelCount'
   | 'bundleBytes'
   | 'managedDatasetsBytes'
   | 'managedFoldersBytes'
   | 'otherBytes'
   | 'totalBytes';
+
+type ModelFilter =
+  | 'all'
+  | 'prediction'
+  | 'binary'
+  | 'multiclass'
+  | 'regression'
+  | 'timeseries'
+  | 'clustering'
+  | 'unknown';
 
 function formatGb(bytes: number | undefined): string {
   const gb = (bytes || 0) / (1024 * 1024 * 1024);
@@ -67,10 +78,70 @@ function codeStudioCountClass(count: number): string {
   return 'text-[var(--neon-green)]';
 }
 
+const MODEL_FILTERS: Array<{ key: ModelFilter; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'prediction', label: 'Prediction' },
+  { key: 'binary', label: 'Binary' },
+  { key: 'multiclass', label: 'Multiclass' },
+  { key: 'regression', label: 'Regression' },
+  { key: 'timeseries', label: 'Time series' },
+  { key: 'clustering', label: 'Clustering' },
+  { key: 'unknown', label: 'Unknown' },
+];
+
+function normalizeModelValue(value: string | undefined): string {
+  return String(value || '').trim().toUpperCase();
+}
+
+function modelMatchesFilter(row: ProjectFootprintRow, filter: ModelFilter): boolean {
+  if (filter === 'all') return true;
+  const models = row.savedModels || [];
+  if (models.length === 0) return false;
+  return models.some((model) => {
+    const type = normalizeModelValue(model.type);
+    const predictionType = normalizeModelValue(model.predictionType);
+    if (filter === 'prediction') return type === 'PREDICTION';
+    if (filter === 'clustering') return type === 'CLUSTERING';
+    if (filter === 'binary') return predictionType === 'BINARY_CLASSIFICATION';
+    if (filter === 'multiclass') {
+      return predictionType === 'MULTICLASS' || predictionType === 'MULTICLASS_CLASSIFICATION';
+    }
+    if (filter === 'regression') return predictionType === 'REGRESSION';
+    if (filter === 'timeseries') {
+      return predictionType === 'TIMESERIES_FORECAST' || predictionType === 'TIME_SERIES_FORECAST';
+    }
+    return type === 'UNKNOWN' || (!type && !predictionType);
+  });
+}
+
+function formatSavedModelSummary(row: ProjectFootprintRow): string {
+  if (row.savedModelSummary) return row.savedModelSummary;
+  const models = row.savedModels || [];
+  if (models.length === 0) return 'None';
+  const counts = new Map<string, number>();
+  for (const model of models) {
+    const type = normalizeModelValue(model.type);
+    const predictionType = normalizeModelValue(model.predictionType);
+    let label = 'Unknown';
+    if (type === 'CLUSTERING') label = 'Clustering';
+    else if (predictionType === 'BINARY_CLASSIFICATION') label = 'Binary classification';
+    else if (predictionType === 'MULTICLASS' || predictionType === 'MULTICLASS_CLASSIFICATION') label = 'Multiclass';
+    else if (predictionType === 'REGRESSION') label = 'Regression';
+    else if (predictionType === 'TIMESERIES_FORECAST' || predictionType === 'TIME_SERIES_FORECAST') label = 'Time series forecast';
+    else if (type === 'PREDICTION') label = 'Prediction';
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, count]) => (count === 1 ? label : `${count} ${label}`))
+    .join(', ');
+}
+
 export function ProjectFootprintTable() {
   const { state } = useDiag();
   const { isVisible } = useTableFilter();
   const rows = state.parsedData.projectFootprint || [];
+  const [modelFilter, setModelFilter] = useState<ModelFilter>('all');
   const loading = state.parsedData.projectFootprintLoading;
   const isLoading = Boolean(loading?.active);
   const avgProjectGb =
@@ -93,8 +164,33 @@ export function ProjectFootprintTable() {
     return Math.max(0, (row.totalBytes || 0) - known);
   };
 
+  const modelFilterCounts = useMemo(() => {
+    const counts: Record<ModelFilter, number> = {
+      all: rows.length,
+      prediction: 0,
+      binary: 0,
+      multiclass: 0,
+      regression: 0,
+      timeseries: 0,
+      clustering: 0,
+      unknown: 0,
+    };
+    for (const row of rows) {
+      for (const filter of MODEL_FILTERS) {
+        if (filter.key === 'all') continue;
+        if (modelMatchesFilter(row, filter.key)) counts[filter.key] += 1;
+      }
+    }
+    return counts;
+  }, [rows]);
+
+  const filteredRows = useMemo(
+    () => rows.filter((row) => modelMatchesFilter(row, modelFilter)),
+    [rows, modelFilter],
+  );
+
   const sortedRows = useMemo(() => {
-    const clone = [...rows];
+    const clone = [...filteredRows];
     clone.sort((a, b) => {
       if (sortKey === 'projectKey') {
         const result = a.projectKey.localeCompare(b.projectKey);
@@ -110,7 +206,7 @@ export function ProjectFootprintTable() {
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
     });
     return clone;
-  }, [rows, sortKey, sortDir]);
+  }, [filteredRows, sortKey, sortDir]);
   const hasCodeStudios = useMemo(() => rows.some((row) => (row.codeStudioCount ?? 0) > 0), [rows]);
 
   const maxBundleBytes = useMemo(
@@ -139,7 +235,7 @@ export function ProjectFootprintTable() {
         <div className="flex items-center justify-between gap-3">
           <h4>Project Footprint & Code Env Usage</h4>
           <span className="badge badge-info font-mono">
-            {rows.length > 0 ? rows.length : '...'}
+            {rows.length > 0 ? (modelFilter === 'all' ? rows.length : `${filteredRows.length}/${rows.length}`) : '...'}
           </span>
         </div>
       </div>
@@ -175,9 +271,36 @@ export function ProjectFootprintTable() {
         <span className="font-mono text-[var(--text-primary)]">{avgProjectGb.toFixed(2)} GB</span>
       </div>
 
+      <div className="px-4 py-3 border-b border-[var(--border-glass)] flex flex-wrap items-center gap-2">
+        <span className="text-xs uppercase tracking-wide text-[var(--text-muted)] mr-1">Models</span>
+        {MODEL_FILTERS.map((filter) => {
+          const active = modelFilter === filter.key;
+          const count = modelFilterCounts[filter.key] || 0;
+          return (
+            <button
+              key={filter.key}
+              type="button"
+              onClick={() => setModelFilter(filter.key)}
+              className={`px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+                active
+                  ? 'bg-[var(--neon-cyan)]/15 border-[var(--neon-cyan)] text-[var(--neon-cyan)]'
+                  : 'border-[var(--border-glass)] text-[var(--text-secondary)] hover:bg-[var(--bg-glass)]'
+              }`}
+            >
+              {filter.label}
+              <span className="ml-1 font-mono text-[10px] opacity-75">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
       {rows.length === 0 ? (
         <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
           Waiting for project analysis data...
+        </div>
+      ) : sortedRows.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
+          No projects match the selected model filter.
         </div>
       ) : (
         <div className="card-scroll-body">
@@ -204,6 +327,12 @@ export function ProjectFootprintTable() {
                     Code Studios{indicator('codeStudioCount')}
                   </th>
                 )}
+                <th
+                  className="cursor-pointer hover:text-[var(--neon-cyan)] text-right"
+                  onClick={() => handleSort('savedModelCount')}
+                >
+                  Models{indicator('savedModelCount')}
+                </th>
                 <th
                   className="cursor-pointer hover:text-[var(--neon-cyan)] text-right"
                   onClick={() => handleSort('bundleBytes')}
@@ -260,6 +389,14 @@ export function ProjectFootprintTable() {
                       </span>
                     </td>
                   )}
+                  <td className="text-right">
+                    <div className="font-mono font-semibold text-[var(--text-primary)]">
+                      {row.savedModelCount ?? 0}
+                    </div>
+                    <div className="text-[10px] text-[var(--text-muted)] max-w-[180px] ml-auto">
+                      {formatSavedModelSummary(row)}
+                    </div>
+                  </td>
                   <td className="text-right font-mono">
                     <span className={getRelativeSizeColor(row.bundleBytes || 0, maxBundleBytes)}>
                       {formatAuto(row.bundleBytes)}

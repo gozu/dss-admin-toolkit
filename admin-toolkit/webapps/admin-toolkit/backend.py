@@ -6251,11 +6251,127 @@ def _task_pf_usage_scan(
     )
 
 
+def _format_saved_model_kind(model: Dict[str, Any]) -> str:
+    model_type = str(model.get('type') or '').strip().upper()
+    prediction_type = str(model.get('predictionType') or '').strip().upper()
+    if model_type == 'CLUSTERING':
+        return 'Clustering'
+    labels = {
+        'BINARY_CLASSIFICATION': 'Binary classification',
+        'MULTICLASS': 'Multiclass',
+        'MULTICLASS_CLASSIFICATION': 'Multiclass',
+        'REGRESSION': 'Regression',
+        'TIMESERIES_FORECAST': 'Time series forecast',
+        'TIME_SERIES_FORECAST': 'Time series forecast',
+    }
+    if prediction_type in labels:
+        return labels[prediction_type]
+    if model_type == 'PREDICTION':
+        return 'Prediction'
+    return 'Unknown'
+
+
+def _summarize_saved_models(saved_models: List[Dict[str, Any]]) -> Tuple[Dict[str, int], str]:
+    counts: Dict[str, int] = {}
+    for model in saved_models:
+        kind = _format_saved_model_kind(model)
+        counts[kind] = counts.get(kind, 0) + 1
+    if not counts:
+        return {}, ''
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    parts = [label if count == 1 else f"{count} {label}" for label, count in ordered]
+    return counts, ', '.join(parts)
+
+
+def _scan_saved_models_for_project(project_key: str) -> Tuple[str, List[Dict[str, Any]]]:
+    client = _thread_client()
+    project = client.get_project(project_key)
+    rows: List[Dict[str, Any]] = []
+    try:
+        raw_models = project.list_saved_models() or []
+    except Exception:
+        return project_key, rows
+
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        model_id = str(raw.get('id') or raw.get('smId') or raw.get('name') or '').strip()
+        row: Dict[str, Any] = {
+            'id': model_id,
+            'name': str(raw.get('name') or model_id or 'Unnamed model'),
+            'type': str(raw.get('type') or 'UNKNOWN').strip().upper() or 'UNKNOWN',
+            'savedModelType': raw.get('savedModelType'),
+            'backendType': raw.get('backendType'),
+            'predictionType': raw.get('predictionType'),
+            'versionsCount': _coerce_int(raw.get('versionsCount'), 0),
+        }
+        if not row.get('predictionType') and row.get('type') == 'PREDICTION' and model_id:
+            try:
+                settings = project.get_saved_model(model_id).get_settings().get_raw()
+                mini_task = settings.get('miniTask') if isinstance(settings, dict) else None
+                if isinstance(mini_task, dict):
+                    row['predictionType'] = mini_task.get('predictionType')
+                    row['backendType'] = row.get('backendType') or mini_task.get('backendType')
+            except Exception:
+                pass
+        if model_id:
+            try:
+                sm = project.get_saved_model(model_id)
+                versions = sm.list_versions() or []
+                row['versionsCount'] = len(versions)
+                active = sm.get_active_version()
+                if isinstance(active, dict) and active.get('id') is not None:
+                    row['activeVersionId'] = str(active.get('id'))
+            except Exception:
+                pass
+        rows.append(row)
+    return project_key, rows
+
+
+def _task_pf_saved_models(
+    project_keys: List[str],
+    deadline_ts: float,
+    add_event: Callable,
+) -> Dict[str, Dict[str, Any]]:
+    saved_models_by_project: Dict[str, Dict[str, Any]] = {}
+    if not project_keys:
+        return saved_models_by_project
+    add_event('collect_project_saved_models', f"collecting saved models for {len(project_keys)} projects")
+    max_workers = min(_parallel_workers(8), len(project_keys))
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        futures = {}
+        for project_key in project_keys:
+            if time.time() > deadline_ts:
+                add_event('collect_project_saved_models', 'deadline reached while submitting saved model scans', 'warn')
+                break
+            futures[pool.submit(_scan_saved_models_for_project, project_key)] = project_key
+        try:
+            for future in as_completed(list(futures.keys()), timeout=max(0.0, deadline_ts - time.time())):
+                project_key = futures.get(future) or ''
+                try:
+                    pk, saved_models = future.result()
+                except Exception as exc:
+                    add_event('project_saved_models_error', f"saved model scan failed: {exc}", 'warn', project_key)
+                    continue
+                type_counts, summary = _summarize_saved_models(saved_models)
+                saved_models_by_project[pk] = {
+                    'savedModels': saved_models,
+                    'savedModelCount': len(saved_models),
+                    'savedModelTypeCounts': type_counts,
+                    'savedModelSummary': summary,
+                }
+                add_event('project_saved_models_done', f"saved models={len(saved_models)}", 'info', pk)
+        except FuturesTimeoutError:
+            add_event('collect_project_saved_models', 'timeout while waiting for saved model scans', 'warn')
+    return saved_models_by_project
+
+
 def _task_pf_aggregate(
     project_keys: List[str],
     project_info: Dict[str, Dict[str, str]],
     project_footprints: Dict[str, Any],
     usage_data: Dict[str, Any],
+    saved_model_data: Dict[str, Dict[str, Any]],
     deadline_ts: float,
     add_event: Callable,
 ) -> Dict[str, Any]:
@@ -6302,6 +6418,7 @@ def _task_pf_aggregate(
             total_bytes = managed_datasets_bytes + managed_folders_bytes + bundle_bytes
         total_gb = total_bytes / float(1024 ** 3)
         total_gb_values.append(total_gb)
+        saved_model_meta = saved_model_data.get(project_key) or {}
 
         raw_row = {
             'projectKey': project_key,
@@ -6320,6 +6437,10 @@ def _task_pf_aggregate(
             'usageBreakdown': usage_breakdown_by_project.get(project_key) or {},
             'usageDetails': usage_details_by_project.get(project_key) or [],
             'codeEnvKeys': sorted(list(project_env_keys)),
+            'savedModelCount': _coerce_int(saved_model_meta.get('savedModelCount'), 0),
+            'savedModels': saved_model_meta.get('savedModels') or [],
+            'savedModelTypeCounts': saved_model_meta.get('savedModelTypeCounts') or {},
+            'savedModelSummary': saved_model_meta.get('savedModelSummary') or '',
         }
         raw_rows.append(raw_row)
         add_event(
@@ -6534,12 +6655,13 @@ def api_project_footprint():
             project_info: Dict[str, Dict[str, str]] = catalog_result['project_info']
             total_project_count: int = catalog_result['total_project_count']
 
-            # Phase 2: footprint + usage in parallel (off-thread)
+            # Phase 2: footprint + usage + saved models in parallel (off-thread)
             project_footprints: Dict[str, Any] = {}
             usage_data: Dict[str, Any] = {}
+            saved_model_data: Dict[str, Dict[str, Any]] = {}
             if project_keys and not deadline_reached('load_project_footprint_map'):
                 step_start_fp = time.time()
-                with ThreadPoolExecutor(max_workers=2) as pool:
+                with ThreadPoolExecutor(max_workers=3) as pool:
                     f_footprint = pool.submit(
                         _task_pf_footprint,
                         project_keys,
@@ -6556,12 +6678,21 @@ def api_project_footprint():
                         add_event,
                         progress_event,
                     )
+                    f_saved_models = pool.submit(
+                        _task_pf_saved_models,
+                        project_keys,
+                        deadline,
+                        add_event,
+                    )
                     project_footprints = f_footprint.result()
                     usage_data = f_usage.result()
+                    saved_model_data = f_saved_models.result()
                 record_step('load_project_footprint_map', step_start_fp, calls=len(project_keys))
                 record_step('collect_project_code_env_usage', step_start_fp, calls=len(project_keys))
+                record_step('collect_project_saved_models', step_start_fp, calls=len(project_keys))
             app.logger.info("[perf:pf] footprint_fetch elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
             app.logger.info("[perf:pf] usage_scan elapsed=%.0fms projects=%d", elapsed_ms(), len(project_keys))
+            app.logger.info("[perf:pf] saved_model_scan elapsed=%.0fms projects=%d", elapsed_ms(), len(saved_model_data))
 
             # Phase 3: aggregate (main thread)
             agg_result: Dict[str, Any] = {'project_rows': [], 'project_risks': [], 'total_gb_values': []}
@@ -6572,6 +6703,7 @@ def api_project_footprint():
                     project_info,
                     project_footprints,
                     usage_data,
+                    saved_model_data,
                     deadline,
                     add_event,
                 )
